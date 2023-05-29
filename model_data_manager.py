@@ -1,0 +1,350 @@
+import os
+import json
+import argparse
+import shutil
+
+import config
+
+import torch
+import pandas as pd
+import numpy as np
+
+model_dir = "models/"
+transformed_data_dir = "transformed_data/"
+subdata_dir = "subdata/"
+
+if not os.path.exists(model_dir):
+    os.mkdir(model_dir)
+
+if not os.path.exists(transformed_data_dir):
+    os.mkdir(transformed_data_dir)
+
+if not os.path.exists(subdata_dir):
+    os.mkdir(subdata_dir)
+
+data_information = pd.read_csv(os.path.join(config.input_data_path, "tile_meta.csv"), index_col=0)
+entries_index_to_int_map = pd.Series(np.arange(len(data_information)), index=data_information.index)
+
+def entry_list():
+    return data_information.index
+
+def get_entry_index_by_intid(intid: np.ndarray):
+    return data_information.index[intid]
+
+def get_intid_by_entry_index(entry_index: pd.Index):
+    return entries_index_to_int_map.loc[entry_index]
+
+def model_exists(model_name):
+    return os.path.exists(os.path.join(model_dir, model_name))
+
+def save_model(model_name, model_saving_callback, json_metadata):
+    model_saving_callback(os.path.join(model_dir, model_name))
+    with open(os.path.join(model_dir, model_name, "metadata.json"), "w") as json_file:
+        json.dump(json_metadata, json_file, indent=4)
+
+def request_data_create(data_name, model_name, data_source=None):
+    """
+        Requests a new data creation routine. If data_source is None, then it is assumed that the data is in the given data.
+    :param data_name: The new name of the data.
+    :param model_name: The model name of the model that the data is created from.
+    :param data_source: The original data this data is created from.
+    :return: True / False, whether the data creation is successful.
+    """
+    if os.path.exists(os.path.join(transformed_data_dir, data_name)):
+        return False
+    os.mkdir(os.path.join(transformed_data_dir, data_name))
+    if data_source is not None:
+        total_history = os.path.join(transformed_data_dir, data_source, "data_history.json")
+        with open(total_history) as json_file:
+            data_history = json.load(json_file)["data_history"]
+    else:
+        data_history = []
+    data_history.append({"model_name": model_name, "data_name": data_name})
+    with open(os.path.join(transformed_data_dir, data_name, "data_history.json"), "w") as json_file:
+        json.dump({"data_history": data_history}, json_file, indent=4)
+
+def model_add_argparse_arguments(parser):
+    parser.add_argument("--model_name", type=str, required=True, help="The name of the model.")
+    parser.add_argument("--dataset", type=str, required=True, help="The dataset to be trained on.")
+    parser.add_argument("--train_data", type=int, required=True, help="The number of epochs to train the model.")
+
+def model_get_argparse_arguments(args):
+    model_name = args.model_name
+    if model_exists(model_name):
+        print("Model already exists! Pick another name.")
+        quit()
+    return model_name
+
+def subdata_exists(subdata_name):
+    return os.path.exists(os.path.join(subdata_dir, subdata_name + ".json"))
+
+def generate_subdata_interactive(subdata_name):
+    all_wsi = list(data_information["source_wsi"].unique())
+    all_dataset = list(data_information["dataset"].unique())
+
+    wsi_restriction = all_wsi.copy()
+    dataset_restriction = all_dataset.copy()
+
+    # Loop until the user types next. For each loop, ask the user to add or remove elements from the wsi_restriction. If the user types in a wsi that is not in the wsi_restriction,
+    #  then add it. If the user types in a wsi that is in the wsi_restriction, then remove it. If the user types in a wsi that is not in the all_wsi, then print an error message.
+    #  If the user types in next, then break out of the loop.
+    while True:
+        print("Current wsi restriction:", wsi_restriction)
+        print("Type in a wsi to add or remove it from the restriction. Type in next to continue.")
+        wsi = input("Enter wsi: ")
+        if wsi == "next":
+            break
+        else:
+            if not wsi.isdigit():
+                print("Invalid wsi!")
+                continue
+            wsi = int(wsi)
+
+            if wsi in all_wsi:
+                if wsi in wsi_restriction:
+                    wsi_restriction.remove(wsi)
+                else:
+                    wsi_restriction.append(wsi)
+            else:
+                print("Invalid wsi!")
+
+    # Do the same for dataset
+    while True:
+        print("Current dataset restriction:", dataset_restriction)
+        print("Type in a dataset to add or remove it from the restriction. Type in next to continue.")
+        dataset = input("Enter dataset: ")
+        if dataset == "next":
+            break
+        else:
+            if not dataset.isdigit():
+                print("Invalid dataset!")
+                continue
+            dataset = int(dataset)
+
+            if dataset in all_dataset:
+                if dataset in dataset_restriction:
+                    dataset_restriction.remove(dataset)
+                else:
+                    dataset_restriction.append(dataset)
+            else:
+                print("Invalid dataset!")
+
+    if len(wsi_restriction) == 0:
+        print("The wsi restriction is empty! Returning to main routine...")
+        return
+
+    if len(dataset_restriction) == 0:
+        print("The dataset restriction is empty! Returning to main routine...")
+        return
+
+    # Choose stratification method
+    stratification = None
+    while True:
+        user_input = input("Choose a stratification method (none, wsi, dataset):")
+        if user_input == "none":
+            stratification = None
+            break
+        elif user_input == "wsi":
+            if len(wsi_restriction) == 1:
+                print("The wsi restriction only has one wsi! Please choose another stratification method.")
+                continue
+            stratification = "wsi"
+            break
+        elif user_input == "dataset":
+            if len(dataset_restriction) == 1:
+                print("The dataset restriction only has one dataset! Please choose another stratification method.")
+                continue
+            stratification = "dataset"
+            break
+        else:
+            print("Invalid stratification method! Choose from none, wsi, dataset.")
+
+    # Choose prior subdata for exclusion
+    prior_subdata = None
+    while True:
+        user_input = input("Choose a prior subdata to exclude. Type \"none\" for none, and type the name of the subdata for exclusion.")
+        if user_input == "none":
+            prior_subdata = None
+            break
+        elif subdata_exists(user_input):
+            # Load the json file and check
+            with open(os.path.join(subdata_dir, user_input + ".json")) as json_file:
+                subdata_information = json.load(json_file)
+
+            # If there is no stratification, check that the complement of the subdata is not empty. If there is stratification, check that the complement of the subdata is not empty for each stratum.
+            if stratification is None:
+                entry_list = pd.Index(subdata_information["entry_list"])
+                entry_int_ids = get_intid_by_entry_index(entry_list)
+                complement_mask = np.ones(len(data_information), dtype=bool)
+                complement_mask[entry_int_ids] = False
+                if np.sum(complement_mask) == 0:
+                    print("The complement of the subdata is empty! Please choose another prior subdata.")
+                    continue
+            else:
+                entry_list = pd.Index(subdata_information["entry_list"])
+                entry_int_ids = get_intid_by_entry_index(entry_list)
+                complement_mask = np.ones(len(data_information), dtype=bool)
+                complement_mask[entry_int_ids] = False
+                complement_subdata = data_information.loc[complement_mask]
+
+                if stratification == "wsi":
+                    success = True
+                    for wsi in wsi_restriction:
+                        if np.sum(complement_subdata["source_wsi"] == wsi) < 50:
+                            print("The complement of the subdata is too small for wsi", wsi, "! Please choose another prior subdata.")
+                            success = False
+                            break
+                    if not success:
+                        continue
+                elif stratification == "dataset":
+                    success = True
+                    for dataset in dataset_restriction:
+                        if np.sum(complement_subdata["dataset"] == dataset) < 50:
+                            print("The complement of the subdata is too small for dataset", dataset, "! Please choose another prior subdata.")
+                            success = False
+                            break
+                    if not success:
+                        continue
+            prior_subdata = user_input
+        else:
+            print("Subdata does not exist! Please choose another subdata (or type none).")
+
+    # Choose number of subdata, as a ratio of len(data_information), between 0.0 and 1.0. Loop until the user enters a valid number in the range.
+    while True:
+        user_input = input("Choose a number of subdata, as a ratio of len(data_information), between 0.0 and 1.0:")
+        try:
+            number_of_subdata = float(user_input)
+            if number_of_subdata < 0.0 or number_of_subdata > 1.0:
+                print("Number of subdata must be between 0.0 and 1.0!")
+                continue
+            break
+        except ValueError:
+            print("Invalid number!")
+
+    # Sample now.
+    sampled_num_ids = None
+    rng = np.random.default_rng()
+    if prior_subdata is None:
+        if stratification is None:
+            sampled_num_ids = np.unique(rng.choice(len(data_information), int(number_of_subdata * len(data_information)), replace=False))
+        else:
+            if stratification == "wsi":
+                sampled_num_ids = []
+                for wsi in wsi_restriction:
+                    wsi_mask = data_information["source_wsi"] == wsi
+                    wsi_int_ids = np.argwhere(wsi_mask).flatten()
+                    sampled_num_ids.append(np.unique(rng.choice(wsi_int_ids, int(number_of_subdata * len(wsi_int_ids)), replace=False)))
+
+                sampled_num_ids = np.unique(np.concatenate(sampled_num_ids))
+            elif stratification == "dataset":
+                sampled_num_ids = []
+                for dataset in dataset_restriction:
+                    dataset_mask = data_information["dataset"] == dataset
+                    dataset_int_ids = np.argwhere(dataset_mask).flatten()
+                    sampled_num_ids.append(np.unique(rng.choice(dataset_int_ids, int(number_of_subdata * len(dataset_int_ids)), replace=False)))
+
+                sampled_num_ids = np.unique(np.concatenate(sampled_num_ids))
+    else:
+        with open(os.path.join(subdata_dir, prior_subdata + ".json")) as json_file:
+            subdata_information = json.load(json_file)
+
+        entry_list = pd.Index(subdata_information["entry_list"])
+        entry_int_ids = get_intid_by_entry_index(entry_list)
+        complement_mask = np.ones(len(data_information), dtype=bool)
+        complement_mask[entry_int_ids] = False
+        complement_int_ids = np.argwhere(complement_mask).flatten()
+
+        if stratification is None:
+            sampled_num_ids = np.unique(rng.choice(complement_int_ids, int(number_of_subdata * len(data_information)), replace=False))
+        else:
+            if stratification == "wsi":
+                sampled_num_ids = []
+                for wsi in wsi_restriction:
+                    wsi_mask = data_information["source_wsi"] == wsi
+                    wsi_int_ids = np.argwhere(wsi_mask).flatten()
+                    intersection = complement_int_ids[np.searchsorted(wsi_int_ids, complement_int_ids, side="left") < np.searchsorted(wsi_int_ids, complement_int_ids, side="right")]
+                    sampled_num_ids.append(np.unique(rng.choice(intersection, int(number_of_subdata * len(wsi_int_ids)), replace=False)))
+
+                sampled_num_ids = np.unique(np.concatenate(sampled_num_ids))
+            elif stratification == "dataset":
+                sampled_num_ids = []
+                for dataset in dataset_restriction:
+                    dataset_mask = data_information["dataset"] == dataset
+                    dataset_int_ids = np.argwhere(dataset_mask).flatten()
+                    intersection = complement_int_ids[np.searchsorted(dataset_int_ids, complement_int_ids, side="left") < np.searchsorted(dataset_int_ids, complement_int_ids, side="right")]
+                    sampled_num_ids.append(np.unique(rng.choice(intersection, int(number_of_subdata * len(dataset_int_ids)), replace=False)))
+
+                sampled_num_ids = np.unique(np.concatenate(sampled_num_ids))
+
+    # Save the subdata.
+    entry_list = list(get_entry_index_by_intid(sampled_num_ids))
+
+    subdata_information = {
+        "entry_list": entry_list,
+        "stratification": stratification if stratification is not None else "none",
+        "wsi_restriction": wsi_restriction,
+        "dataset_restriction": dataset_restriction,
+        "prior_subdata": prior_subdata if prior_subdata is not None else "none",
+        "number_of_subdata": number_of_subdata,
+    }
+
+    with open(os.path.join(subdata_dir, subdata_name + ".json"), "w") as json_file:
+        json.dump(subdata_information, json_file, indent=4)
+
+
+
+if __name__ == "__main__":
+    """Interactive command line interface to manage models / datasets.
+    Commands: help, list model, list dataset, list subdata, remove model, remove dataset, remove subdata, generate subdata, quit"""
+    parser = argparse.ArgumentParser(description="Interactive command line interface to manage models / datasets.")
+
+    args = parser.parse_args()
+
+    # Use the Python print() and input() functions to interact with the user.
+
+    while True:
+        command = input("Enter command: ")
+        if command == "help":
+            print("Commands: help, list model, list dataset, list subdata, remove model, remove dataset, remove subdata, generate subdata, quit")
+        elif command == "list model":
+            print("Models:")
+            for model_name in os.listdir(model_dir):
+                print("    ", model_name)
+        elif command == "list dataset":
+            print("Datasets:")
+            for dataset_name in os.listdir(transformed_data_dir):
+                print("    ", dataset_name)
+        elif command == "list subdata":
+            print("Subdata:")
+            for dataset_name in os.listdir(transformed_data_dir):
+                print("    ", dataset_name)
+                for subdata_name in os.listdir(os.path.join(transformed_data_dir, dataset_name)):
+                    print("        ", subdata_name)
+        elif command == "remove model":
+            model_name = input("Enter model name: ")
+            if model_exists(model_name):
+                shutil.rmtree(os.path.join(model_dir, model_name))
+            else:
+                print("Model does not exist!")
+        elif command == "remove dataset":
+            dataset_name = input("Enter dataset name: ")
+            if os.path.exists(os.path.join(transformed_data_dir, dataset_name)):
+                shutil.rmtree(os.path.join(transformed_data_dir, dataset_name))
+            else:
+                print("Dataset does not exist!")
+        elif command == "remove subdata":
+            subdata_name = input("Enter subdata name: ")
+            if os.path.exists(os.path.join(subdata_dir, subdata_name + ".json")):
+                os.remove(os.path.join(subdata_dir, subdata_name + ".json"))
+            else:
+                print("Subdata does not exist!")
+        elif command == "generate subdata":
+            subdata_name = input("Enter subdata name: ")
+            if subdata_exists(subdata_name):
+                print("Subdata already exists!")
+            else:
+                generate_subdata_interactive(subdata_name)
+        elif command == "quit":
+            break
+        else:
+            print("Invalid command! Type 'help' for a list of commands.")

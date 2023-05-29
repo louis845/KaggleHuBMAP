@@ -1,10 +1,12 @@
-# A simple 512 -> 512 U-Net model
+"""A pixelwise encoder-decoder model for semi-supervised image segmentation."""
+
 import gc
 import os
 import time
 import argparse
 
 import config
+import model_data_manager
 
 import pandas as pd
 import cv2
@@ -16,81 +18,55 @@ import torch.nn
 import torchvision
 import torchvision.transforms.functional
 
-class Conv(torch.nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(Conv, self).__init__()
-        self.conv1 = torch.nn.Conv2d(in_channels, out_channels, 3, bias=True, padding="same", padding_mode="replicate")
-        self.elu1 = torch.nn.ReLU(inplace=True)
-        self.conv2 = torch.nn.Conv2d(out_channels, out_channels, 3, bias=True, padding="same", padding_mode="replicate")
-        self.elu2 = torch.nn.ReLU(inplace=True)
 
-        torch.nn.init.constant_(self.conv1.bias, 0.0)
-        torch.nn.init.constant_(self.conv2.bias, 0.0)
-    def forward(self, x):
-        x = self.conv1(x)
-        x = self.elu1(x)
-        x = self.conv2(x)
-        x = self.elu2(x)
-        return x
+class Encoder(torch.nn.Module):
+    """Fully connected feedforward neural network encoder. 3 -> 16 -> 16 -> 1"""
+    def __init__(self, encoder_dim=1, activation=torch.nn.ReLU()):
+        super().__init__()
 
-class SimpleUNet(torch.torch.nn.Module):
-
-    def __init__(self):
-        super(SimpleUNet, self).__init__()
-        self.conv0 = Conv(3, 64)
-        self.conv1 = Conv(64, 128)
-        self.conv2 = Conv(128, 256)
-        self.conv3 = Conv(256, 512)
-        self.conv4 = Conv(512, 1024)
-        self.conv5 = Conv(1024, 512)
-        self.conv6 = Conv(512, 256)
-        self.conv7 = Conv(256, 128)
-        self.conv8 = Conv(128, 64)
-        self.maxpool = torch.nn.MaxPool2d(2)
-        self.convT0 = torch.nn.ConvTranspose2d(1024, 512, kernel_size=2, stride=2, bias=True)
-        self.convT1 = torch.nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2, bias=True)
-        self.convT2 = torch.nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2, bias=True)
-        self.convT3 = torch.nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2, bias=True)
-        self.outconv = torch.nn.Conv2d(64, 1, 1, bias=True)
+        self.fc1 = torch.nn.Linear(3, 16)
+        self.fc2 = torch.nn.Linear(16, 16)
+        self.fc3 = torch.nn.Linear(16, encoder_dim)
+        self.activation = activation
         self.sigmoid = torch.nn.Sigmoid()
 
-        # initialize bias of convT layers and outconv to 0
-        torch.nn.init.constant_(self.convT0.bias, 0.0)
-        torch.nn.init.constant_(self.convT1.bias, 0.0)
-        torch.nn.init.constant_(self.convT2.bias, 0.0)
-        torch.nn.init.constant_(self.convT3.bias, 0.0)
-        torch.nn.init.constant_(self.outconv.bias, np.log(7.0 / 3.0))
+    def forward(self, x):
+        x = self.activation(self.fc1(x))
+        x = self.activation(self.fc2(x))
+        x = self.sigmoid(self.fc3(x))
+        return x
+
+class Decoder(torch.nn.Module):
+    """Fully connected feedforward neural network decoder. 15 -> 16 -> 16 -> 3. The first dimension is the image, the remaining are the 1 hot representation of the class."""
+    def __init__(self, decoder_dim=1, activation=torch.nn.ReLU()):
+        super().__init__()
+
+        self.fc1 = torch.nn.Linear(decoder_dim + 14, 16)
+        self.fc2 = torch.nn.Linear(16, 16)
+        self.fc3 = torch.nn.Linear(16, 3)
+        self.activation = activation
+        self.sigmoid = torch.nn.Sigmoid()
 
     def forward(self, x):
-        # contracting path
-        x0 = self.conv0(x)
-        x1 = self.conv1(self.maxpool(x0))
-        x2 = self.conv2(self.maxpool(x1))
-        x3 = self.conv3(self.maxpool(x2))
-        x = self.conv4(self.maxpool(x3))
-        # expanding path
-        x = self.conv5(torch.concat([self.convT0(x), x3] , dim=1))
-        x = self.conv6(torch.concat([self.convT1(x), x2], dim=1))
-        x = self.conv7(torch.concat([self.convT2(x), x1], dim=1))
-        x = self.conv8(torch.concat([self.convT3(x), x0], dim=1))
-        return torch.squeeze(self.sigmoid(self.outconv(x)), dim=1)
+        x = self.activation(self.fc1(x))
+        x = self.activation(self.fc2(x))
+        x = self.sigmoid(self.fc3(x))
+        return x
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train a simple U-Net model")
+    parser = argparse.ArgumentParser(description="Train a pixelwise encoder-decoder model.")
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs to train for. Default 100.")
-    parser.add_argument("--save_dir", type=str, default="simple_unet_model", help="Directory to save the model to. Default simple_unet_model.")
-    parser.add_argument("--rotation_augmentation", action="store_true", help="Whether to use rotation augmentation. Default False.")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size to use. Default 2.")
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate to use. Default 1e-5.")
+    model_data_manager.model_add_argparse_arguments(parser)
 
     args = parser.parse_args()
+    model_name = model_data_manager.model_get_argparse_arguments(args)
 
-    model = SimpleUNet().to(device=config.device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
-    scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=1.0, total_iters=10)
-    output_model_path = args.save_dir
-    if not os.path.exists(output_model_path):
-        os.mkdir(output_model_path)
+    encoder = Encoder().to(device=config.device)
+    decoder = Decoder().to(device=config.device)
+    optimizer = torch.optim.Adam(list(encoder.parameters()) + list(decoder.parameters()), lr=args.learning_rate)
+
 
     data_information = pd.read_csv(os.path.join(config.input_data_path, "tile_meta.csv"), index_col=0)
 
@@ -195,8 +171,6 @@ if __name__ == "__main__":
 
             trained += batch_size
         optimizer.step()
-        scheduler.step()
-
         train_history["loss"].append(total_loss)
         train_history["accuracy"].append((true_positive + true_negative) / (true_positive + true_negative + false_positive + false_negative))
         if true_positive + false_positive == 0:
@@ -251,7 +225,6 @@ if __name__ == "__main__":
         print("Val Precision: {}".format(train_history["val_precision"][-1]))
         print("Recall: {}".format(train_history["recall"][-1]))
         print("Val Recall: {}".format(train_history["val_recall"][-1]))
-        print("Learning Rate: {}".format(scheduler.get_lr()))
         print("")
         ctime = time.time()
 
