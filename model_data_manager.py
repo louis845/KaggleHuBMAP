@@ -63,17 +63,93 @@ def request_data_create(data_name, model_name, data_source=None):
     with open(os.path.join(transformed_data_dir, data_name, "data_history.json"), "w") as json_file:
         json.dump({"data_history": data_history}, json_file, indent=4)
 
-def model_add_argparse_arguments(parser):
-    parser.add_argument("--model_name", type=str, required=True, help="The name of the model.")
-    parser.add_argument("--dataset", type=str, required=True, help="The dataset to be trained on.")
-    parser.add_argument("--train_data", type=int, required=True, help="The number of epochs to train the model.")
+def dataset_exists(data_name):
+    return os.path.exists(os.path.join(transformed_data_dir, data_name))
 
-def model_get_argparse_arguments(args):
+def model_add_argparse_arguments(parser, allow_missing_validation=False):
+    parser.add_argument("--model_name", type=str, required=True, help="The name of the model.")
+    parser.add_argument("--dataset", type=str, help="The dataset to be trained on.")
+    parser.add_argument("--train_subdata", type=str, required=True, help="The subdata to be used for training.")
+    if allow_missing_validation:
+        parser.add_argument("--val_subdata", type=str, help="The subdata to be used for validation.")
+    else:
+        parser.add_argument("--val_subdata", type=str, required=True, help="The subdata to be used for validation.")
+
+def model_get_argparse_arguments(args, allow_missing_validation=False):
     model_name = args.model_name
     if model_exists(model_name):
         print("Model already exists! Pick another name.")
         quit()
-    return model_name
+    dataset = args.dataset
+    if dataset is not None and not dataset_exists(dataset):
+        print("Dataset does not exist! Pick another dataset. Available datasets:", os.listdir(transformed_data_dir))
+        quit()
+    elif dataset is None:
+        print("No dataset is given. Training on the original data.")
+    train_subdata = args.train_subdata
+    if not subdata_exists(train_subdata):
+        print("Training subdata does not exist! Pick another subdata. Available subdata:", os.listdir(subdata_dir))
+        quit()
+    val_subdata = args.val_subdata
+    if allow_missing_validation:
+        if val_subdata is not None and not subdata_exists(val_subdata):
+            print("Validation subdata does not exist! Pick another subdata. Available subdata:", os.listdir(subdata_dir))
+            quit()
+    else:
+        if not subdata_exists(val_subdata):
+            print("Validation subdata does not exist! Pick another subdata. Available subdata:", os.listdir(subdata_dir))
+            quit()
+
+    # Load the json of train_subdata and val_subdata
+    with open(os.path.join(subdata_dir, train_subdata + ".json")) as json_file:
+        train_subdata_json = json.load(json_file)
+    if val_subdata is not None:
+        with open(os.path.join(subdata_dir, val_subdata + ".json")) as json_file:
+            val_subdata_json = json.load(json_file)
+
+    # Loop through the keys of the json dict and print it to the user
+    print("Selected training and validation information:")
+    for key in train_subdata_json.keys():
+        print("Train", key, ":  ", train_subdata_json[key])
+        if val_subdata is not None:
+            print("Valid", key, ":  ", val_subdata_json[key])
+
+    print()
+    print()
+
+    training_entries = train_subdata_json["entry_list"]
+    if val_subdata is not None:
+        validation_entries = val_subdata_json["entry_list"]
+
+    training_entries_num_id = get_intid_by_entry_index(training_entries)
+    if val_subdata is not None:
+        validation_entries_num_id = get_intid_by_entry_index(validation_entries)
+
+    assert training_entries_num_id[:-1] <= training_entries_num_id[1:]
+    if val_subdata is not None:
+        assert validation_entries_num_id[:-1] <= validation_entries_num_id[1:]
+
+        # Check if the intersection of the two sets is empty
+        intersection_empty = np.sum(np.searchsorted(training_entries_num_id, validation_entries_num_id, side="left")
+               < np.searchsorted(training_entries_num_id, validation_entries_num_id, side="right")) == 0
+
+        if not intersection_empty:
+            print("The training and validation sets are not disjoint! Pick another subdata.")
+            quit()
+
+    new_model_dir = os.path.join(model_dir, model_name)
+    if dataset is None:
+        dataset_dir = os.path.join(config.input_data_path, "train")
+    else:
+        dataset_dir = os.path.join(transformed_data_dir, dataset)
+
+    if not os.path.exists(new_model_dir):
+        os.mkdir(new_model_dir)
+
+    if val_subdata is None:
+        validation_entries = None
+
+    return new_model_dir, dataset_dir, training_entries, validation_entries
 
 def subdata_exists(subdata_name):
     return os.path.exists(os.path.join(subdata_dir, subdata_name + ".json"))

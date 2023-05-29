@@ -16,6 +16,9 @@ import torch.nn
 import torchvision
 import torchvision.transforms.functional
 
+import model_data_manager
+
+
 class Conv(torch.nn.Module):
     def __init__(self, in_channels, out_channels):
         super(Conv, self).__init__()
@@ -78,45 +81,38 @@ class SimpleUNet(torch.torch.nn.Module):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a simple U-Net model")
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs to train for. Default 100.")
-    parser.add_argument("--save_dir", type=str, default="simple_unet_model", help="Directory to save the model to. Default simple_unet_model.")
     parser.add_argument("--rotation_augmentation", action="store_true", help="Whether to use rotation augmentation. Default False.")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size to use. Default 2.")
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate to use. Default 1e-5.")
 
+    model_data_manager.model_add_argparse_arguments(parser)
+
     args = parser.parse_args()
+
+    model_dir, dataset_dir, training_entries, validation_entries = model_data_manager.model_get_argparse_arguments(args)
 
     model = SimpleUNet().to(device=config.device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=1.0, total_iters=10)
-    output_model_path = args.save_dir
-    if not os.path.exists(output_model_path):
-        os.mkdir(output_model_path)
 
-    data_information = pd.read_csv(os.path.join(config.input_data_path, "tile_meta.csv"), index_col=0)
 
-    dataset1_info = data_information[data_information["dataset"] == 1]
+    train_image_data = torch.zeros((len(training_entries), 3, 512, 512), dtype=torch.float32, device=config.device)
+    test_image_data = torch.zeros((len(validation_entries), 3, 512, 512), dtype=torch.float32, device=config.device)
 
-    # split dataset1 into train and test, 60/40
-    train_dataset1_info = dataset1_info.sample(frac=0.6, random_state=0)
-    test_dataset1_info = dataset1_info.drop(train_dataset1_info.index)
-
-    train_image_data = torch.zeros((len(train_dataset1_info), 3, 512, 512), dtype=torch.float32, device=config.device)
-    test_image_data = torch.zeros((len(test_dataset1_info), 3, 512, 512), dtype=torch.float32, device=config.device)
-
-    train_image_ground_truth = torch.zeros((len(train_dataset1_info), 512, 512), dtype=torch.float32, device=config.device)
-    test_image_ground_truth = torch.zeros((len(test_dataset1_info), 512, 512), dtype=torch.float32, device=config.device)
+    train_image_ground_truth = torch.zeros((len(training_entries), 512, 512), dtype=torch.float32, device=config.device)
+    test_image_ground_truth = torch.zeros((len(validation_entries), 512, 512), dtype=torch.float32, device=config.device)
 
     # Load the images
-    for i in range(len(train_dataset1_info)):
-        image = train_dataset1_info.index[i]
-        train_image_data[i, :, :, :] = torch.tensor(cv2.imread(os.path.join(config.input_data_path, "train", "{}.tif".format(image))), dtype=torch.float32).permute(2, 0, 1) / 255.0
+    for i in range(len(training_entries)):
+        image = training_entries[i]
+        train_image_data[i, :, :, :] = torch.tensor(cv2.imread(os.path.join(dataset_dir, "{}.tif".format(image))), dtype=torch.float32).permute(2, 0, 1) / 255.0
         mask = np.load("segmentation_data/{}/masks.npz".format(image))["blood_vessel"]
         assert mask.dtype == bool
         train_image_ground_truth[i, :, :] = torch.tensor(mask, dtype=torch.float32, device=config.device)
 
-    for i in range(len(test_dataset1_info)):
-        image = test_dataset1_info.index[i]
-        test_image_data[i, :, :, :] = torch.tensor(cv2.imread(os.path.join(config.input_data_path, "train", "{}.tif".format(image))), dtype=torch.float32).permute(2, 0, 1) / 255.0
+    for i in range(len(validation_entries)):
+        image = validation_entries[i]
+        test_image_data[i, :, :, :] = torch.tensor(cv2.imread(os.path.join(dataset_dir, "{}.tif".format(image))), dtype=torch.float32).permute(2, 0, 1) / 255.0
         mask = np.load("segmentation_data/{}/masks.npz".format(image))["blood_vessel"]
         assert mask.dtype == bool
         test_image_ground_truth[i, :, :] = torch.tensor(mask, dtype=torch.float32, device=config.device)
@@ -152,7 +148,7 @@ if __name__ == "__main__":
         optimizer.zero_grad()
         total_loss = 0.0
         true_negative, true_positive, false_negative, false_positive = 0, 0, 0, 0
-        while trained < len(train_dataset1_info):
+        while trained < len(training_entries):
             train_image_data_batch = train_image_data[trained:trained+batch_size, :, :, :]
             train_image_ground_truth_batch = train_image_ground_truth[trained:trained+batch_size, :, :]
 
@@ -214,7 +210,7 @@ if __name__ == "__main__":
             tested = 0
             total_loss = 0.0
             true_negative, true_positive, false_negative, false_positive = 0, 0, 0, 0
-            while tested < len(test_dataset1_info):
+            while tested < len(validation_entries):
                 test_image_data_batch = test_image_data[tested:tested+batch_size, :, :, :]
                 test_image_ground_truth_batch = test_image_ground_truth[tested:tested+batch_size, :, :]
 
@@ -259,17 +255,17 @@ if __name__ == "__main__":
         gc.collect()
         torch.cuda.empty_cache()
 
-        torch.save(model.state_dict(), os.path.join(output_model_path, "model_epoch{}.pt".format(epoch)))
-        torch.save(optimizer.state_dict(), os.path.join(output_model_path, "optimizer_epoch{}.pt".format(epoch)))
+        torch.save(model.state_dict(), os.path.join(model_dir, "model_epoch{}.pt".format(epoch)))
+        torch.save(optimizer.state_dict(), os.path.join(model_dir, "optimizer_epoch{}.pt".format(epoch)))
 
     print("Training Complete")
 
     # Save the model and optimizer
-    torch.save(model.state_dict(), os.path.join(output_model_path, "model.pt"))
-    torch.save(optimizer.state_dict(), os.path.join(output_model_path, "optimizer.pt"))
+    torch.save(model.state_dict(), os.path.join(model_dir, "model.pt"))
+    torch.save(optimizer.state_dict(), os.path.join(model_dir, "optimizer.pt"))
     # Save the training history by converting it to a dataframe
     train_history = pd.DataFrame(train_history)
-    train_history.to_csv(os.path.join(output_model_path, "train_history.csv"), index=False)
+    train_history.to_csv(os.path.join(model_dir, "train_history.csv"), index=False)
 
     # Plot the training history
     plt.figure(figsize=(20, 10))

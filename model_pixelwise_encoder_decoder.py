@@ -54,71 +54,50 @@ class Decoder(torch.nn.Module):
         return x
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train a pixelwise encoder-decoder model.")
+    parser = argparse.ArgumentParser(description="Train a pixelwise encoder-decoder model for semi-supervised image segmentation.")
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs to train for. Default 100.")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size to use. Default 2.")
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate to use. Default 1e-5.")
-    model_data_manager.model_add_argparse_arguments(parser)
+
+    model_data_manager.model_add_argparse_arguments(parser, allow_missing_validation=True)
 
     args = parser.parse_args()
-    model_name = model_data_manager.model_get_argparse_arguments(args)
 
-    encoder = Encoder().to(device=config.device)
-    decoder = Decoder().to(device=config.device)
-    optimizer = torch.optim.Adam(list(encoder.parameters()) + list(decoder.parameters()), lr=args.learning_rate)
+    model_dir, dataset_dir, training_entries, validation_entries = model_data_manager.model_get_argparse_arguments(args, allow_missing_validation=True)
 
+    requires_validation = validation_entries is not None
 
-    data_information = pd.read_csv(os.path.join(config.input_data_path, "tile_meta.csv"), index_col=0)
+    encoder_model = Encoder().to(device=config.device)
+    decoder_model = Decoder().to(device=config.device)
 
-    dataset1_info = data_information[data_information["dataset"] == 1]
+    optimizer = torch.optim.Adam(list(encoder_model.parameters()) + list(decoder_model.parameters()), lr=args.learning_rate)
+    scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=1.0, total_iters=10)
 
-    # split dataset1 into train and test, 60/40
-    train_dataset1_info = dataset1_info.sample(frac=0.6, random_state=0)
-    test_dataset1_info = dataset1_info.drop(train_dataset1_info.index)
+    train_image_data = torch.zeros((len(training_entries), 512, 512, 3), dtype=torch.float32, device=config.device)
+    if requires_validation:
+        test_image_data = torch.zeros((len(validation_entries), 512, 512, 3), dtype=torch.float32, device=config.device)
 
-    train_image_data = torch.zeros((len(train_dataset1_info), 3, 512, 512), dtype=torch.float32, device=config.device)
-    test_image_data = torch.zeros((len(test_dataset1_info), 3, 512, 512), dtype=torch.float32, device=config.device)
+    # Load the images and compute the one-hot classes
+    for i in range(len(training_entries)):
+        image = training_entries[i]
+        train_image_data[i, :, :, :] = torch.tensor(cv2.imread(os.path.join(dataset_dir, "{}.tif".format(image))),
+                                                    dtype=torch.float32) / 255.0
+    training_wsi = torch.tensor(model_data_manager.data_information.loc[training_entries, "source_wsi"], dtype=torch.long, device=config.device) - 1
+    training_wsi_one_hot = torch.nn.functional.one_hot(training_wsi, num_classes=14).to(dtype=torch.float32)
 
-    train_image_ground_truth = torch.zeros((len(train_dataset1_info), 512, 512), dtype=torch.float32, device=config.device)
-    test_image_ground_truth = torch.zeros((len(test_dataset1_info), 512, 512), dtype=torch.float32, device=config.device)
-
-    # Load the images
-    for i in range(len(train_dataset1_info)):
-        image = train_dataset1_info.index[i]
-        train_image_data[i, :, :, :] = torch.tensor(cv2.imread(os.path.join(config.input_data_path, "train", "{}.tif".format(image))), dtype=torch.float32).permute(2, 0, 1) / 255.0
-        mask = np.load("segmentation_data/{}/masks.npz".format(image))["blood_vessel"]
-        assert mask.dtype == bool
-        train_image_ground_truth[i, :, :] = torch.tensor(mask, dtype=torch.float32, device=config.device)
-
-    for i in range(len(test_dataset1_info)):
-        image = test_dataset1_info.index[i]
-        test_image_data[i, :, :, :] = torch.tensor(cv2.imread(os.path.join(config.input_data_path, "train", "{}.tif".format(image))), dtype=torch.float32).permute(2, 0, 1) / 255.0
-        mask = np.load("segmentation_data/{}/masks.npz".format(image))["blood_vessel"]
-        assert mask.dtype == bool
-        test_image_ground_truth[i, :, :] = torch.tensor(mask, dtype=torch.float32, device=config.device)
+    if requires_validation:
+        for i in range(len(validation_entries)):
+            image = validation_entries[i]
+            test_image_data[i, :, :, :] = torch.tensor(cv2.imread(os.path.join(dataset_dir, "{}.tif".format(image))),
+                                                       dtype=torch.float32) / 255.0
+        validation_wsi = torch.tensor(model_data_manager.data_information.loc[validation_entries, "source_wsi"], dtype=torch.long, device=config.device) - 1
+        validation_wsi_one_hot = torch.nn.functional.one_hot(validation_wsi, num_classes=14).to(dtype=torch.float32)
 
     # Train the model
-    train_history = {"loss": [], "val_loss": [], "accuracy": [], "val_accuracy": [], "precision": [], "val_precision": [], "recall": [], "val_recall": []}
-
-    loss_function = torch.nn.BCELoss(reduction="none")
+    train_history = {"loss": [], "val_loss": [], "max_loss": [], "val_max_loss": [], "batch_max_loss": [], "val_batch_max_loss": []}
 
     batch_size = args.batch_size
     num_epochs = args.epochs
-    rotation_augmentation = args.rotation_augmentation
-
-    # Compute the number of positive and negative pixels in the training data
-    with torch.no_grad():
-        num_positive_pixels = torch.sum(train_image_ground_truth)
-        num_negative_pixels = torch.sum(1.0 - train_image_ground_truth)
-        print("Number of positive pixels: {}".format(num_positive_pixels))
-        print("Number of negative pixels: {}".format(num_negative_pixels))
-
-        # Compute the class weights
-        positive_weight = num_negative_pixels / (num_positive_pixels + num_negative_pixels)
-        negative_weight = num_positive_pixels / (num_positive_pixels + num_negative_pixels)
-
-        print("Positive weight: {}".format(positive_weight))
-        print("Negative weight: {}".format(negative_weight))
 
     for epoch in range(num_epochs):
         ctime = time.time()
@@ -127,122 +106,104 @@ if __name__ == "__main__":
         trained = 0
         optimizer.zero_grad()
         total_loss = 0.0
-        true_negative, true_positive, false_negative, false_positive = 0, 0, 0, 0
-        while trained < len(train_dataset1_info):
-            train_image_data_batch = train_image_data[trained:trained+batch_size, :, :, :]
-            train_image_ground_truth_batch = train_image_ground_truth[trained:trained+batch_size, :, :]
+        total_max_loss = 0.0
+        total_batch_max_loss = 0.0
+        while trained < len(training_entries):
+            train_image_data_batch = train_image_data[trained:trained + batch_size, :, :, :]
 
-            if rotation_augmentation:
-                angle_in_deg = np.random.uniform(0, 360)
-                with torch.no_grad():
-                    train_image_data_batch = torchvision.transforms.functional.rotate(train_image_data_batch, angle_in_deg)
-                    #train_image_ground_truth_batch = ((torchvision.transforms.functional.rotate(train_image_ground_truth_batch * 255.0, angle_in_deg) / 255.0) > 0.5).type(dtype=torch.float32)
-                    train_image_ground_truth_batch = torchvision.transforms.functional.rotate(train_image_ground_truth_batch, angle_in_deg)
-
-                    rads = np.radians(angle_in_deg % 90.0)
-                    lims = 0.5 / (np.sin(rads) + np.cos(rads))
-                    # Restrict to (centerx - imagewidth * lims, centery - imageheight * lims) to (centerx + imagewidth * lims, centery + imageheight * lims)
-                    xmin = int(train_image_data.shape[2] // 2 - train_image_data.shape[2] * lims)
-                    xmax = int(train_image_data.shape[2] // 2 + train_image_data.shape[2] * lims)
-                    ymin = int(train_image_data.shape[3] // 2 - train_image_data.shape[3] * lims)
-                    ymax = int(train_image_data.shape[3] // 2 + train_image_data.shape[3] * lims)
-
-                    xmax = 16 * ((xmax - xmin) // 16) + xmin
-                    ymax = 16 * ((ymax - ymin) // 16) + ymin
-
-                    train_image_data_batch = train_image_data_batch[:, :, xmin:xmax, ymin:ymax]
-                    train_image_ground_truth_batch = train_image_ground_truth_batch[:, xmin:xmax, ymin:ymax]
-
-                gc.collect()
-                torch.cuda.empty_cache()
+            latent = encoder_model(train_image_data_batch)
+            training_wsi_one_hot_batch = training_wsi_one_hot[trained:trained + batch_size, :].unsqueeze(1)\
+                .unsqueeze(1).expand(-1, 512, 512, -1)
+            reconstruction = decoder_model(torch.concat([latent, training_wsi_one_hot_batch], dim=3))
 
 
-            y_pred = model(train_image_data_batch)
-            loss = loss_function(y_pred, train_image_ground_truth_batch)
             # Weighted loss, with precomputed weights
-            loss = torch.mean((positive_weight * train_image_ground_truth_batch * loss) + (negative_weight * (1.0 - train_image_ground_truth_batch) * loss))
+            diff = torch.abs(reconstruction - train_image_data_batch)
+            loss = torch.mean(diff ** 2, dim=[1, 2, 3])
+            loss = torch.sum(loss)
+
             loss.backward()
             total_loss += loss.item()
-
-            true_positive += int(torch.sum((y_pred > 0.5) & (train_image_ground_truth_batch == 1)).item())
-            true_negative += int(torch.sum((y_pred <= 0.5) & (train_image_ground_truth_batch == 0)).item())
-            false_positive += int(torch.sum((y_pred > 0.5) & (train_image_ground_truth_batch == 0)).item())
-            false_negative += int(torch.sum((y_pred <= 0.5) & (train_image_ground_truth_batch == 1)).item())
+            total_max_loss = max(total_max_loss, torch.max(diff).item())
+            total_batch_max_loss += torch.sum(torch.max(diff, dim=[1, 2, 3])).item()
 
             trained += batch_size
+
+            gc.collect()
+            torch.cuda.empty_cache()
         optimizer.step()
+        scheduler.step()
+
         train_history["loss"].append(total_loss)
-        train_history["accuracy"].append((true_positive + true_negative) / (true_positive + true_negative + false_positive + false_negative))
-        if true_positive + false_positive == 0:
-            train_history["precision"].append(0.0)
-        else:
-            train_history["precision"].append(true_positive / (true_positive + false_positive))
-        if true_positive + false_negative == 0:
-            train_history["recall"].append(0.0)
-        else:
-            train_history["recall"].append(true_positive / (true_positive + false_negative))
+        train_history["max_loss"].append(total_max_loss)
+        train_history["batch_max_loss"].append(total_batch_max_loss)
 
         # Test the model
-        model.eval()
-        with torch.no_grad():
-            tested = 0
-            total_loss = 0.0
-            true_negative, true_positive, false_negative, false_positive = 0, 0, 0, 0
-            while tested < len(test_dataset1_info):
-                test_image_data_batch = test_image_data[tested:tested+batch_size, :, :, :]
-                test_image_ground_truth_batch = test_image_ground_truth[tested:tested+batch_size, :, :]
+        if requires_validation:
+            with torch.no_grad():
+                tested = 0
+                total_loss = 0.0
+                total_max_loss = 0.0
+                total_batch_max_loss = 0.0
+                while tested < len(validation_entries):
+                    test_image_data_batch = test_image_data[tested:tested + batch_size, :, :, :]
 
-                y_pred = model(test_image_data_batch)
-                loss = loss_function(y_pred, test_image_ground_truth_batch)
-                # Weighted loss, with precomputed weights
-                loss = torch.mean((positive_weight * test_image_ground_truth_batch * loss) + (negative_weight * (1.0 - test_image_ground_truth_batch) * loss))
-                total_loss += loss.item()
+                    latent = encoder_model(test_image_data_batch)
+                    validation_wsi_one_hot_batch = validation_wsi_one_hot[tested:tested + batch_size, :].unsqueeze(1)\
+                        .unsqueeze(1).expand(-1, 512, 512, -1)
+                    reconstruction = decoder_model(torch.concat([latent, validation_wsi_one_hot_batch], dim=3))
 
-                true_positive += int(torch.sum((y_pred > 0.5) & (test_image_ground_truth_batch == 1)).item())
-                true_negative += int(torch.sum((y_pred <= 0.5) & (test_image_ground_truth_batch == 0)).item())
-                false_positive += int(torch.sum((y_pred > 0.5) & (test_image_ground_truth_batch == 0)).item())
-                false_negative += int(torch.sum((y_pred <= 0.5) & (test_image_ground_truth_batch == 1)).item())
+                    # Weighted loss, with precomputed weights
+                    diff = torch.abs(reconstruction - test_image_data_batch)
+                    loss = torch.mean(diff ** 2, dim=[1, 2, 3])
+                    loss = torch.sum(loss)
 
-                tested += batch_size
+                    total_loss += loss.item()
+                    total_max_loss = max(total_max_loss, torch.max(diff).item())
+                    total_batch_max_loss += torch.sum(torch.max(diff, dim=[1, 2, 3])).item()
+
+                    tested += batch_size
+
+                    gc.collect()
+                    torch.cuda.empty_cache()
+
             train_history["val_loss"].append(total_loss)
-            train_history["val_accuracy"].append((true_positive + true_negative) / (true_positive + true_negative + false_positive + false_negative))
-            if true_positive + false_positive == 0:
-                train_history["val_precision"].append(0.0)
-            else:
-                train_history["val_precision"].append(true_positive / (true_positive + false_positive))
-            if true_positive + false_negative == 0:
-                train_history["val_recall"].append(0.0)
-            else:
-                train_history["val_recall"].append(true_positive / (true_positive + false_negative))
+            train_history["val_max_loss"].append(total_max_loss)
+            train_history["val_batch_max_loss"].append(total_batch_max_loss)
+        else:
+            train_history["val_loss"].append(0.0)
+            train_history["val_max_loss"].append(0.0)
+            train_history["val_batch_max_loss"].append(0.0)
+
 
         print("Time Elapsed: {}".format(time.time() - ctime))
         print("Epoch: {}/{}".format(epoch, num_epochs))
         print("Loss: {}".format(train_history["loss"][-1]))
         print("Val Loss: {}".format(train_history["val_loss"][-1]))
-        print("Accuracy: {}".format(train_history["accuracy"][-1]))
-        print("Val Accuracy: {}".format(train_history["val_accuracy"][-1]))
-        print("Precision: {}".format(train_history["precision"][-1]))
-        print("Val Precision: {}".format(train_history["val_precision"][-1]))
-        print("Recall: {}".format(train_history["recall"][-1]))
-        print("Val Recall: {}".format(train_history["val_recall"][-1]))
+        print("Max Loss: {}".format(train_history["max_loss"][-1]))
+        print("Val Max Loss: {}".format(train_history["val_max_loss"][-1]))
+        print("Batch Max Loss: {}".format(train_history["batch_max_loss"][-1]))
+        print("Val Batch Max Loss: {}".format(train_history["val_batch_max_loss"][-1]))
+        print("Learning Rate: {}".format(scheduler.get_lr()))
         print("")
         ctime = time.time()
 
-        del train_image_data_batch, train_image_ground_truth_batch, test_image_data_batch, test_image_ground_truth_batch
         gc.collect()
         torch.cuda.empty_cache()
 
-        torch.save(model.state_dict(), os.path.join(output_model_path, "model_epoch{}.pt".format(epoch)))
-        torch.save(optimizer.state_dict(), os.path.join(output_model_path, "optimizer_epoch{}.pt".format(epoch)))
+        torch.save(encoder_model.state_dict(), os.path.join(model_dir, "encoder_epoch{}.pt".format(epoch)))
+        torch.save(decoder_model.state_dict(), os.path.join(model_dir, "decoder_epoch{}.pt".format(epoch)))
+        torch.save(optimizer.state_dict(), os.path.join(model_dir, "optimizer_epoch{}.pt".format(epoch)))
 
     print("Training Complete")
 
     # Save the model and optimizer
-    torch.save(model.state_dict(), os.path.join(output_model_path, "model.pt"))
-    torch.save(optimizer.state_dict(), os.path.join(output_model_path, "optimizer.pt"))
+    torch.save(encoder_model.state_dict(), os.path.join(model_dir, "encoder.pt"))
+    torch.save(decoder_model.state_dict(), os.path.join(model_dir, "decoder.pt"))
+    torch.save(optimizer.state_dict(), os.path.join(model_dir, "optimizer.pt"))
     # Save the training history by converting it to a dataframe
     train_history = pd.DataFrame(train_history)
-    train_history.to_csv(os.path.join(output_model_path, "train_history.csv"), index=False)
+    train_history.to_csv(os.path.join(model_dir, "train_history.csv"), index=False)
 
     # Plot the training history
     plt.figure(figsize=(20, 10))
