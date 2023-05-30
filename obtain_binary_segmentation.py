@@ -6,6 +6,7 @@ import json
 import numpy as np
 import pandas as pd
 import cv2
+import h5py
 
 import config
 
@@ -22,6 +23,9 @@ if __name__ == '__main__':
 
     if not os.path.exists("segmentation_data"):
         os.mkdir("segmentation_data")
+    else:
+        shutil.rmtree("segmentation_data")
+        os.mkdir("segmentation_data")
 
     num_glomerulus = 0
     num_blood_vessel = 0
@@ -30,6 +34,9 @@ if __name__ == '__main__':
     glomerulus_size = []
     blood_vessel_size = []
     unknown_size = []
+
+    data_summary = h5py.File(os.path.join("segmentation_data", "data_summary.h5"), "w")
+    segmentation_data_h5 = data_summary.create_group("segmentation_data")
 
     print("Starting to compute the binary segmentation. Length: {}".format(len(data_information)))
     count = 0
@@ -77,6 +84,12 @@ if __name__ == '__main__':
                                 blood_vessel=np.squeeze(blood_vessel_mask, axis=-1) > 0,
                                 unknown=np.squeeze(unknown_mask, axis=-1) > 0)
 
+            entry_h5 = segmentation_data_h5.create_group(entry)
+
+            entry_h5.create_dataset(name="glomerulus", data = (np.squeeze(glomerulus_mask, axis=-1) > 0))
+            entry_h5.create_dataset(name="blood_vessel", data = (np.squeeze(blood_vessel_mask, axis=-1) > 0))
+            entry_h5.create_dataset(name="unknown", data = (np.squeeze(unknown_mask, axis=-1) > 0))
+
             # Save the masks as 3 png files using cv2.imwrite
             cv2.imwrite(os.path.join("segmentation_data", entry, "glomerulus.png"), glomerulus_mask.astype(np.uint8) * 255)
             cv2.imwrite(os.path.join("segmentation_data", entry, "blood_vessel.png"), blood_vessel_mask.astype(np.uint8) * 255)
@@ -92,3 +105,10 @@ if __name__ == '__main__':
                         glomerulus_size=np.sort(glomerulus_size),
                         blood_vessel_size=np.sort(blood_vessel_size),
                         unknown_size=np.sort(unknown_size))
+
+    statistics = data_summary.create_group("statistics")
+    statistics.create_dataset(name="glomerulus_size", data=np.sort(glomerulus_size))
+    statistics.create_dataset(name="blood_vessel_size", data=np.sort(blood_vessel_size))
+    statistics.create_dataset(name="unknown_size", data=np.sort(unknown_size))
+
+    data_summary.close()

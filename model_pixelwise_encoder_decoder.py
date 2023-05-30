@@ -21,7 +21,7 @@ import torchvision.transforms.functional
 
 class Encoder(torch.nn.Module):
     """Fully connected feedforward neural network encoder. 3 -> 16 -> 16 -> 1"""
-    def __init__(self, encoder_dim=1, activation=torch.nn.ReLU()):
+    def __init__(self, encoder_dim=1, activation=torch.nn.ELU()):
         super().__init__()
 
         self.fc1 = torch.nn.Linear(3, 16)
@@ -38,7 +38,7 @@ class Encoder(torch.nn.Module):
 
 class Decoder(torch.nn.Module):
     """Fully connected feedforward neural network decoder. 15 -> 16 -> 16 -> 3. The first dimension is the image, the remaining are the 1 hot representation of the class."""
-    def __init__(self, decoder_dim=1, activation=torch.nn.ReLU()):
+    def __init__(self, decoder_dim=1, activation=torch.nn.ELU()):
         super().__init__()
 
         self.fc1 = torch.nn.Linear(decoder_dim + 14, 16)
@@ -58,6 +58,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs to train for. Default 100.")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size to use. Default 2.")
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate to use. Default 1e-5.")
+    parser.add_argument("--epochs_per_report", type=int, default=10, help="Number of epochs between reports. Default 10.")
 
     model_data_manager.model_add_argparse_arguments(parser, allow_missing_validation=True)
 
@@ -99,8 +100,8 @@ if __name__ == "__main__":
     batch_size = args.batch_size
     num_epochs = args.epochs
 
+    ctime = time.time()
     for epoch in range(num_epochs):
-        ctime = time.time()
         # Train the model
         # Split the training data into batches
         trained = 0
@@ -125,12 +126,14 @@ if __name__ == "__main__":
             loss.backward()
             total_loss += loss.item()
             total_max_loss = max(total_max_loss, torch.max(diff).item())
-            total_batch_max_loss += torch.sum(torch.max(diff, dim=[1, 2, 3])).item()
+            total_batch_max_loss += torch.sum(torch.amax(diff, dim=[1, 2, 3])).item()
 
             trained += batch_size
 
             gc.collect()
             torch.cuda.empty_cache()
+        total_loss /= len(training_entries)
+        total_batch_max_loss /= len(training_entries)
         optimizer.step()
         scheduler.step()
 
@@ -160,12 +163,14 @@ if __name__ == "__main__":
 
                     total_loss += loss.item()
                     total_max_loss = max(total_max_loss, torch.max(diff).item())
-                    total_batch_max_loss += torch.sum(torch.max(diff, dim=[1, 2, 3])).item()
+                    total_batch_max_loss += torch.sum(torch.amax(diff, dim=[1, 2, 3])).item()
 
                     tested += batch_size
 
                     gc.collect()
                     torch.cuda.empty_cache()
+            total_loss /= len(validation_entries)
+            total_batch_max_loss /= len(validation_entries)
 
             train_history["val_loss"].append(total_loss)
             train_history["val_max_loss"].append(total_max_loss)
@@ -175,25 +180,25 @@ if __name__ == "__main__":
             train_history["val_max_loss"].append(0.0)
             train_history["val_batch_max_loss"].append(0.0)
 
-
-        print("Time Elapsed: {}".format(time.time() - ctime))
-        print("Epoch: {}/{}".format(epoch, num_epochs))
-        print("Loss: {}".format(train_history["loss"][-1]))
-        print("Val Loss: {}".format(train_history["val_loss"][-1]))
-        print("Max Loss: {}".format(train_history["max_loss"][-1]))
-        print("Val Max Loss: {}".format(train_history["val_max_loss"][-1]))
-        print("Batch Max Loss: {}".format(train_history["batch_max_loss"][-1]))
-        print("Val Batch Max Loss: {}".format(train_history["val_batch_max_loss"][-1]))
-        print("Learning Rate: {}".format(scheduler.get_lr()))
-        print("")
-        ctime = time.time()
-
         gc.collect()
         torch.cuda.empty_cache()
 
-        torch.save(encoder_model.state_dict(), os.path.join(model_dir, "encoder_epoch{}.pt".format(epoch)))
-        torch.save(decoder_model.state_dict(), os.path.join(model_dir, "decoder_epoch{}.pt".format(epoch)))
-        torch.save(optimizer.state_dict(), os.path.join(model_dir, "optimizer_epoch{}.pt".format(epoch)))
+        if epoch % args.epochs_per_report == 0:
+            print("Time Elapsed: {}".format(time.time() - ctime))
+            print("Epoch: {}/{}".format(epoch, num_epochs))
+            print("Loss: {}".format(train_history["loss"][-1]))
+            print("Val Loss: {}".format(train_history["val_loss"][-1]))
+            print("Max Loss: {}".format(train_history["max_loss"][-1]))
+            print("Val Max Loss: {}".format(train_history["val_max_loss"][-1]))
+            print("Batch Max Loss: {}".format(train_history["batch_max_loss"][-1]))
+            print("Val Batch Max Loss: {}".format(train_history["val_batch_max_loss"][-1]))
+            print("Learning Rate: {}".format(scheduler.get_lr()))
+            print("")
+            ctime = time.time()
+
+            torch.save(encoder_model.state_dict(), os.path.join(model_dir, "encoder_epoch{}.pt".format(epoch)))
+            torch.save(decoder_model.state_dict(), os.path.join(model_dir, "decoder_epoch{}.pt".format(epoch)))
+            torch.save(optimizer.state_dict(), os.path.join(model_dir, "optimizer_epoch{}.pt".format(epoch)))
 
     print("Training Complete")
 

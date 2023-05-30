@@ -14,7 +14,7 @@ import cv2
 
 import config
 
-data_information = pd.read_csv(os.path.join(config.input_data_path, "tile_meta.csv"), index_col=0)
+import model_data_manager
 
 with open(os.path.join(config.input_data_path, "polygons.jsonl")) as json_file:
     json_list = list(json_file)
@@ -26,20 +26,27 @@ for json_str in json_list:
 
 
 class MainWindow(PyQt5.QtWidgets.QMainWindow):
-    def __init__(self, data_information):
+    def __init__(self):
         super().__init__()
         self.setWindowTitle("Data Visualization")
         self.resize(1920, 1080)
-        self.data_information = data_information
-        self.unique_dataset_values = data_information["dataset"].value_counts().sort_index()
-        self.unique_wsi_values = data_information["source_wsi"].value_counts().sort_index()
+        self.unique_dataset_values = model_data_manager.data_information["dataset"].value_counts().sort_index()
+        self.unique_wsi_values = model_data_manager.data_information["source_wsi"].value_counts().sort_index()
 
         # Create the left selection area on the left, and the tabbed interface on the right. The left selection area should have 200 width, and the tabbed interface should have 1720 width.
         # The left selection area is a QWidget, and the tabbed interface is a QTabWidget.
         self.left_selection_area = PyQt5.QtWidgets.QWidget(self)
         self.left_selection_area.setGeometry(0, 0, 300, 1080)
-        self.tabbed_interface = PyQt5.QtWidgets.QTabWidget(self)
-        self.tabbed_interface.setGeometry(300, 0, 1620, 1080)
+        self.right_area = PyQt5.QtWidgets.QWidget(self)
+        self.right_area.setGeometry(300, 0, 1620, 1080)
+        self.right_area_layout = PyQt5.QtWidgets.QVBoxLayout(self.right_area)
+
+        self.comparison_dropdown = PyQt5.QtWidgets.QComboBox(self.right_area)
+        self.tabbed_interface = PyQt5.QtWidgets.QTabWidget(self.right_area)
+
+        self.right_area_layout.addWidget(self.comparison_dropdown)
+        self.right_area_layout.addWidget(self.tabbed_interface)
+
         self.total_tabs = []
 
         # Create the list of checkboxes indicating which datasets to be shown, and the list of buttons to show the data visualizations. First split the left selection area into two vertical halves, one for the list of checkboxes and one for the list of buttons.
@@ -88,7 +95,7 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         self.buttons_layout = PyQt5.QtWidgets.QVBoxLayout(self.buttons_widget)
         self.buttons = []
 
-        for entry in self.data_information.index:
+        for entry in model_data_manager.data_information.index:
             button = PyQt5.QtWidgets.QPushButton(text=str(entry), parent=self.buttons_widget)
             self.buttons.append(button)
             self.buttons_layout.addWidget(button)
@@ -104,12 +111,15 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
             button.clicked.connect(lambda checked, clicked_data_entry=button.text(): self.selection_button_clicked(clicked_data_entry))
 
 
+        # Loop through the existing datasets, set the options for the comparison dropdown.
+        for dataset in model_data_manager.list_datasets():
+            self.comparison_dropdown.addItem(dataset)
 
     def checkbox_clicked(self):
         # Loop through all the buttons, and hide/show the buttons depending on which checkboxes are checked.
         for button in self.buttons:
-            button_dataset = self.data_information.loc[button.text(), "dataset"]
-            visible = self.dataset_checkboxes[button_dataset].isChecked() and self.wsi_checkboxes[self.data_information.loc[button.text(), "source_wsi"]].isChecked()
+            button_dataset = model_data_manager.data_information.loc[button.text(), "dataset"]
+            visible = self.dataset_checkboxes[button_dataset].isChecked() and self.wsi_checkboxes[model_data_manager.data_information.loc[button.text(), "source_wsi"]].isChecked()
             button.setVisible(visible)
 
     def selection_button_clicked(self, clicked_data_entry):
@@ -141,19 +151,19 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
                 cv2.fillPoly(overlay, [np.array(polygon_coordinate_list)], color)
                 image = cv2.addWeighted(overlay, 0.35, image, 0.65, 0)
 
+        widget = PyQt5.QtWidgets.QWidget()
+        layout = PyQt5.QtWidgets.QVBoxLayout()
+        widget.setLayout(layout)
 
-        # Convert the image into a QImage
-        height, width, channel = image.shape
-        bytes_per_line = 3 * width
-        q_image = PyQt5.QtGui.QImage(image.data, width, height, bytes_per_line, PyQt5.QtGui.QImage.Format_RGB888)
+        label = self.create_label_from_image(image, widget)
+        alt_dataset = str(self.comparison_dropdown.currentText())
 
-        # Create a QLabel, and set the image as the pixmap of the QLabel.
-        # The QLabel is to be contained inside a QVBoxLayout.
-        label = PyQt5.QtWidgets.QLabel(self.tabbed_interface)
-        label.setPixmap(PyQt5.QtGui.QPixmap.fromImage(q_image))
-        label.setAlignment(PyQt5.QtCore.Qt.AlignCenter)
-        label.resize(width, height)
-        label.show()
+        if model_data_manager.dataset_exists(alt_dataset):
+            data_loader = model_data_manager.get_dataset_dataloader(alt_dataset)
+            image_transformed = np.array(data_loader.get_image_data(clicked_data_entry))
+            data_loader.close()
+            del data_loader
+            label2 = self.create_label_from_image(image_transformed, widget)
 
         # Add another label beneath the image label for text. The text says "Red: blood vessel, Green: Glomerulus, Blue: Unknown".
         text_label = PyQt5.QtWidgets.QLabel(self.tabbed_interface)
@@ -161,14 +171,12 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         text_label.setAlignment(PyQt5.QtCore.Qt.AlignCenter)
         text_label.show()
 
-        layout = PyQt5.QtWidgets.QVBoxLayout()
         layout.addWidget(label)
+        if model_data_manager.dataset_exists(alt_dataset):
+            layout.addWidget(label2)
         layout.addWidget(text_label)
 
-        # Create a QWidget, and set the QVBoxLayout as the layout of the QWidget.
-        # Add the QWidget into the tabbed interface.
-        widget = PyQt5.QtWidgets.QWidget()
-        widget.setLayout(layout)
+
         self.tabbed_interface.addTab(widget, clicked_data_entry)
 
         # Add the tab into the list of tabs.
@@ -177,9 +185,25 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         # Set the current tab to be the newly created tab.
         self.tabbed_interface.setCurrentWidget(widget)
 
+    def create_label_from_image(self, image_np, parent):
+        # Convert the image into a QImage
+        height, width, channel = image_np.shape
+        bytes_per_line = 3 * width
+        q_image = PyQt5.QtGui.QImage(image_np.data, width, height, bytes_per_line, PyQt5.QtGui.QImage.Format_RGB888)
+
+        # Create a QLabel, and set the image as the pixmap of the QLabel.
+        # The QLabel is to be contained inside a QVBoxLayout.
+        label = PyQt5.QtWidgets.QLabel(parent)
+        label.setPixmap(PyQt5.QtGui.QPixmap.fromImage(q_image))
+        label.setAlignment(PyQt5.QtCore.Qt.AlignCenter)
+        label.resize(width, height)
+        label.show()
+
+        return label
+
 
 if __name__ == "__main__":
     app = PyQt5.QtWidgets.QApplication([])
-    main_window = MainWindow(data_information)
+    main_window = MainWindow()
     main_window.show()
     app.exec_()
