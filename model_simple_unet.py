@@ -25,7 +25,7 @@ if __name__ == "__main__":
     parser.add_argument("--rotation_augmentation", action="store_true", help="Whether to use rotation augmentation. Default False.")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size to use. Default 2.")
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate to use. Default 1e-5.")
-    parser.add_argument("--epochs_per_save", type=int, default=2, help="Number of epochs between saves. Default 10.")
+    parser.add_argument("--epochs_per_save", type=int, default=2, help="Number of epochs between saves. Default 2.")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Number of gradient accumulation steps. Default 1. If set to -1, accumulate for the whole dataset.")
 
     image_width = 512
@@ -169,7 +169,6 @@ if __name__ == "__main__":
             train_history["recall"].append(true_positive / (true_positive + false_negative))
 
         # Test the model
-        model.eval()
         with torch.no_grad():
             tested = 0
             total_loss = 0.0

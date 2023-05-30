@@ -79,10 +79,10 @@ class UNetEncoder(torch.nn.Module):
         super(UNetEncoder, self).__init__()
         self.backbone = UNetBackbone(3, hidden_channels)
         self.contractor0 = torch.nn.Conv2d(hidden_channels, in_channels, 1, bias=True)
-        self.contractor1 = torch.nn.Conv2d(hidden_channels, in_channels, 1, bias=True)
-        self.contractor2 = torch.nn.Conv2d(hidden_channels, in_channels, 1, bias=True)
-        self.contractor3 = torch.nn.Conv2d(hidden_channels, in_channels, 1, bias=True)
-        self.contractor4 = torch.nn.Conv2d(hidden_channels, in_channels, 1, bias=True)
+        self.contractor1 = torch.nn.Conv2d(hidden_channels * 2, in_channels, 1, bias=True)
+        self.contractor2 = torch.nn.Conv2d(hidden_channels * 4, in_channels, 1, bias=True)
+        self.contractor3 = torch.nn.Conv2d(hidden_channels * 8, in_channels, 1, bias=True)
+        self.contractor4 = torch.nn.Conv2d(hidden_channels * 16, in_channels, 1, bias=True)
 
     def forward(self, x):
         x0, x1, x2, x3, x4 = self.backbone(x)
@@ -101,10 +101,12 @@ class UNetDecoder(torch.nn.Module):
         self.conv3 = Conv(hidden_channels + in_channels, in_channels)
         self.conv4 = Conv(hidden_channels + in_channels, in_channels)
 
+        self.sigmoid = torch.nn.Sigmoid()
+
     def forward(self, x0, x1, x2, x3, x4):
         x = self.conv1(torch.concat([self.upconv1(x4), x3], dim=1))
         x = self.conv2(torch.concat([self.upconv2(x), x2], dim=1))
         x = self.conv3(torch.concat([self.upconv3(x), x1], dim=1))
         x = self.conv4(torch.concat([self.upconv4(x), x0], dim=1))
 
-        return self.sigmoid(self.outconv(x))
+        return self.sigmoid(x)
