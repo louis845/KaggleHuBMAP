@@ -27,6 +27,7 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate to use. Default 1e-5.")
     parser.add_argument("--epochs_per_save", type=int, default=2, help="Number of epochs between saves. Default 2.")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Number of gradient accumulation steps. Default 1. If set to -1, accumulate for the whole dataset.")
+    parser.add_argument("--use_batch_norm", action="store_true", help="Whether to use batch normalization. Default False.")
 
     image_width = 512
     image_height = 512
@@ -41,7 +42,7 @@ if __name__ == "__main__":
     training_entries = np.array(training_entries, dtype=object)
     validation_entries = np.array(validation_entries, dtype=object)
 
-    model = model_unet_base.UNetClassifier(hidden_channels=64).to(device=config.device)
+    model = model_unet_base.UNetClassifier(hidden_channels=64, use_batch_norm=args.use_batch_norm).to(device=config.device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=1.0, total_iters=10)
 

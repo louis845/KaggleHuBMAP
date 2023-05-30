@@ -25,7 +25,7 @@ if __name__ == "__main__":
     parser.add_argument("--rotation_augmentation", action="store_true", help="Whether to use rotation augmentation. Default False.")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size to use. Default 2.")
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate to use. Default 1e-5.")
-    parser.add_argument("--epochs_per_save", type=int, default=2, help="Number of epochs between saves. Default 10.")
+    parser.add_argument("--epochs_per_save", type=int, default=2, help="Number of epochs between saves. Default 2.")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Number of gradient accumulation steps. Default 1. If set to -1, accumulate for the whole dataset.")
 
     image_width = 512
@@ -89,7 +89,7 @@ if __name__ == "__main__":
             train_image_data_batch = torch.zeros((batch_end - trained, 3, image_height, image_width), dtype=torch.float32, device=config.device)
 
             for k in range(trained, batch_end):
-                train_image_data_batch[k - trained, :, :, :] = torch.tensor(dataset_loader.get_image_data(training_entries_shuffle[k]), dtype=torch.float32, device=config.device).permute(2, 0, 1)
+                train_image_data_batch[k - trained, :, :, :] = torch.tensor(dataset_loader.get_image_data(training_entries_shuffle[k]), dtype=torch.float32, device=config.device).permute(2, 0, 1) / 255.0
 
             if rotation_augmentation:
                 angle_in_deg = np.random.uniform(0, 360)
@@ -156,7 +156,7 @@ if __name__ == "__main__":
                     test_image_data_batch = torch.zeros((batch_end - tested, 3, image_height, image_width), dtype=torch.float32, device=config.device)
 
                     for k in range(tested, batch_end):
-                        test_image_data_batch[k - tested, :, :, :] = torch.tensor(dataset_loader.get_image_data(validation_entries[k]), dtype=torch.float32, device=config.device).permute(2, 0, 1)
+                        test_image_data_batch[k - tested, :, :, :] = torch.tensor(dataset_loader.get_image_data(validation_entries[k]), dtype=torch.float32, device=config.device).permute(2, 0, 1) / 255.0
 
                     latent_x0, latent_x1, latent_x2, latent_x3, latent_x4 = model_encoder(train_image_data_batch)
                     reconstruction = model_decoder(latent_x0, latent_x1, latent_x2, latent_x3, latent_x4)
