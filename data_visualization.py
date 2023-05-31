@@ -11,6 +11,7 @@ import pandas as pd
 import numpy as np
 
 import cv2
+import sklearn.cluster
 
 import config
 
@@ -42,10 +43,16 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         self.right_area_layout = PyQt5.QtWidgets.QVBoxLayout(self.right_area)
 
         self.comparison_dropdown = PyQt5.QtWidgets.QComboBox(self.right_area)
+        self.comparison_segmentation_dropdown = PyQt5.QtWidgets.QComboBox(self.right_area)
         self.tabbed_interface = PyQt5.QtWidgets.QTabWidget(self.right_area)
+        self.custom_algorithm_button = PyQt5.QtWidgets.QPushButton(self.right_area,
+                                                                   text="Run Custom Image Algorithm (written in Python)")
 
         self.right_area_layout.addWidget(self.comparison_dropdown)
+        self.right_area_layout.addWidget(self.comparison_segmentation_dropdown)
         self.right_area_layout.addWidget(self.tabbed_interface)
+        self.right_area_layout.addWidget(self.custom_algorithm_button)
+
 
         self.total_tabs = []
 
@@ -110,10 +117,19 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         for button in self.buttons:
             button.clicked.connect(lambda checked, clicked_data_entry=button.text(): self.selection_button_clicked(clicked_data_entry))
 
+        self.custom_algorithm_button.clicked.connect(self.custom_algorithm_button_clicked)
 
         # Loop through the existing datasets, set the options for the comparison dropdown.
         for dataset in model_data_manager.list_datasets():
             self.comparison_dropdown.addItem(dataset)
+
+        # Loop through the existing datasets, set the options for the comparison segmentation dropdown.
+        self.comparison_segmentation_dropdown.addItem("None")
+        for dataset in model_data_manager.list_datasets():
+            self.comparison_segmentation_dropdown.addItem(dataset)
+
+
+
 
     def checkbox_clicked(self):
         # Loop through all the buttons, and hide/show the buttons depending on which checkboxes are checked.
@@ -157,12 +173,27 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
 
         label = self.create_label_from_image(image, widget)
         alt_dataset = str(self.comparison_dropdown.currentText())
+        segmentation_dataset = str(self.comparison_segmentation_dropdown.currentText())
 
         if model_data_manager.dataset_exists(alt_dataset):
             data_loader = model_data_manager.get_dataset_dataloader(alt_dataset)
             image_transformed = np.array(data_loader.get_image_data(clicked_data_entry))
             data_loader.close()
             del data_loader
+
+            # Add the segmentation mask as a white overlay if it exists
+            if segmentation_dataset != "None" and model_data_manager.dataset_exists(segmentation_dataset):
+                data_loader = model_data_manager.get_dataset_dataloader(segmentation_dataset)
+                segmentation_mask = np.array(data_loader.get_image_data(clicked_data_entry))
+                data_loader.close()
+                del data_loader
+
+                if len(segmentation_mask.shape) == 2:
+                    segmentation_mask = np.repeat(np.expand_dims(segmentation_mask, axis=2), axis=2, repeats=3)
+
+                image_transformed = cv2.addWeighted(image_transformed, 0.5, segmentation_mask, 0.5, 0)
+                del segmentation_mask
+
             label2 = self.create_label_from_image(image_transformed, widget)
 
         # Add another label beneath the image label for text. The text says "Red: blood vessel, Green: Glomerulus, Blue: Unknown".
@@ -200,6 +231,58 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         label.show()
 
         return label
+
+    def custom_algorithm_button_clicked(self):
+        current_tab_title = str(self.tabbed_interface.tabText(self.tabbed_interface.currentIndex()))
+        print(current_tab_title)
+
+        # Load the image here
+        image = cv2.imread(os.path.join(config.input_data_path, "train", current_tab_title + ".tif"))
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        image2 = self.custom_image_transform(image)
+
+        # Display both image and image2 in a new popup window belonging to the main window, with QDialong. The main window is blocked until the popup window is closed.
+
+        popup_window = PyQt5.QtWidgets.QDialog(self)
+        popup_window.setWindowTitle("Custom Algorithm Result")
+        popup_window.resize(800, 600)
+
+        layout = PyQt5.QtWidgets.QVBoxLayout()
+        popup_window.setLayout(layout)
+
+        label = self.create_label_from_image(image, popup_window)
+        label2 = self.create_label_from_image(image2, popup_window)
+
+        layout.addWidget(label)
+        layout.addWidget(label2)
+
+        popup_window.exec_()
+
+    def custom_image_transform(self, image):
+        # This image is a numpy array of shape (height, width, channel) in RGB. The values are uint8. Do k-means on the image, and return the transformed image.
+        # The transformed image should be of the same shape and type as the input image.
+
+        # Convert the image into a 2D array of shape (height * width, channel)
+        height, width, channel = image.shape
+        image_2d = image.reshape((height * width, channel)).astype(np.float64)
+
+        # Do k-means on the image
+        kmeans = sklearn.cluster.KMeans(n_clusters=2, random_state=0, n_init=10).fit(image_2d)
+
+        # Get the cluster centers
+        cluster_centers = kmeans.cluster_centers_
+
+        # Get the labels
+        labels = kmeans.labels_
+
+        # Get the transformed image
+        image_transformed = cluster_centers[labels].reshape((height, width, channel))
+
+        # Clip the values to be between 0 and 255, and convert the image back to uint8
+        image_transformed = np.clip(image_transformed, 0, 255).astype(np.uint8)
+
+        return image_transformed
 
 
 if __name__ == "__main__":

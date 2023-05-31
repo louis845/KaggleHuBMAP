@@ -80,7 +80,6 @@ def get_dataset_dataloader(dataset_name) -> DatasetDataLoader:
     return DatasetDataLoader(dataset_name)
 
 def get_dataset_datawriter(dataset_name) -> DatasetDataWriter:
-    assert not dataset_exists(dataset_name)
     return DatasetDataWriter(dataset_name)
 
 def entry_list():
@@ -141,6 +140,7 @@ def model_add_argparse_arguments(parser, allow_missing_validation=False):
         parser.add_argument("--val_subdata", type=str, help="The subdata to be used for validation.")
     else:
         parser.add_argument("--val_subdata", type=str, required=True, help="The subdata to be used for validation.")
+    parser.add_argument("--prev_model_ckpt", type=str, help="The previous model to be loaded to continue training.")
 
 def model_get_argparse_arguments(args, allow_missing_validation=False):
     model_name = args.model_name
@@ -166,6 +166,7 @@ def model_get_argparse_arguments(args, allow_missing_validation=False):
         if not subdata_exists(val_subdata):
             print("Validation subdata does not exist! Pick another subdata. Available subdata:", os.listdir(subdata_dir))
             quit()
+    prev_model_ckpt = args.prev_model_ckpt
 
     # Load the json of train_subdata and val_subdata
     with open(os.path.join(subdata_dir, train_subdata + ".json")) as json_file:
@@ -207,6 +208,9 @@ def model_get_argparse_arguments(args, allow_missing_validation=False):
             quit()
 
     new_model_dir = os.path.join(model_dir, model_name)
+    prev_model_dir = None
+    if prev_model_ckpt is not None:
+        prev_model_dir = os.path.join(model_dir, prev_model_ckpt)
     data_loader = get_dataset_dataloader(dataset)
 
     if not os.path.exists(new_model_dir):
@@ -215,7 +219,9 @@ def model_get_argparse_arguments(args, allow_missing_validation=False):
     if val_subdata is None:
         validation_entries = None
 
-    return new_model_dir, data_loader, training_entries, validation_entries
+    extra_info = {"dataset": dataset, "train_subdata": train_subdata, "val_subdata": val_subdata, "previous_model": str(prev_model_ckpt)}
+
+    return new_model_dir, data_loader, training_entries, validation_entries, prev_model_dir, extra_info
 
 def transform_add_argparse_arguments(parser, requires_model=True):
     parser.add_argument("--original_data_name", type=str, help="The name of the original data. Don't type anything to use the original data.")

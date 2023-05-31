@@ -1,8 +1,8 @@
-# A simple 512 -> 512 U-Net model
 import gc
 import os
 import time
 import argparse
+import json
 
 import config
 
@@ -28,6 +28,9 @@ if __name__ == "__main__":
     parser.add_argument("--epochs_per_save", type=int, default=2, help="Number of epochs between saves. Default 2.")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Number of gradient accumulation steps. Default 1. If set to -1, accumulate for the whole dataset.")
     parser.add_argument("--use_batch_norm", action="store_true", help="Whether to use batch normalization. Default False.")
+    parser.add_argument("--use_res_conv", action="store_true", help="Whether to use deeper residual convolutional networks. Default False.")
+    parser.add_argument("--hidden_channels", type=int, default=64, help="Number of hidden channels to use. Default 64.")
+    parser.add_argument("--pyramid_height", type=int, default=4, help="Number of pyramid levels to use. Default 4.")
 
     image_width = 512
     image_height = 512
@@ -36,15 +39,26 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    model_dir, dataset_loader, training_entries, validation_entries = model_data_manager.model_get_argparse_arguments(args)
+    model_dir, dataset_loader, training_entries, validation_entries, prev_model_checkpoint_dir, extra_info = model_data_manager.model_get_argparse_arguments(args)
     assert type(training_entries) == list
     assert type(validation_entries) == list
     training_entries = np.array(training_entries, dtype=object)
     validation_entries = np.array(validation_entries, dtype=object)
 
-    model = model_unet_base.UNetClassifier(hidden_channels=64, use_batch_norm=args.use_batch_norm).to(device=config.device)
+    model = model_unet_base.UNetClassifier(hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
+                                           use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height).to(device=config.device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=1.0, total_iters=10)
+
+    if prev_model_checkpoint_dir is not None:
+        model_checkpoint_path = os.path.join(prev_model_checkpoint_dir, "model.pt")
+        optimizer_checkpoint_path = os.path.join(prev_model_checkpoint_dir, "optimizer.pt")
+
+        model.load_state_dict(torch.load(model_checkpoint_path))
+        optimizer.load_state_dict(torch.load(optimizer_checkpoint_path))
+
+        for g in optimizer.param_groups:
+            g['lr'] = args.learning_rate
 
     # Train the model
     train_history = {"loss": [], "val_loss": [], "accuracy": [], "val_accuracy": [], "precision": [], "val_precision": [], "recall": [], "val_recall": []}
@@ -56,6 +70,23 @@ if __name__ == "__main__":
     rotation_augmentation = args.rotation_augmentation
     epochs_per_save = args.epochs_per_save
     gradient_accumulation_steps = args.gradient_accumulation_steps
+    image_pixels_round = 2 ** args.pyramid_height
+
+    model_config = {
+        "model": "model_simple_unet",
+        "epochs": num_epochs,
+        "rotation_augmentation": rotation_augmentation,
+        "batch_size": batch_size,
+        "learning_rate": args.learning_rate,
+        "epochs_per_save": epochs_per_save,
+        "gradient_accumulation_steps": gradient_accumulation_steps,
+        "use_batch_norm": args.use_batch_norm,
+        "use_res_conv": args.use_res_conv,
+        "hidden_channels": args.hidden_channels,
+        "pyramid_height": args.pyramid_height
+    }
+    for key, value in extra_info.items():
+        model_config[key] = value
 
     # Compute the number of positive and negative pixels in the training data
     with torch.no_grad():
@@ -121,8 +152,8 @@ if __name__ == "__main__":
                     xmin = int(image_width // 2 - image_width * lims)
                     xmax = int(image_width // 2 + image_width * lims)
 
-                    xmax = 16 * ((xmax - xmin) // 16) + xmin
-                    ymax = 16 * ((ymax - ymin) // 16) + ymin
+                    xmax = image_pixels_round * ((xmax - xmin) // image_pixels_round) + xmin
+                    ymax = image_pixels_round * ((ymax - ymin) // image_pixels_round) + ymin
 
                     train_image_data_batch = train_image_data_batch[:, :, ymin:ymax, xmin:xmax]
                     train_image_ground_truth_batch = train_image_ground_truth_batch[:, ymin:ymax, xmin:xmax]
@@ -239,17 +270,25 @@ if __name__ == "__main__":
     # Save the training history by converting it to a dataframe
     train_history = pd.DataFrame(train_history)
     train_history.to_csv(os.path.join(model_dir, "train_history.csv"), index=False)
+    # Save the model config
+    with open(os.path.join(model_dir, "config.json"), "w") as f:
+        json.dump(model_config, f)
 
     # Plot the training history
-    plt.figure(figsize=(20, 10))
-    plt.plot(train_history["loss"], label="Loss")
-    plt.plot(train_history["val_loss"], label="Val Loss")
-    plt.plot(train_history["accuracy"], label="Accuracy")
-    plt.plot(train_history["val_accuracy"], label="Val Accuracy")
-    plt.plot(train_history["precision"], label="Precision")
-    plt.plot(train_history["val_precision"], label="Val Precision")
-    plt.plot(train_history["recall"], label="Recall")
-    plt.plot(train_history["val_recall"], label="Val Recall")
-    plt.legend()
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+    ax1.plot(train_history["loss"], label="Loss")
+    ax1.plot(train_history["val_loss"], label="Val Loss")
+    ax2.plot(train_history["accuracy"], label="Accuracy")
+    ax2.plot(train_history["val_accuracy"], label="Val Accuracy")
+    ax2.plot(train_history["precision"], label="Precision")
+    ax2.plot(train_history["val_precision"], label="Val Precision")
+    ax2.plot(train_history["recall"], label="Recall")
+    ax2.plot(train_history["val_recall"], label="Val Recall")
+    ax1.set_xlabel("Epoch")
+    ax1.set_ylabel("Loss")
+    ax2.set_xlabel("Epoch")
+    ax2.set_ylabel("Metric")
+    ax1.legend()
+    ax2.legend()
 
-    plt.show()
+    plt.savefig(os.path.join(model_dir, "train_history.png"))

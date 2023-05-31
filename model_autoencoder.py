@@ -27,6 +27,7 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate to use. Default 1e-5.")
     parser.add_argument("--epochs_per_save", type=int, default=2, help="Number of epochs between saves. Default 2.")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Number of gradient accumulation steps. Default 1. If set to -1, accumulate for the whole dataset.")
+    parser.add_argument("--use_batch_norm", action="store_true", help="Whether to use batch normalization. Default False.")
 
     image_width = 512
     image_height = 512
@@ -46,14 +47,14 @@ if __name__ == "__main__":
         assert type(validation_entries) == list
         validation_entries = np.array(validation_entries, dtype=object)
 
-    model_encoder = model_unet_base.UNetEncoder(hidden_channels=64, in_channels=3).to(device=config.device)
-    model_decoder = model_unet_base.UNetDecoder(hidden_channels=64, in_channels=3).to(device=config.device)
+    model_encoder = model_unet_base.UNetEncoder(hidden_channels=64, in_channels=3, use_batch_norm=args.use_batch_norm).to(device=config.device)
+    model_decoder = model_unet_base.UNetDecoder(hidden_channels=64, in_channels=3, use_batch_norm=args.use_batch_norm).to(device=config.device)
     optimizer = torch.optim.Adam(list(model_encoder.parameters()) + list(model_decoder.parameters()), lr=args.learning_rate)
     scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=1.0, total_iters=10)
 
     # Train the model
     if requires_validation:
-        train_history = {"loss": [], "val_loss": [], "max_loss": [], "val_max_loss": [], "batch_max_loss": [], "val_batch_max_loss": []}
+        train_history = {"loss": [], "val_loss": [], "max_loss": [], "val_max_loss": [], "batch_max_loss": [], "val_batch_max_loss": [], "L1_loss": [], "val_L1_loss": []}
     else:
         train_history = {"loss": [], "max_loss": [], "batch_max_loss": []}
 
@@ -72,6 +73,7 @@ if __name__ == "__main__":
         total_loss = 0.0
         total_max_loss = 0.0
         total_batch_max_loss = 0.0
+        total_L1_loss = 0.0
 
         # Shuffle
         training_entries_shuffle = rng.permutation(training_entries)
@@ -122,6 +124,7 @@ if __name__ == "__main__":
             total_loss += loss.item()
             total_max_loss = max(total_max_loss, torch.max(diff).item())
             total_batch_max_loss += torch.sum(torch.amax(diff, dim=[1, 2, 3])).item()
+            total_L1_loss += torch.sum(diff).item()
 
             trained += batch_size
 
@@ -139,10 +142,12 @@ if __name__ == "__main__":
 
         total_loss /= len(training_entries)
         total_batch_max_loss /= len(training_entries)
+        total_L1_loss /= (len(training_entries) * image_height * image_width * 3)
 
         train_history["loss"].append(total_loss)
         train_history["max_loss"].append(total_max_loss)
         train_history["batch_max_loss"].append(total_batch_max_loss)
+        train_history["L1_loss"].append(total_L1_loss)
 
         # Test the model
         if requires_validation:
@@ -151,6 +156,7 @@ if __name__ == "__main__":
                 total_loss = 0.0
                 total_max_loss = 0.0
                 total_batch_max_loss = 0.0
+                total_L1_loss = 0.0
                 while tested < len(validation_entries):
                     batch_end = min(tested + batch_size, len(validation_entries))
                     test_image_data_batch = torch.zeros((batch_end - tested, 3, image_height, image_width), dtype=torch.float32, device=config.device)
@@ -167,25 +173,30 @@ if __name__ == "__main__":
                     total_loss += loss.item()
                     total_max_loss = max(total_max_loss, torch.max(diff).item())
                     total_batch_max_loss += torch.sum(torch.amax(diff, dim=[1, 2, 3])).item()
+                    total_L1_loss += torch.sum(diff).item()
 
                     tested += batch_size
 
                 total_loss /= len(validation_entries)
                 total_batch_max_loss /= len(validation_entries)
+                total_L1_loss /= (len(validation_entries) * image_height * image_width * 3)
 
                 train_history["val_loss"].append(total_loss)
                 train_history["val_max_loss"].append(total_max_loss)
                 train_history["val_batch_max_loss"].append(total_batch_max_loss)
+                train_history["val_L1_loss"].append(total_L1_loss)
 
         print("Time Elapsed: {}".format(time.time() - ctime))
         print("Epoch: {}/{}".format(epoch, num_epochs))
         print("Loss: {}".format(train_history["loss"][-1]))
         print("Max Loss: {}".format(train_history["max_loss"][-1]))
         print("Batch Max Loss: {}".format(train_history["batch_max_loss"][-1]))
+        print("L1 Loss: {}".format(train_history["L1_loss"][-1]))
         if requires_validation:
             print("Val Loss: {}".format(train_history["val_loss"][-1]))
             print("Val Max Loss: {}".format(train_history["val_max_loss"][-1]))
             print("Val Batch Max Loss: {}".format(train_history["val_batch_max_loss"][-1]))
+            print("Val L1 Loss: {}".format(train_history["val_L1_loss"][-1]))
         print("")
         ctime = time.time()
 
@@ -211,16 +222,25 @@ if __name__ == "__main__":
     train_history = pd.DataFrame(train_history)
     train_history.to_csv(os.path.join(model_dir, "train_history.csv"), index=False)
 
-    # Plot the training history
-    plt.figure(figsize=(20, 10))
-    plt.plot(train_history["loss"], label="Loss")
-    plt.plot(train_history["val_loss"], label="Val Loss")
-    plt.plot(train_history["accuracy"], label="Accuracy")
-    plt.plot(train_history["val_accuracy"], label="Val Accuracy")
-    plt.plot(train_history["precision"], label="Precision")
-    plt.plot(train_history["val_precision"], label="Val Precision")
-    plt.plot(train_history["recall"], label="Recall")
-    plt.plot(train_history["val_recall"], label="Val Recall")
-    plt.legend()
+    # Plot the training history, create figure with top and bottom subplots
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+    ax1.plot(train_history["loss"], label="Training Loss")
+    ax1.plot(train_history["val_loss"], label="Validation Loss")
+    ax2.plot(train_history["max_loss"], label="Training Max Loss")
+    ax2.plot(train_history["val_max_loss"], label="Validation Max Loss")
+    ax2.plot(train_history["batch_max_loss"], label="Training Batch Max Loss")
+    ax2.plot(train_history["val_batch_max_loss"], label="Validation Batch Max Loss")
+    ax2.plot(train_history["L1_loss"], label="Training L1 Loss")
+    ax2.plot(train_history["val_L1_loss"], label="Validation L1 Loss")
+    ax1.set_title("Training and Validation Loss")
+    ax2.set_title("Training and Validation Metrics")
+    ax1.set_xlabel("Epoch")
+    ax2.set_xlabel("Epoch")
+    ax1.set_ylabel("Loss")
+    ax2.set_ylabel("Loss")
+    ax1.legend()
+    ax2.legend()
+    fig.savefig(os.path.join(model_dir, "train_history.png"))
 
-    plt.show()
+
+
