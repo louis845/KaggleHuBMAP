@@ -132,6 +132,14 @@ def dataset_exists(data_name):
 def list_datasets():
     return os.listdir(transformed_data_dir)
 
+def list_subdata():
+    return [subdata[:-5] for subdata in os.listdir(subdata_dir)]
+
+def get_subdata_entry_list(subdata):
+    with open(os.path.join(subdata_dir, subdata + ".json")) as json_file:
+        subdata_json = json.load(json_file)
+    return subdata_json["entry_list"]
+
 def model_add_argparse_arguments(parser, allow_missing_validation=False):
     parser.add_argument("--model_name", type=str, required=True, help="The name of the model.")
     parser.add_argument("--dataset", type=str, help="The dataset to be trained on.")

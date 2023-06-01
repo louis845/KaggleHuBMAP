@@ -59,9 +59,11 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         # Create the list of checkboxes indicating which datasets to be shown, and the list of buttons to show the data visualizations. First split the left selection area into two vertical halves, one for the list of checkboxes and one for the list of buttons.
         # The list of checkboxes is a QWidget, and the list of buttons is a QScrollArea.
         self.checkboxes_widget = PyQt5.QtWidgets.QWidget(self.left_selection_area)
-        self.checkboxes_widget.setGeometry(0, 0, 150, 1080)
+        self.checkboxes_widget.setGeometry(0, 100, 150, 980)
         self.buttons_scroll_area = PyQt5.QtWidgets.QScrollArea(self.left_selection_area)
-        self.buttons_scroll_area.setGeometry(150, 0, 150, 1080)
+        self.buttons_scroll_area.setGeometry(150, 100, 150, 980)
+        self.subdata_restriction = PyQt5.QtWidgets.QComboBox(self.left_selection_area)
+        self.subdata_restriction.setGeometry(0, 0, 300, 100)
         self.buttons_scroll_area.setVerticalScrollBarPolicy(PyQt5.QtCore.Qt.ScrollBarAlwaysOn)
         self.buttons_scroll_area.setHorizontalScrollBarPolicy(PyQt5.QtCore.Qt.ScrollBarAlwaysOff)
         self.buttons_scroll_area.setWidgetResizable(True)
@@ -128,14 +130,26 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         for dataset in model_data_manager.list_datasets():
             self.comparison_segmentation_dropdown.addItem(dataset)
 
+        # Loop through the existing subdata, set the options for the subdata dropdown.
+        self.subdata_restriction.addItem("None")
+        for subdata in model_data_manager.list_subdata():
+            self.subdata_restriction.addItem(subdata)
 
+        self.subdata_restriction.currentIndexChanged.connect(self.checkbox_clicked)
 
 
     def checkbox_clicked(self):
         # Loop through all the buttons, and hide/show the buttons depending on which checkboxes are checked.
+        subdata_chosen = str(self.subdata_restriction.currentText())
+        if subdata_chosen != "None":
+            subdata_list = model_data_manager.get_subdata_entry_list(subdata_chosen)
+
         for button in self.buttons:
             button_dataset = model_data_manager.data_information.loc[button.text(), "dataset"]
             visible = self.dataset_checkboxes[button_dataset].isChecked() and self.wsi_checkboxes[model_data_manager.data_information.loc[button.text(), "source_wsi"]].isChecked()
+            if subdata_chosen != "None":
+                visible = visible and (str(button.text()) in subdata_list)
+
             button.setVisible(visible)
 
     def selection_button_clicked(self, clicked_data_entry):

@@ -18,6 +18,7 @@ import torchvision.transforms.functional
 
 import model_data_manager
 import model_unet_base
+import model_unet_plus
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a simple U-Net model")
@@ -31,6 +32,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_res_conv", action="store_true", help="Whether to use deeper residual convolutional networks. Default False.")
     parser.add_argument("--hidden_channels", type=int, default=64, help="Number of hidden channels to use. Default 64.")
     parser.add_argument("--pyramid_height", type=int, default=4, help="Number of pyramid levels to use. Default 4.")
+    parser.add_argument("--unet_plus", type=str, default="none", help="Whether to use unet plus plus. Available options: none, standard, or deep_supervision. Default none.")
 
     image_width = 512
     image_height = 512
@@ -45,8 +47,19 @@ if __name__ == "__main__":
     training_entries = np.array(training_entries, dtype=object)
     validation_entries = np.array(validation_entries, dtype=object)
 
-    model = model_unet_base.UNetClassifier(hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
-                                           use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height).to(device=config.device)
+    net_mode = args.unet_plus.lower()
+    if net_mode not in ["none", "standard", "deep_supervision"]:
+        print("Invalid unet plus mode. The available options are: none, standard, or deep_supervision.")
+        exit(1)
+
+    use_deep_supervision = (net_mode == "deep_supervision")
+    if net_mode == "none":
+        model = model_unet_base.UNetClassifier(hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
+                                               use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height).to(device=config.device)
+    else:
+        model = model_unet_plus.UNetClassifier(hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
+                                                  use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
+                                                  use_deep_supervision=use_deep_supervision).to(device=config.device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=1.0, total_iters=10)
 
@@ -61,7 +74,17 @@ if __name__ == "__main__":
             g['lr'] = args.learning_rate
 
     # Train the model
-    train_history = {"loss": [], "val_loss": [], "accuracy": [], "val_accuracy": [], "precision": [], "val_precision": [], "recall": [], "val_recall": []}
+    if use_deep_supervision:
+        train_history = {"loss": [], "val_loss": []}
+        for i in range(args.pyramid_height):
+            train_history["accuracy_{}".format(i)] = []
+            train_history["val_accuracy_{}".format(i)] = []
+            train_history["precision_{}".format(i)] = []
+            train_history["val_precision_{}".format(i)] = []
+            train_history["recall_{}".format(i)] = []
+            train_history["val_recall_{}".format(i)] = []
+    else:
+        train_history = {"loss": [], "val_loss": [], "accuracy": [], "val_accuracy": [], "precision": [], "val_precision": [], "recall": [], "val_recall": []}
 
     loss_function = torch.nn.BCELoss(reduction="none")
 
@@ -83,7 +106,8 @@ if __name__ == "__main__":
         "use_batch_norm": args.use_batch_norm,
         "use_res_conv": args.use_res_conv,
         "hidden_channels": args.hidden_channels,
-        "pyramid_height": args.pyramid_height
+        "pyramid_height": args.pyramid_height,
+        "unet_plus": args.unet_plus
     }
     for key, value in extra_info.items():
         model_config[key] = value
@@ -116,7 +140,13 @@ if __name__ == "__main__":
         # Split the training data into batches
         trained = 0
         total_loss = 0.0
-        true_negative, true_positive, false_negative, false_positive = 0, 0, 0, 0
+        if use_deep_supervision:
+            true_negative_per_level = [0] * args.pyramid_height
+            true_positive_per_level = [0] * args.pyramid_height
+            false_negative_per_level = [0] * args.pyramid_height
+            false_positive_per_level = [0] * args.pyramid_height
+        else:
+            true_negative, true_positive, false_negative, false_positive = 0, 0, 0, 0
 
         # Shuffle
         training_entries_shuffle = rng.permutation(training_entries)
@@ -163,16 +193,35 @@ if __name__ == "__main__":
 
 
             y_pred = model(train_image_data_batch)
-            loss = loss_function(y_pred, train_image_ground_truth_batch)
-            # Weighted loss, with precomputed weights
-            loss = torch.sum((positive_weight * train_image_ground_truth_batch * loss) + (negative_weight * (1.0 - train_image_ground_truth_batch) * loss))
-            loss.backward()
-            total_loss += loss.item()
 
-            true_positive += int(torch.sum((y_pred > 0.5) & (train_image_ground_truth_batch == 1)).item())
-            true_negative += int(torch.sum((y_pred <= 0.5) & (train_image_ground_truth_batch == 0)).item())
-            false_positive += int(torch.sum((y_pred > 0.5) & (train_image_ground_truth_batch == 0)).item())
-            false_negative += int(torch.sum((y_pred <= 0.5) & (train_image_ground_truth_batch == 1)).item())
+            if use_deep_supervision:
+                loss = 0.0
+                for k in range(args.pyramid_height):
+                    y_pred_level = y_pred[k]
+                    loss_level = loss_function(y_pred_level, train_image_ground_truth_batch)
+                    # Weighted loss, with precomputed weights
+                    loss = torch.sum((positive_weight * train_image_ground_truth_batch * loss_level) + (
+                                negative_weight * (1.0 - train_image_ground_truth_batch) * loss_level)) + loss
+
+
+                    true_positive_per_level[k] += int(torch.sum((y_pred_level > 0.5) & (train_image_ground_truth_batch == 1)).item())
+                    true_negative_per_level[k] += int(torch.sum((y_pred_level <= 0.5) & (train_image_ground_truth_batch == 0)).item())
+                    false_positive_per_level[k] += int(torch.sum((y_pred_level > 0.5) & (train_image_ground_truth_batch == 0)).item())
+                    false_negative_per_level[k] += int(torch.sum((y_pred_level <= 0.5) & (train_image_ground_truth_batch == 1)).item())
+
+                total_loss += loss.item()
+                loss.backward()
+            else:
+                loss = loss_function(y_pred, train_image_ground_truth_batch)
+                # Weighted loss, with precomputed weights
+                loss = torch.sum((positive_weight * train_image_ground_truth_batch * loss) + (negative_weight * (1.0 - train_image_ground_truth_batch) * loss))
+                loss.backward()
+                total_loss += loss.item()
+
+                true_positive += int(torch.sum((y_pred > 0.5) & (train_image_ground_truth_batch == 1)).item())
+                true_negative += int(torch.sum((y_pred <= 0.5) & (train_image_ground_truth_batch == 0)).item())
+                false_positive += int(torch.sum((y_pred > 0.5) & (train_image_ground_truth_batch == 0)).item())
+                false_negative += int(torch.sum((y_pred <= 0.5) & (train_image_ground_truth_batch == 1)).item())
 
             trained += batch_size
 
@@ -190,21 +239,40 @@ if __name__ == "__main__":
 
         total_loss /= len(training_entries)
         train_history["loss"].append(total_loss)
-        train_history["accuracy"].append((true_positive + true_negative) / (true_positive + true_negative + false_positive + false_negative))
-        if true_positive + false_positive == 0:
-            train_history["precision"].append(0.0)
+        if use_deep_supervision:
+            for k in range(args.pyramid_height):
+                train_history["accuracy_" + str(k)].append((true_positive_per_level[k] + true_negative_per_level[k])
+                                                           / (true_positive_per_level[k] + true_negative_per_level[k] + false_positive_per_level[k] + false_negative_per_level[k]))
+                if true_positive_per_level[k] + false_positive_per_level[k] == 0:
+                    train_history["precision_" + str(k)].append(0.0)
+                else:
+                    train_history["precision_" + str(k)].append(true_positive_per_level[k] / (true_positive_per_level[k] + false_positive_per_level[k]))
+                if true_positive_per_level[k] + false_negative_per_level[k] == 0:
+                    train_history["recall_" + str(k)].append(0.0)
+                else:
+                    train_history["recall_" + str(k)].append(true_positive_per_level[k] / (true_positive_per_level[k] + false_negative_per_level[k]))
         else:
-            train_history["precision"].append(true_positive / (true_positive + false_positive))
-        if true_positive + false_negative == 0:
-            train_history["recall"].append(0.0)
-        else:
-            train_history["recall"].append(true_positive / (true_positive + false_negative))
+            train_history["accuracy"].append((true_positive + true_negative) / (true_positive + true_negative + false_positive + false_negative))
+            if true_positive + false_positive == 0:
+                train_history["precision"].append(0.0)
+            else:
+                train_history["precision"].append(true_positive / (true_positive + false_positive))
+            if true_positive + false_negative == 0:
+                train_history["recall"].append(0.0)
+            else:
+                train_history["recall"].append(true_positive / (true_positive + false_negative))
 
         # Test the model
         with torch.no_grad():
             tested = 0
             total_loss = 0.0
-            true_negative, true_positive, false_negative, false_positive = 0, 0, 0, 0
+            if use_deep_supervision:
+                true_positive_per_level = [0] * args.pyramid_height
+                true_negative_per_level = [0] * args.pyramid_height
+                false_positive_per_level = [0] * args.pyramid_height
+                false_negative_per_level = [0] * args.pyramid_height
+            else:
+                true_negative, true_positive, false_negative, false_positive = 0, 0, 0, 0
             while tested < len(validation_entries):
                 batch_end = min(tested + batch_size, len(validation_entries))
                 test_image_data_batch = torch.zeros((batch_end - tested, 3, image_height, image_width), dtype=torch.float32, device=config.device)
@@ -215,40 +283,74 @@ if __name__ == "__main__":
                     test_image_ground_truth_batch[k - tested, :, :] = torch.tensor(dataset_loader.get_segmentation_masks(validation_entries[k])["blood_vessel"], dtype=torch.float32, device=config.device)
 
                 y_pred = model(test_image_data_batch)
-                loss = loss_function(y_pred, test_image_ground_truth_batch)
-                # Weighted loss, with precomputed weights
-                loss = torch.sum((positive_weight * test_image_ground_truth_batch * loss) + (negative_weight * (1.0 - test_image_ground_truth_batch) * loss))
-                total_loss += loss.item()
 
-                true_positive += int(torch.sum((y_pred > 0.5) & (test_image_ground_truth_batch == 1)).item())
-                true_negative += int(torch.sum((y_pred <= 0.5) & (test_image_ground_truth_batch == 0)).item())
-                false_positive += int(torch.sum((y_pred > 0.5) & (test_image_ground_truth_batch == 0)).item())
-                false_negative += int(torch.sum((y_pred <= 0.5) & (test_image_ground_truth_batch == 1)).item())
+                if use_deep_supervision:
+                    for k in range(args.pyramid_height):
+                        loss = loss_function(y_pred[k], test_image_ground_truth_batch)
+                        # Weighted loss, with precomputed weights
+                        loss = torch.sum((positive_weight * test_image_ground_truth_batch * loss) + (negative_weight * (1.0 - test_image_ground_truth_batch) * loss))
+                        total_loss += loss.item()
+
+                        true_positive_per_level[k] += int(torch.sum((y_pred[k] > 0.5) & (test_image_ground_truth_batch == 1)).item())
+                        true_negative_per_level[k] += int(torch.sum((y_pred[k] <= 0.5) & (test_image_ground_truth_batch == 0)).item())
+                        false_positive_per_level[k] += int(torch.sum((y_pred[k] > 0.5) & (test_image_ground_truth_batch == 0)).item())
+                        false_negative_per_level[k] += int(torch.sum((y_pred[k] <= 0.5) & (test_image_ground_truth_batch == 1)).item())
+                else:
+                    loss = loss_function(y_pred, test_image_ground_truth_batch)
+                    # Weighted loss, with precomputed weights
+                    loss = torch.sum((positive_weight * test_image_ground_truth_batch * loss) + (negative_weight * (1.0 - test_image_ground_truth_batch) * loss))
+                    total_loss += loss.item()
+
+                    true_positive += int(torch.sum((y_pred > 0.5) & (test_image_ground_truth_batch == 1)).item())
+                    true_negative += int(torch.sum((y_pred <= 0.5) & (test_image_ground_truth_batch == 0)).item())
+                    false_positive += int(torch.sum((y_pred > 0.5) & (test_image_ground_truth_batch == 0)).item())
+                    false_negative += int(torch.sum((y_pred <= 0.5) & (test_image_ground_truth_batch == 1)).item())
 
                 tested += batch_size
 
             total_loss /= len(validation_entries)
             train_history["val_loss"].append(total_loss)
-            train_history["val_accuracy"].append((true_positive + true_negative) / (true_positive + true_negative + false_positive + false_negative))
-            if true_positive + false_positive == 0:
-                train_history["val_precision"].append(0.0)
+            if use_deep_supervision:
+                for k in range(args.pyramid_height):
+                    train_history["val_accuracy_" + str(k)].append((true_positive_per_level[k] + true_negative_per_level[k]) / (true_positive_per_level[k] + true_negative_per_level[k] + false_positive_per_level[k] + false_negative_per_level[k]))
+                    if true_positive_per_level[k] + false_positive_per_level[k] == 0:
+                        train_history["val_precision_" + str(k)].append(0.0)
+                    else:
+                        train_history["val_precision_" + str(k)].append(true_positive_per_level[k] / (true_positive_per_level[k] + false_positive_per_level[k]))
+                    if true_positive_per_level[k] + false_negative_per_level[k] == 0:
+                        train_history["val_recall_" + str(k)].append(0.0)
+                    else:
+                        train_history["val_recall_" + str(k)].append(true_positive_per_level[k] / (true_positive_per_level[k] + false_negative_per_level[k]))
             else:
-                train_history["val_precision"].append(true_positive / (true_positive + false_positive))
-            if true_positive + false_negative == 0:
-                train_history["val_recall"].append(0.0)
-            else:
-                train_history["val_recall"].append(true_positive / (true_positive + false_negative))
+                train_history["val_accuracy"].append((true_positive + true_negative) / (true_positive + true_negative + false_positive + false_negative))
+                if true_positive + false_positive == 0:
+                    train_history["val_precision"].append(0.0)
+                else:
+                    train_history["val_precision"].append(true_positive / (true_positive + false_positive))
+                if true_positive + false_negative == 0:
+                    train_history["val_recall"].append(0.0)
+                else:
+                    train_history["val_recall"].append(true_positive / (true_positive + false_negative))
 
         print("Time Elapsed: {}".format(time.time() - ctime))
         print("Epoch: {}/{}".format(epoch, num_epochs))
         print("Loss: {}".format(train_history["loss"][-1]))
         print("Val Loss: {}".format(train_history["val_loss"][-1]))
-        print("Accuracy: {}".format(train_history["accuracy"][-1]))
-        print("Val Accuracy: {}".format(train_history["val_accuracy"][-1]))
-        print("Precision: {}".format(train_history["precision"][-1]))
-        print("Val Precision: {}".format(train_history["val_precision"][-1]))
-        print("Recall: {}".format(train_history["recall"][-1]))
-        print("Val Recall: {}".format(train_history["val_recall"][-1]))
+        if use_deep_supervision:
+            k = args.pyramid_height - 1
+            print("Accuracy {}: {}".format(k, train_history["accuracy_" + str(k)][-1]))
+            print("Val Accuracy {}: {}".format(k, train_history["val_accuracy_" + str(k)][-1]))
+            print("Precision {}: {}".format(k, train_history["precision_" + str(k)][-1]))
+            print("Val Precision {}: {}".format(k, train_history["val_precision_" + str(k)][-1]))
+            print("Recall {}: {}".format(k, train_history["recall_" + str(k)][-1]))
+            print("Val Recall {}: {}".format(k, train_history["val_recall_" + str(k)][-1]))
+        else:
+            print("Accuracy: {}".format(train_history["accuracy"][-1]))
+            print("Val Accuracy: {}".format(train_history["val_accuracy"][-1]))
+            print("Precision: {}".format(train_history["precision"][-1]))
+            print("Val Precision: {}".format(train_history["val_precision"][-1]))
+            print("Recall: {}".format(train_history["recall"][-1]))
+            print("Val Recall: {}".format(train_history["val_recall"][-1]))
         print("Learning Rate: {}".format(scheduler.get_lr()))
         print("")
         ctime = time.time()
@@ -274,21 +376,46 @@ if __name__ == "__main__":
     with open(os.path.join(model_dir, "config.json"), "w") as f:
         json.dump(model_config, f)
 
-    # Plot the training history
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
-    ax1.plot(train_history["loss"], label="Loss")
-    ax1.plot(train_history["val_loss"], label="Val Loss")
-    ax2.plot(train_history["accuracy"], label="Accuracy")
-    ax2.plot(train_history["val_accuracy"], label="Val Accuracy")
-    ax2.plot(train_history["precision"], label="Precision")
-    ax2.plot(train_history["val_precision"], label="Val Precision")
-    ax2.plot(train_history["recall"], label="Recall")
-    ax2.plot(train_history["val_recall"], label="Val Recall")
-    ax1.set_xlabel("Epoch")
-    ax1.set_ylabel("Loss")
-    ax2.set_xlabel("Epoch")
-    ax2.set_ylabel("Metric")
-    ax1.legend()
-    ax2.legend()
+    # Plot the training history. If we use deep supervision we create args.pyramid_height + 1 number of plots.
+    if use_deep_supervision:
+        fig, axes = plt.subplots(args.pyramid_height + 1, 1, figsize=(12, 4 * (args.pyramid_height + 1)))
+        axes[0].plot(train_history["loss"], label="Loss")
+        axes[0].plot(train_history["val_loss"], label="Val Loss")
+        for k in range(args.pyramid_height):
+            axes[k+1].plot(train_history["accuracy_" + str(k)], label="Accuracy")
+            axes[k+1].plot(train_history["val_accuracy_" + str(k)], label="Val Accuracy")
+            axes[k+1].plot(train_history["precision_" + str(k)], label="Precision")
+            axes[k+1].plot(train_history["val_precision_" + str(k)], label="Val Precision")
+            axes[k+1].plot(train_history["recall_" + str(k)], label="Recall")
+            axes[k+1].plot(train_history["val_recall_" + str(k)], label="Val Recall")
 
-    plt.savefig(os.path.join(model_dir, "train_history.png"))
+        axes[0].set_xlabel("Epoch")
+        axes[0].set_ylabel("Loss")
+
+        for k in range(args.pyramid_height):
+            axes[k+1].set_xlabel("Epoch")
+            axes[k+1].set_ylabel("Metric")
+            axes[k+1].set_title("Level {}".format(k))
+            axes[k+1].legend()
+
+        axes[0].legend()
+
+        plt.savefig(os.path.join(model_dir, "train_history.png"))
+    else:
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+        ax1.plot(train_history["loss"], label="Loss")
+        ax1.plot(train_history["val_loss"], label="Val Loss")
+        ax2.plot(train_history["accuracy"], label="Accuracy")
+        ax2.plot(train_history["val_accuracy"], label="Val Accuracy")
+        ax2.plot(train_history["precision"], label="Precision")
+        ax2.plot(train_history["val_precision"], label="Val Precision")
+        ax2.plot(train_history["recall"], label="Recall")
+        ax2.plot(train_history["val_recall"], label="Val Recall")
+        ax1.set_xlabel("Epoch")
+        ax1.set_ylabel("Loss")
+        ax2.set_xlabel("Epoch")
+        ax2.set_ylabel("Metric")
+        ax1.legend()
+        ax2.legend()
+
+        plt.savefig(os.path.join(model_dir, "train_history.png"))
