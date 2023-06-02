@@ -19,6 +19,7 @@ import torchvision.transforms.functional
 import model_data_manager
 import model_unet_base
 import model_unet_plus
+import model_unet_attention
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a simple U-Net model")
@@ -33,6 +34,8 @@ if __name__ == "__main__":
     parser.add_argument("--hidden_channels", type=int, default=64, help="Number of hidden channels to use. Default 64.")
     parser.add_argument("--pyramid_height", type=int, default=4, help="Number of pyramid levels to use. Default 4.")
     parser.add_argument("--unet_plus", type=str, default="none", help="Whether to use unet plus plus. Available options: none, standard, or deep_supervision. Default none.")
+    parser.add_argument("--unet_attention", action="store_true", help="Whether to use attention in the U-Net. Default False. Cannot be used with unet_plus.")
+    parser.add_argument("--in_channels", type=int, default=64, help="Number of input channels to use. Default 3.")
 
     image_width = 512
     image_height = 512
@@ -51,15 +54,22 @@ if __name__ == "__main__":
     if net_mode not in ["none", "standard", "deep_supervision"]:
         print("Invalid unet plus mode. The available options are: none, standard, or deep_supervision.")
         exit(1)
+    if net_mode != "none" and args.unet_attention:
+        print("Cannot use attention with unet plus.")
+        exit(1)
 
     use_deep_supervision = (net_mode == "deep_supervision")
     if net_mode == "none":
-        model = model_unet_base.UNetClassifier(hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
-                                               use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height).to(device=config.device)
+        if args.unet_attention:
+            model = model_unet_attention.UNetClassifier(hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
+                                                   use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height, in_channels=args.in_channels).to(device=config.device)
+        else:
+            model = model_unet_base.UNetClassifier(hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
+                                                   use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height, in_channels=args.in_channels).to(device=config.device)
     else:
         model = model_unet_plus.UNetClassifier(hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                   use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
-                                                  use_deep_supervision=use_deep_supervision).to(device=config.device)
+                                                  use_deep_supervision=use_deep_supervision, in_channels=args.in_channels).to(device=config.device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=1.0, total_iters=10)
 
@@ -94,6 +104,7 @@ if __name__ == "__main__":
     epochs_per_save = args.epochs_per_save
     gradient_accumulation_steps = args.gradient_accumulation_steps
     image_pixels_round = 2 ** args.pyramid_height
+    in_channels = args.in_channels
 
     model_config = {
         "model": "model_simple_unet",
@@ -107,7 +118,9 @@ if __name__ == "__main__":
         "use_res_conv": args.use_res_conv,
         "hidden_channels": args.hidden_channels,
         "pyramid_height": args.pyramid_height,
-        "unet_plus": args.unet_plus
+        "unet_plus": args.unet_plus,
+        "unet_attention": args.unet_attention,
+        "in_channels": args.in_channels,
     }
     for key, value in extra_info.items():
         model_config[key] = value
@@ -161,7 +174,7 @@ if __name__ == "__main__":
                     optimizer.zero_grad()
 
             batch_end = min(trained + batch_size, len(training_entries))
-            train_image_data_batch = torch.zeros((batch_end - trained, 3, image_height, image_width), dtype=torch.float32, device=config.device)
+            train_image_data_batch = torch.zeros((batch_end - trained, in_channels, image_height, image_width), dtype=torch.float32, device=config.device)
             train_image_ground_truth_batch = torch.zeros((batch_end - trained, image_height, image_width), dtype=torch.float32, device=config.device)
 
             for k in range(trained, batch_end):
@@ -275,7 +288,7 @@ if __name__ == "__main__":
                 true_negative, true_positive, false_negative, false_positive = 0, 0, 0, 0
             while tested < len(validation_entries):
                 batch_end = min(tested + batch_size, len(validation_entries))
-                test_image_data_batch = torch.zeros((batch_end - tested, 3, image_height, image_width), dtype=torch.float32, device=config.device)
+                test_image_data_batch = torch.zeros((batch_end - tested, in_channels, image_height, image_width), dtype=torch.float32, device=config.device)
                 test_image_ground_truth_batch = torch.zeros((batch_end - tested, image_height, image_width), dtype=torch.float32, device=config.device)
 
                 for k in range(tested, batch_end):

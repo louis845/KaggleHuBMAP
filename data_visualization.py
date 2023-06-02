@@ -3,6 +3,7 @@
 
 import os
 import json
+import traceback
 import PyQt5
 import PyQt5.QtWidgets
 import PyQt5.QtCore
@@ -192,6 +193,11 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         if model_data_manager.dataset_exists(alt_dataset):
             data_loader = model_data_manager.get_dataset_dataloader(alt_dataset)
             image_transformed = np.array(data_loader.get_image_data(clicked_data_entry))
+
+            if image_transformed.shape[2] == 1:
+                image_transformed = np.repeat(image_transformed, 3, axis=2)
+                image_transformed = image_transformed.astype(dtype=np.uint8)
+
             data_loader.close()
             del data_loader
 
@@ -204,6 +210,9 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
 
                 if len(segmentation_mask.shape) == 2:
                     segmentation_mask = np.repeat(np.expand_dims(segmentation_mask, axis=2), axis=2, repeats=3)
+
+                if segmentation_mask.shape[2] == 1:
+                    segmentation_mask = np.repeat(segmentation_mask, 3, axis=2)
 
                 image_transformed = cv2.addWeighted(image_transformed, 0.5, segmentation_mask, 0.5, 0)
                 del segmentation_mask
@@ -248,13 +257,23 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
 
     def custom_algorithm_button_clicked(self):
         current_tab_title = str(self.tabbed_interface.tabText(self.tabbed_interface.currentIndex()))
-        print(current_tab_title)
 
         # Load the image here
         image = cv2.imread(os.path.join(config.input_data_path, "train", current_tab_title + ".tif"))
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        image2 = self.custom_image_transform(image)
+        image2 = image.copy()
+
+        """segmentation_dataset = str(self.comparison_segmentation_dropdown.currentText())
+        if segmentation_dataset != "None" and model_data_manager.dataset_exists(segmentation_dataset):
+            data_loader = model_data_manager.get_dataset_dataloader(segmentation_dataset)
+            segmentation_mask = np.array(data_loader.get_image_data(current_tab_title))
+            data_loader.close()
+            del data_loader
+
+            image2 = segmentation_mask"""
+
+        image2 = self.custom_image_transform(image2)
 
         # Display both image and image2 in a new popup window belonging to the main window, with QDialong. The main window is blocked until the popup window is closed.
 
@@ -274,29 +293,122 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         popup_window.exec_()
 
     def custom_image_transform(self, image):
-        # This image is a numpy array of shape (height, width, channel) in RGB. The values are uint8. Do k-means on the image, and return the transformed image.
-        # The transformed image should be of the same shape and type as the input image.
+        try:
+            # This image is a numpy array of shape (height, width, channel) RGB image. Do hierarchical clustering with BisectingKMeans on the image into n clusters, and return the image with the clusters colored.
+            n_clusters = 16
 
-        # Convert the image into a 2D array of shape (height * width, channel)
-        height, width, channel = image.shape
-        image_2d = image.reshape((height * width, channel)).astype(np.float64)
+            height, width, channel = image.shape
+            image = np.reshape(image, (height * width, channel)).astype(np.float64)
 
-        # Do k-means on the image
-        kmeans = sklearn.cluster.KMeans(n_clusters=2, random_state=0, n_init=10).fit(image_2d)
+            # Do clustering. cluster_array is a deep nested list representing the cluster tree, where each list has either one or two elements.
+            cluster_tree = {"items": np.ones((height * width), dtype=bool), "center":np.mean(image, axis=0)}
 
-        # Get the cluster centers
-        cluster_centers = kmeans.cluster_centers_
+            for i in range(n_clusters - 1):
+                # Loop through the leaves of the cluster tree, and find the cluster with the largest SSE.
+                # Split the cluster with the largest SSE into two clusters, and add the two clusters into the cluster tree. Use sklearn's KMeans with k=2 to split the cluster.
+                # Repeat until there are n clusters in the cluster tree.
 
-        # Get the labels
-        labels = kmeans.labels_
+                # Find the cluster with the largest SSE.
+                max_sse = -1
+                max_sse_stack = []
 
-        # Get the transformed image
-        image_transformed = cluster_centers[labels].reshape((height, width, channel))
+                # Do preorder traversal on cluster_tree, starting from the root node
+                stack = []
 
-        # Clip the values to be between 0 and 255, and convert the image back to uint8
-        image_transformed = np.clip(image_transformed, 0, 255).astype(np.uint8)
+                while True:
+                    current_node = cluster_tree
+                    for i in stack:
+                        current_node = current_node["subgroups"][i]
 
-        return image_transformed
+                    # Check if the current node is a leaf node
+                    if "subgroups" not in current_node:
+                        sse = np.mean(np.square(image[current_node["items"], :] - current_node["center"]))
+
+                        if sse > max_sse:
+                            max_sse = sse
+                            del max_sse_stack
+                            max_sse_stack = stack.copy()
+
+                        if len(stack) > 0 and stack[-1] == 0:
+                            stack[-1] = 1
+                        else:
+                            while len(stack) > 0 and stack[-1] == 1:
+                                stack.pop()
+                            if len(stack) == 0:
+                                break
+                            stack[-1] = 1
+                    else:
+                        stack.append(0)
+
+                cluster_to_split = cluster_tree
+                for i in max_sse_stack:
+                    cluster_to_split = cluster_to_split["subgroups"][i]
+
+                # Split the cluster with the largest SSE into two clusters, and add the two clusters into the cluster tree. Use sklearn's KMeans with k=2 to split the cluster.
+                image_cluster_colors = image[cluster_to_split["items"], :]
+                cluster_mask = cluster_to_split["items"]
+
+                kmeans = sklearn.cluster.KMeans(n_clusters=2, n_init=10)
+                kmeans.fit(image_cluster_colors)
+
+                first_cluster_items = np.zeros_like(cluster_mask, dtype=bool)
+                second_cluster_items = np.zeros_like(cluster_mask, dtype=bool)
+
+                first_cluster_items[cluster_mask] = kmeans.labels_ == 0
+                second_cluster_items[cluster_mask] = kmeans.labels_ == 1
+                cluster_to_split["subgroups"] = [{"items": first_cluster_items, "center": kmeans.cluster_centers_[0]}, {"items": second_cluster_items, "center": kmeans.cluster_centers_[1]}]
+
+            cluster_stacks = np.empty(shape=n_clusters, dtype=object)
+            cluster_colors = np.zeros(shape=(n_clusters, 1, 3), dtype=np.float64)
+            count = 0
+
+            stack = []
+            while True:
+                current_node = cluster_tree
+                for i in stack:
+                    current_node = current_node["subgroups"][i]
+
+                # Check if the current node is a leaf node
+                if "subgroups" not in current_node:
+                    cluster_stacks[count] = stack.copy()
+                    cluster_colors[count, 0, :] = current_node["center"]
+                    count += 1
+
+                    if len(stack) > 0 and stack[-1] == 0:
+                        stack[-1] = 1
+                    else:
+                        while len(stack) > 0 and stack[-1] == 1:
+                            stack.pop()
+                        if len(stack) == 0:
+                            break
+                        stack[-1] = 1
+                else:
+                    stack.append(0)
+
+            cluster_colors = cv2.cvtColor(cluster_colors.astype(dtype=np.uint8), cv2.COLOR_RGB2HLS)[:, 0, 1]
+            rank = np.argsort(np.argsort(cluster_colors))
+
+            # Assign each pixel to a cluster
+            image_clustered = np.zeros_like(image)
+
+            # Do preorder traversal on cluster_tree, starting from the root node
+            for k in range(cluster_stacks.shape[0]):
+                current_node = cluster_tree
+                for i in cluster_stacks[k]:
+                    current_node = current_node["subgroups"][i]
+                image_clustered[current_node["items"], :] = 255.0 * (rank[k] / (n_clusters - 1))
+
+            image_clustered = np.reshape(image_clustered, (height, width, channel))
+
+            # Clip the image to be between 0 and 255, and convert to uint8
+            image_clustered = np.clip(image_clustered, 0, 255).astype(np.uint8)
+        except Exception as e:
+            # Print in details the error message e and the stack trace
+            traceback.print_exc()
+
+            image_clustered = image
+
+        return image_clustered
 
 
 if __name__ == "__main__":
