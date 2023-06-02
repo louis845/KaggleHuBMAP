@@ -11,8 +11,10 @@ class UNetEndClassifier(torch.nn.Module):
         self.conv_up = torch.nn.ModuleList()
         self.conv_up_transpose = torch.nn.ModuleList()
         self.gate_collection = torch.nn.ModuleList()
+        self.gate_batch_norm = torch.nn.ModuleList()
         self.gate_activation = gate_activation
         self.attention_proj = torch.nn.ModuleList()
+        self.attention_batch_norm = torch.nn.ModuleList()
         self.attention_upsample = torch.nn.Upsample(scale_factor=(2, 2), mode="bilinear")
 
         if use_res_conv:
@@ -28,7 +30,9 @@ class UNetEndClassifier(torch.nn.Module):
 
         for i in range(pyr_height):
             self.gate_collection.append(torch.nn.Conv2d(hidden_channels * (2 ** (pyr_height - i) + 2 ** (pyr_height - i - 1)), hidden_channels * 2 ** (pyr_height - i - 1), kernel_size=1, bias=True))
+            self.gate_batch_norm.append(torch.nn.BatchNorm2d(hidden_channels * 2 ** (pyr_height - i - 1)))
             self.attention_proj.append(torch.nn.Conv2d(hidden_channels * 2 ** (pyr_height - i - 1), 1, kernel_size=1, bias=True))
+            self.attention_batch_norm.append(torch.nn.BatchNorm2d(1))
 
         self.outconv = torch.nn.Conv2d(hidden_channels, 1, 1, bias=True)
         self.sigmoid = torch.nn.Sigmoid()
@@ -41,19 +45,26 @@ class UNetEndClassifier(torch.nn.Module):
         attention_layers = []
 
         # expanding path
-        gate_info = self.gate_activation(self.gate_collection[0](
-            torch.concat([x_list[self.pyr_height], self.maxpool(x_list[self.pyr_height - 1])], dim=1)))
-        attention_layer = self.attention_upsample(self.sigmoid(self.attention_proj[0](gate_info)))
+        gate_info = self.gate_activation(self.gate_batch_norm[0](
+            self.gate_collection[0](torch.concat([x_list[self.pyr_height], self.maxpool(x_list[self.pyr_height - 1])], dim=1))
+        ))
+        attention_layer = self.attention_upsample(self.sigmoid(
+            self.attention_batch_norm[0](self.attention_proj[0](gate_info))
+        ))
         attention_layers.append(attention_layer)
         x = self.conv_up[0](torch.concat(
-            [self.conv_up_transpose[0](x_list[self.pyr_height]), x_list[self.pyr_height - 1]] * attention_layer, dim=1))
+            [self.conv_up_transpose[0](x_list[self.pyr_height]), x_list[self.pyr_height - 1] * attention_layer], dim=1))
+
         for i in range(1, self.pyr_height):
-            gate_info = self.gate_activation(
-                self.gate_collection[i](torch.concat([x, self.maxpool(x_list[self.pyr_height - i - 1])], dim=1)))
-            attention_layer = self.attention_upsample(self.sigmoid(self.attention_proj[i](gate_info)))
+            gate_info = self.gate_activation(self.gate_batch_norm[i](
+                self.gate_collection[i](torch.concat([x, self.maxpool(x_list[self.pyr_height - i - 1])], dim=1))
+            ))
+            attention_layer = self.attention_upsample(self.sigmoid(
+                self.attention_batch_norm[i](self.attention_proj[i](gate_info)))
+            )
             attention_layers.append(attention_layer)
             x = self.conv_up[i](
-                torch.concat([self.conv_up_transpose[i](x), x_list[self.pyr_height - i - 1]] * attention_layer, dim=1))
+                torch.concat([self.conv_up_transpose[i](x), x_list[self.pyr_height - i - 1] * attention_layer], dim=1))
 
 
 

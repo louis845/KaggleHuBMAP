@@ -35,7 +35,7 @@ if __name__ == "__main__":
     parser.add_argument("--pyramid_height", type=int, default=4, help="Number of pyramid levels to use. Default 4.")
     parser.add_argument("--unet_plus", type=str, default="none", help="Whether to use unet plus plus. Available options: none, standard, or deep_supervision. Default none.")
     parser.add_argument("--unet_attention", action="store_true", help="Whether to use attention in the U-Net. Default False. Cannot be used with unet_plus.")
-    parser.add_argument("--in_channels", type=int, default=64, help="Number of input channels to use. Default 3.")
+    parser.add_argument("--in_channels", type=int, default=3, help="Number of input channels to use. Default 3.")
 
     image_width = 512
     image_height = 512
