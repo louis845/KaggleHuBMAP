@@ -71,9 +71,9 @@ class UNetEndClassifier(torch.nn.Module):
 
 class UNetClassifier(torch.nn.Module):
 
-    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, use_deep_supervision=False):
+    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, use_deep_supervision=False, in_channels=3):
         super(UNetClassifier, self).__init__()
-        self.backbone = model_unet_base.UNetBackbone(3, hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height)
+        self.backbone = model_unet_base.UNetBackbone(in_channels, hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height)
         self.classifier = UNetEndClassifier(hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height, use_deep_supervision=use_deep_supervision)
         self.pyr_height = pyr_height
 

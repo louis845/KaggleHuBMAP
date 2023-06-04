@@ -21,6 +21,11 @@ import model_unet_base
 import model_unet_plus
 import model_unet_attention
 
+def dilate(image, kernel):
+    image = np.array(image).astype(dtype=np.uint8)
+    image = cv2.dilate(image, kernel, iterations=1)
+    return image.astype(dtype=np.float32)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a simple U-Net model")
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs to train for. Default 100.")
@@ -36,6 +41,7 @@ if __name__ == "__main__":
     parser.add_argument("--unet_plus", type=str, default="none", help="Whether to use unet plus plus. Available options: none, standard, or deep_supervision. Default none.")
     parser.add_argument("--unet_attention", action="store_true", help="Whether to use attention in the U-Net. Default False. Cannot be used with unet_plus.")
     parser.add_argument("--in_channels", type=int, default=3, help="Number of input channels to use. Default 3.")
+    parser.add_argument("--background_weights_split", action="store_true", help="Whether to use larger weights for close backgrounds. Default False.")
 
     image_width = 512
     image_height = 512
@@ -85,7 +91,7 @@ if __name__ == "__main__":
 
     # Train the model
     if use_deep_supervision:
-        train_history = {"loss": [], "val_loss": []}
+        train_history = {"loss": [], "val_loss": [], "loss_dset1": []}
         for i in range(args.pyramid_height):
             train_history["accuracy_{}".format(i)] = []
             train_history["val_accuracy_{}".format(i)] = []
@@ -94,7 +100,7 @@ if __name__ == "__main__":
             train_history["recall_{}".format(i)] = []
             train_history["val_recall_{}".format(i)] = []
     else:
-        train_history = {"loss": [], "val_loss": [], "accuracy": [], "val_accuracy": [], "precision": [], "val_precision": [], "recall": [], "val_recall": []}
+        train_history = {"loss": [], "val_loss": [], "loss_dset1": [], "accuracy": [], "val_accuracy": [], "precision": [], "val_precision": [], "recall": [], "val_recall": []}
 
     loss_function = torch.nn.BCELoss(reduction="none")
 
@@ -105,6 +111,7 @@ if __name__ == "__main__":
     gradient_accumulation_steps = args.gradient_accumulation_steps
     image_pixels_round = 2 ** args.pyramid_height
     in_channels = args.in_channels
+    background_weights_split = args.background_weights_split
 
     model_config = {
         "model": "model_simple_unet",
@@ -121,27 +128,53 @@ if __name__ == "__main__":
         "unet_plus": args.unet_plus,
         "unet_attention": args.unet_attention,
         "in_channels": args.in_channels,
+        "background_weights_split": args.background_weights_split,
     }
     for key, value in extra_info.items():
         model_config[key] = value
 
     # Compute the number of positive and negative pixels in the training data
+    dilation_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (20, 20))
+
     with torch.no_grad():
         num_positive_pixels = 0
         num_negative_pixels = 0
+        num_dset1_entries = 0
+        if background_weights_split:
+            num_background_negative_pixels = 0
 
         for k in range(len(training_entries)):
-            mask_tensor = torch.tensor(dataset_loader.get_segmentation_masks(training_entries[k])["blood_vessel"], dtype = torch.float32, device = config.device)
-            num_positive_pixels = num_positive_pixels + torch.sum(mask_tensor)
-            num_negative_pixels = num_negative_pixels + torch.sum(1.0 - mask_tensor)
-            del mask_tensor
+            if model_data_manager.data_information.loc[training_entries[k], "dataset"] == 1:
+                num_dset1_entries += 1
+                seg_mask = dataset_loader.get_segmentation_masks(training_entries[k])["blood_vessel"]
+                if background_weights_split:
+                    expanded_seg_mask = dilate(seg_mask, dilation_kernel)
+                    mask_tensor = torch.tensor(seg_mask, dtype=torch.float32, device=config.device)
+                    expanded_mask_tensor = torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device)
+
+                    num_positive_pixels = num_positive_pixels + torch.sum(mask_tensor)
+                    num_negative_pixels = num_negative_pixels + torch.sum(expanded_mask_tensor * (1.0 - mask_tensor))
+                    num_background_negative_pixels = num_background_negative_pixels + torch.sum(1.0 - expanded_mask_tensor)
+
+                    del mask_tensor, expanded_mask_tensor, expanded_seg_mask, seg_mask
+                else:
+                    mask_tensor = torch.tensor(seg_mask, dtype = torch.float32, device = config.device)
+                    num_positive_pixels = num_positive_pixels + torch.sum(mask_tensor)
+                    num_negative_pixels = num_negative_pixels + torch.sum(1.0 - mask_tensor)
+                    del mask_tensor
 
         print("Number of positive pixels: {}".format(num_positive_pixels))
         print("Number of negative pixels: {}".format(num_negative_pixels))
+        if background_weights_split:
+            print("Number of background negative pixels: {}".format(num_background_negative_pixels))
 
         # Compute the class weights
-        positive_weight = num_negative_pixels / (num_positive_pixels + num_negative_pixels)
-        negative_weight = num_positive_pixels / (num_positive_pixels + num_negative_pixels)
+        if background_weights_split:
+            positive_weight = num_background_negative_pixels / (num_positive_pixels - num_negative_pixels + num_background_negative_pixels)
+            negative_weight = (num_positive_pixels - num_negative_pixels) / (num_positive_pixels - num_negative_pixels + num_background_negative_pixels)
+        else:
+            positive_weight = num_negative_pixels / (num_positive_pixels + num_negative_pixels)
+            negative_weight = num_positive_pixels / (num_positive_pixels + num_negative_pixels)
 
         print("Positive weight: {}".format(positive_weight))
         print("Negative weight: {}".format(negative_weight))
@@ -153,6 +186,7 @@ if __name__ == "__main__":
         # Split the training data into batches
         trained = 0
         total_loss = 0.0
+        total_loss_dset1 = 0.0
         if use_deep_supervision:
             true_negative_per_level = [0] * args.pyramid_height
             true_positive_per_level = [0] * args.pyramid_height
@@ -176,16 +210,50 @@ if __name__ == "__main__":
             batch_end = min(trained + batch_size, len(training_entries))
             train_image_data_batch = torch.zeros((batch_end - trained, in_channels, image_height, image_width), dtype=torch.float32, device=config.device)
             train_image_ground_truth_batch = torch.zeros((batch_end - trained, image_height, image_width), dtype=torch.float32, device=config.device)
+            if use_deep_supervision:
+                train_background_weights_batch = torch.zeros((batch_end - trained, args.pyramid_height, image_height, image_width), dtype=torch.float32, device=config.device)
+            else:
+                train_background_weights_batch = torch.zeros((batch_end - trained, image_height, image_width), dtype=torch.float32, device=config.device)
+            train_dataset1_entries = torch.zeros((batch_end - trained, 1, 1), dtype=torch.float32, device=config.device)
 
             for k in range(trained, batch_end):
                 train_image_data_batch[k - trained, :, :, :] = torch.tensor(dataset_loader.get_image_data(training_entries_shuffle[k]), dtype=torch.float32, device=config.device).permute(2, 0, 1)
-                train_image_ground_truth_batch[k - trained, :, :] = torch.tensor(dataset_loader.get_segmentation_masks(training_entries_shuffle[k])["blood_vessel"], dtype=torch.float32, device=config.device)
+                seg_mask = dataset_loader.get_segmentation_masks(training_entries_shuffle[k])["blood_vessel"]
+                train_image_ground_truth_batch[k - trained, :, :] = torch.tensor(seg_mask, dtype=torch.float32, device=config.device)
+                if background_weights_split:
+                    expanded_seg_mask = dilate(seg_mask, dilation_kernel)
+                    expanded_seg_mask = torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device)
+                    if use_deep_supervision:
+                        train_background_weights_batch[k - trained, :, :, :] = torch.linspace(positive_weight, 0.5, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * expanded_seg_mask \
+                                                                               + torch.linspace(negative_weight, 0.5, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * (1.0 - expanded_seg_mask)
+                    else:
+                        train_background_weights_batch[k - trained, :, :] = positive_weight * expanded_seg_mask + negative_weight * (1.0 - expanded_seg_mask)
+                else:
+                    if use_deep_supervision:
+                        train_background_weights_batch[k - trained, :, :, :] = torch.linspace(positive_weight, 0.5, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * train_image_ground_truth_batch[k - trained, :, :]\
+                                                                               + torch.linspace(negative_weight, 0.5, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * (1.0 - train_image_ground_truth_batch[k - trained, :, :])
+                    else:
+                        train_background_weights_batch[k - trained, :, :] = positive_weight * train_image_ground_truth_batch[k - trained, :, :] + negative_weight * (1.0 - train_image_ground_truth_batch[k - trained, :, :])
+
+                if model_data_manager.data_information.loc[training_entries_shuffle[k], "dataset"] != 1:
+                    if not background_weights_split:
+                        expanded_seg_mask = dilate(seg_mask, dilation_kernel)
+                        expanded_seg_mask = torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device)
+
+                    if use_deep_supervision:
+                        train_background_weights_batch[k - trained, :, :, :] = train_background_weights_batch[k - trained, :, :, :] * expanded_seg_mask * 0.75
+                    else:
+                        train_background_weights_batch[k - trained, :, :] = train_background_weights_batch[k - trained, :, :] * expanded_seg_mask * 0.75
+                    train_dataset1_entries[k - trained, 0, 0] = 0.0
+                else:
+                    train_dataset1_entries[k - trained, 0, 0] = 1.0
 
             if rotation_augmentation:
                 angle_in_deg = np.random.uniform(0, 360)
                 with torch.no_grad():
                     train_image_data_batch = torchvision.transforms.functional.rotate(train_image_data_batch, angle_in_deg)
                     train_image_ground_truth_batch = torchvision.transforms.functional.rotate(train_image_ground_truth_batch, angle_in_deg)
+                    train_background_weights_batch = torchvision.transforms.functional.rotate(train_background_weights_batch, angle_in_deg)
 
                     rads = np.radians(angle_in_deg % 90.0)
                     lims = 0.5 / (np.sin(rads) + np.cos(rads))
@@ -201,6 +269,11 @@ if __name__ == "__main__":
                     train_image_data_batch = train_image_data_batch[:, :, ymin:ymax, xmin:xmax]
                     train_image_ground_truth_batch = train_image_ground_truth_batch[:, ymin:ymax, xmin:xmax]
 
+                    if use_deep_supervision:
+                        train_background_weights_batch = train_background_weights_batch[:, :, ymin:ymax, xmin:xmax]
+                    else:
+                        train_background_weights_batch = train_background_weights_batch[:, ymin:ymax, xmin:xmax]
+
                 gc.collect()
                 torch.cuda.empty_cache()
 
@@ -209,25 +282,29 @@ if __name__ == "__main__":
 
             if use_deep_supervision:
                 loss = 0.0
+                loss_dataset1 = 0.0
                 for k in range(args.pyramid_height):
                     y_pred_level = y_pred[k]
-                    loss_level = loss_function(y_pred_level, train_image_ground_truth_batch)
+                    loss_level = loss_function(y_pred_level, train_image_ground_truth_batch) * train_background_weights_batch[:, k, :, :]
                     # Weighted loss, with precomputed weights
-                    loss = torch.sum((positive_weight * train_image_ground_truth_batch * loss_level) + (
-                                negative_weight * (1.0 - train_image_ground_truth_batch) * loss_level)) + loss
-
+                    loss = torch.sum(loss_level) + loss
 
                     true_positive_per_level[k] += int(torch.sum((y_pred_level > 0.5) & (train_image_ground_truth_batch == 1)).item())
                     true_negative_per_level[k] += int(torch.sum((y_pred_level <= 0.5) & (train_image_ground_truth_batch == 0)).item())
                     false_positive_per_level[k] += int(torch.sum((y_pred_level > 0.5) & (train_image_ground_truth_batch == 0)).item())
                     false_negative_per_level[k] += int(torch.sum((y_pred_level <= 0.5) & (train_image_ground_truth_batch == 1)).item())
 
+                    loss_dataset1 = torch.sum(loss_level * train_dataset1_entries) + loss_dataset1
+
                 total_loss += loss.item()
+                total_loss_dset1 += loss_dataset1.item()
                 loss.backward()
             else:
                 loss = loss_function(y_pred, train_image_ground_truth_batch)
+                with torch.no_grad():
+                    total_loss_dset1 += torch.sum(train_background_weights_batch * loss * train_dataset1_entries).item()
                 # Weighted loss, with precomputed weights
-                loss = torch.sum((positive_weight * train_image_ground_truth_batch * loss) + (negative_weight * (1.0 - train_image_ground_truth_batch) * loss))
+                loss = torch.sum(train_background_weights_batch * loss)
                 loss.backward()
                 total_loss += loss.item()
 
@@ -251,7 +328,10 @@ if __name__ == "__main__":
         scheduler.step()
 
         total_loss /= len(training_entries)
+        total_loss_dset1 /= num_dset1_entries
         train_history["loss"].append(total_loss)
+        train_history["loss_dset1"].append(total_loss_dset1)
+
         if use_deep_supervision:
             for k in range(args.pyramid_height):
                 train_history["accuracy_" + str(k)].append((true_positive_per_level[k] + true_negative_per_level[k])
@@ -290,18 +370,38 @@ if __name__ == "__main__":
                 batch_end = min(tested + batch_size, len(validation_entries))
                 test_image_data_batch = torch.zeros((batch_end - tested, in_channels, image_height, image_width), dtype=torch.float32, device=config.device)
                 test_image_ground_truth_batch = torch.zeros((batch_end - tested, image_height, image_width), dtype=torch.float32, device=config.device)
+                if use_deep_supervision:
+                    test_background_weights_batch = torch.zeros((batch_end - tested, args.pyramid_height, image_height, image_width), dtype=torch.float32, device=config.device)
+                else:
+                    test_background_weights_batch = torch.zeros((batch_end - tested, image_height, image_width), dtype=torch.float32, device=config.device)
 
                 for k in range(tested, batch_end):
                     test_image_data_batch[k - tested, :, :, :] = torch.tensor(dataset_loader.get_image_data(validation_entries[k]), dtype=torch.float32, device=config.device).permute(2, 0, 1)
-                    test_image_ground_truth_batch[k - tested, :, :] = torch.tensor(dataset_loader.get_segmentation_masks(validation_entries[k])["blood_vessel"], dtype=torch.float32, device=config.device)
+                    seg_mask = dataset_loader.get_segmentation_masks(validation_entries[k])["blood_vessel"]
+                    test_image_ground_truth_batch[k - tested, :, :] = torch.tensor(seg_mask, dtype=torch.float32, device=config.device)
+                    if background_weights_split:
+                        expanded_seg_mask = dilate(seg_mask, dilation_kernel)
+                        if use_deep_supervision:
+                            test_background_weights_batch[k - tested, :, :, :] = torch.linspace(positive_weight, 0.5, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device)\
+                                                                              + torch.linspace(negative_weight, 0.5, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * (1.0 - torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device))
+                        else:
+                            test_background_weights_batch[k - tested, :, :] = positive_weight * torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device)\
+                                                                              + negative_weight * (1.0 - torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device))
+                    else:
+                        if use_deep_supervision:
+                            test_background_weights_batch[k - tested, :, :, :] = torch.linspace(positive_weight, 0.5, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * test_image_ground_truth_batch[k - tested, :, :]\
+                                                                              + torch.linspace(negative_weight, 0.5, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * (1.0 - test_image_ground_truth_batch[k - tested, :, :])
+                        else:
+                            test_background_weights_batch[k - tested, :, :] = positive_weight * test_image_ground_truth_batch[k - tested, :, :]\
+                                                                              + negative_weight * (1.0 - test_image_ground_truth_batch[k - tested, :, :])
 
                 y_pred = model(test_image_data_batch)
 
                 if use_deep_supervision:
                     for k in range(args.pyramid_height):
-                        loss = loss_function(y_pred[k], test_image_ground_truth_batch)
                         # Weighted loss, with precomputed weights
-                        loss = torch.sum((positive_weight * test_image_ground_truth_batch * loss) + (negative_weight * (1.0 - test_image_ground_truth_batch) * loss))
+                        loss = loss_function(y_pred[k], test_image_ground_truth_batch) * test_background_weights_batch[:, k, :, :]
+                        loss = torch.sum(loss)
                         total_loss += loss.item()
 
                         true_positive_per_level[k] += int(torch.sum((y_pred[k] > 0.5) & (test_image_ground_truth_batch == 1)).item())
@@ -311,7 +411,7 @@ if __name__ == "__main__":
                 else:
                     loss = loss_function(y_pred, test_image_ground_truth_batch)
                     # Weighted loss, with precomputed weights
-                    loss = torch.sum((positive_weight * test_image_ground_truth_batch * loss) + (negative_weight * (1.0 - test_image_ground_truth_batch) * loss))
+                    loss = torch.sum(test_background_weights_batch * loss)
                     total_loss += loss.item()
 
                     true_positive += int(torch.sum((y_pred > 0.5) & (test_image_ground_truth_batch == 1)).item())
@@ -348,6 +448,7 @@ if __name__ == "__main__":
         print("Time Elapsed: {}".format(time.time() - ctime))
         print("Epoch: {}/{}".format(epoch, num_epochs))
         print("Loss: {}".format(train_history["loss"][-1]))
+        print("Loss Dset1: {}".format(train_history["loss_dset1"][-1]))
         print("Val Loss: {}".format(train_history["val_loss"][-1]))
         if use_deep_supervision:
             k = args.pyramid_height - 1
@@ -387,13 +488,14 @@ if __name__ == "__main__":
     train_history.to_csv(os.path.join(model_dir, "train_history.csv"), index=False)
     # Save the model config
     with open(os.path.join(model_dir, "config.json"), "w") as f:
-        json.dump(model_config, f)
+        json.dump(model_config, f, indent=4)
 
     # Plot the training history. If we use deep supervision we create args.pyramid_height + 1 number of plots.
     if use_deep_supervision:
         fig, axes = plt.subplots(args.pyramid_height + 1, 1, figsize=(12, 4 * (args.pyramid_height + 1)))
         axes[0].plot(train_history["loss"], label="Loss")
         axes[0].plot(train_history["val_loss"], label="Val Loss")
+        axes[0].plot(train_history["loss_dset1"], label="Loss Dset1")
         for k in range(args.pyramid_height):
             axes[k+1].plot(train_history["accuracy_" + str(k)], label="Accuracy")
             axes[k+1].plot(train_history["val_accuracy_" + str(k)], label="Val Accuracy")
@@ -418,6 +520,7 @@ if __name__ == "__main__":
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
         ax1.plot(train_history["loss"], label="Loss")
         ax1.plot(train_history["val_loss"], label="Val Loss")
+        ax1.plot(train_history["loss_dset1"], label="Loss Dset1")
         ax2.plot(train_history["accuracy"], label="Accuracy")
         ax2.plot(train_history["val_accuracy"], label="Val Accuracy")
         ax2.plot(train_history["precision"], label="Precision")

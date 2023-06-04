@@ -27,64 +27,67 @@ class Conv(torch.nn.Module):
         x = self.elu2(x)
         return x
 
-class ResConv(torch.nn.Module):
+class ResConvBlock(torch.nn.Module):
     def __init__(self, in_channels, out_channels, use_batch_norm=False):
-        super(ResConv, self).__init__()
+        super(ResConvBlock, self).__init__()
+        assert in_channels <= out_channels
         self.conv1 = torch.nn.Conv2d(in_channels, out_channels, 3, bias=True, padding="same", padding_mode="replicate")
         if use_batch_norm:
             self.batchnorm1 = torch.nn.BatchNorm2d(out_channels)
         self.elu1 = torch.nn.ELU(inplace=True)
         self.conv2 = torch.nn.Conv2d(out_channels, out_channels, 3, bias=True, padding="same", padding_mode="replicate")
-        if use_batch_norm:
-            self.batchnorm2 = torch.nn.BatchNorm2d(out_channels)
-        self.elu2 = torch.nn.ELU(inplace=True)
-
-        self.conv3 = torch.nn.Conv2d(out_channels, out_channels, 3, bias=True, padding="same", padding_mode="replicate")
-        if use_batch_norm:
-            self.batchnorm3 = torch.nn.BatchNorm2d(out_channels)
-        self.elu3 = torch.nn.ELU(inplace=True)
-        self.conv4 = torch.nn.Conv2d(out_channels, out_channels, 3, bias=True, padding="same", padding_mode="replicate")
-        if use_batch_norm:
-            self.batchnorm4 = torch.nn.BatchNorm2d(out_channels)
-        self.elu4 = torch.nn.ELU(inplace=True)
-
-        self.conv5 = torch.nn.Conv2d(out_channels, out_channels, 3, bias=True, padding="same", padding_mode="replicate")
-        if use_batch_norm:
-            self.batchnorm5 = torch.nn.BatchNorm2d(out_channels)
-        self.elu5 = torch.nn.ELU(inplace=True)
 
         torch.nn.init.constant_(self.conv1.bias, 0.0)
         torch.nn.init.constant_(self.conv2.bias, 0.0)
-        torch.nn.init.constant_(self.conv3.bias, 0.0)
-        torch.nn.init.constant_(self.conv4.bias, 0.0)
-        torch.nn.init.constant_(self.conv5.bias, 0.0)
+
+        self.use_batch_norm = use_batch_norm
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+
+    def forward(self, x):
+        if self.in_channels < self.out_channels:
+            x_init = torch.nn.functional.pad(x, (0, 0, 0, 0, 0, self.out_channels - self.in_channels), "constant", 0.0)
+        else:
+            x_init = x
+        x = self.conv1(x)
+        if self.use_batch_norm:
+            x = self.batchnorm1(x)
+        x = self.elu1(x)
+        x = self.conv2(x) + x_init
+        return x
+
+class ResConv(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, use_batch_norm=False):
+        super(ResConv, self).__init__()
+        if in_channels > out_channels:
+            if use_batch_norm:
+                self.conv1 = torch.nn.Sequential(
+                    torch.nn.Conv2d(in_channels, out_channels, 3, bias=True, padding="same", padding_mode="replicate"),
+                    torch.nn.BatchNorm2d(out_channels),
+                    torch.nn.ELU(inplace=True),
+                )
+            else:
+                self.conv1 = torch.nn.Sequential(
+                    torch.nn.Conv2d(in_channels, out_channels, 3, bias=True, padding="same", padding_mode="replicate"),
+                    torch.nn.ELU(inplace=True),
+                )
+        else:
+            self.conv1 = ResConvBlock(in_channels, out_channels, use_batch_norm=use_batch_norm)
+        self.conv_res2 = ResConvBlock(out_channels, out_channels, use_batch_norm=use_batch_norm)
+        self.conv_res3 = ResConvBlock(out_channels, out_channels, use_batch_norm=use_batch_norm)
+        self.conv_res4 = ResConvBlock(out_channels, out_channels, use_batch_norm=use_batch_norm)
+        self.conv_res5 = ResConvBlock(out_channels, out_channels, use_batch_norm=use_batch_norm)
 
         self.use_batch_norm = use_batch_norm
     def forward(self, x):
         x = self.conv1(x)
-        if self.use_batch_norm:
-            x = self.batchnorm1(x)
-        x1 = self.elu1(x)
-
-        x = self.conv2(x1)
-        if self.use_batch_norm:
-            x = self.batchnorm2(x)
-        x = self.elu2(x)
-        x = self.conv3(x) + x1
-        if self.use_batch_norm:
-            x = self.batchnorm3(x)
-        x2 = self.elu3(x)
-
-        x = self.conv4(x2)
-        if self.use_batch_norm:
-            x = self.batchnorm4(x)
-        x = self.elu4(x)
-        x = self.conv5(x) + x2
-        if self.use_batch_norm:
-            x = self.batchnorm5(x)
-        x = self.elu5(x)
+        x = self.conv_res2(x)
+        x = self.conv_res3(x)
+        x = self.conv_res4(x)
+        x = self.conv_res5(x)
 
         return x
+
 
 class UNetBackbone(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4):

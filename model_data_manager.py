@@ -440,9 +440,6 @@ def generate_subdata_interactive(subdata_name):
             if number_of_subdata < 0.0 or number_of_subdata > 1.0:
                 print("Number of subdata must be between 0.0 and 1.0!")
                 continue
-            if number_of_subdata > 0.9 and prior_subdata is None:
-                print("Number of subdata is too large for no priors! Choose a number less than 0.9")
-                continue
             break
         except ValueError:
             print("Invalid number!")
