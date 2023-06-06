@@ -10,6 +10,8 @@ import PyQt5.QtCore
 
 import pandas as pd
 import numpy as np
+import torch
+import torchvision.transforms.functional
 
 import cv2
 import sklearn.cluster
@@ -292,8 +294,60 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
 
         popup_window.exec_()
 
+    def apply_random_shear(self, image, displacement_field, xory="x"):
+        x = np.random.randint(low=0, high=image.shape[2])
+        y = np.random.randint(low=0, high=image.shape[1])
+        sigma = np.random.uniform(low=100.0, high=200.0)
+        magnitude = np.random.uniform(low=10000.0, high=16000.0) * np.random.choice([-1, 1])
+
+        width = 384
+
+        expand_left = min(x, width)
+        expand_right = min(image.shape[2] - x, width + 1)
+        expand_top = min(y, width)
+        expand_bottom = min(image.shape[1] - y, width + 1)
+
+        if xory == "x":
+            displacement_field[0, x - expand_left:x + expand_right, y - expand_top:y + expand_bottom, 0:1] += \
+                (np.expand_dims(cv2.getGaussianKernel(ksize=width * 2 + 1, sigma=sigma), axis=-1) * cv2.getGaussianKernel(
+                    ksize=width * 2 + 1, sigma=sigma) * magnitude)[width - expand_left:width + expand_right,
+                width - expand_top:width + expand_bottom, :]
+        else:
+            displacement_field[0, x - expand_left:x + expand_right, y - expand_top:y + expand_bottom, 1:2] += \
+                (np.expand_dims(cv2.getGaussianKernel(ksize=width * 2 + 1, sigma=sigma),
+                                axis=-1) * cv2.getGaussianKernel(
+                    ksize=width * 2 + 1, sigma=sigma) * magnitude)[width - expand_left:width + expand_right,
+                width - expand_top:width + expand_bottom, :]
+
     def custom_image_transform(self, image):
         try:
+            color = (255, 255, 255)
+            thickness = 3
+            grid_size = 64
+            height, width, channels = image.shape
+            for x in range(0, width, grid_size):
+                cv2.line(image, (x, 0), (x, height), color, thickness)
+            for y in range(0, height, grid_size):
+                cv2.line(image, (0, y), (width, y), color, thickness)
+
+
+            image = torch.tensor(image, dtype=torch.float32).permute(2, 0, 1)
+            """displacement_field = torch.randn(size=(2, image.shape[1], image.shape[2]), dtype=torch.float32)
+            displacement_field = torchvision.transforms.functional.gaussian_blur(displacement_field, kernel_size=101, sigma=100.0).permute(1, 2, 0).unsqueeze(0) """
+            displacement_field = np.zeros(shape=(1, image.shape[1], image.shape[2], 2), dtype=np.float32)
+
+            for k in range(4):
+                self.apply_random_shear(image, displacement_field, xory="x")
+                self.apply_random_shear(image, displacement_field, xory="y")
+
+            displacement_field = torch.tensor(displacement_field, dtype=torch.float32)
+            image = torchvision.transforms.functional.elastic_transform(image, displacement_field).permute(1, 2, 0)
+            image = image.numpy().astype(dtype=np.uint8).copy()
+            return image
+        except Exception as e:
+            traceback.print_exc()
+        return image
+        """try:
             # This image is a numpy array of shape (height, width, channel) RGB image. Do hierarchical clustering with BisectingKMeans on the image into n clusters, and return the image with the clusters colored.
             n_clusters = 16
 
@@ -408,7 +462,7 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
 
             image_clustered = image
 
-        return image_clustered
+        return image_clustered"""
 
 
 if __name__ == "__main__":

@@ -26,6 +26,60 @@ def dilate(image, kernel):
     image = cv2.dilate(image, kernel, iterations=1)
     return image.astype(dtype=np.float32)
 
+def apply_random_shear(displacement_field, xory="x", image_size=512, image_pad=1534, magnitude_low=10000.0, magnitude_high=16000.0):
+    diff = (image_pad - image_size) // 2
+    x = np.random.randint(low=0, high=image_size) + diff
+    y = np.random.randint(low=0, high=image_size) + diff
+    sigma = np.random.uniform(low=100.0, high=200.0)
+    magnitude = np.random.uniform(low=magnitude_low, high=magnitude_high) * np.random.choice([-1, 1])
+
+    width = image_size
+
+    expand_left = min(x, width)
+    expand_right = min(image_size - x, width + 1)
+    expand_top = min(y, width)
+    expand_bottom = min(image_size - y, width + 1)
+
+    if xory == "x":
+        displacement_field[0, x - expand_left:x + expand_right, y - expand_top:y + expand_bottom, 0:1] += \
+            (np.expand_dims(cv2.getGaussianKernel(ksize=width * 2 + 1, sigma=sigma), axis=-1) * cv2.getGaussianKernel(
+                ksize=width * 2 + 1, sigma=sigma) * magnitude)[width - expand_left:width + expand_right,
+            width - expand_top:width + expand_bottom, :]
+    else:
+        displacement_field[0, x - expand_left:x + expand_right, y - expand_top:y + expand_bottom, 1:2] += \
+            (np.expand_dims(cv2.getGaussianKernel(ksize=width * 2 + 1, sigma=sigma),
+                            axis=-1) * cv2.getGaussianKernel(
+                ksize=width * 2 + 1, sigma=sigma) * magnitude)[width - expand_left:width + expand_right,
+            width - expand_top:width + expand_bottom, :]
+
+def generate_displacement_field(image_size=512, image_pad=1534, dtype=torch.float32, device=config.device):
+    displacement_field = np.zeros(shape=(1, image_pad, image_pad, 2), dtype=np.float32)
+
+    type = np.random.choice(5)
+    if type == 0:
+        magnitude_low = 0.0
+        magnitude_high = 1000.0
+    elif type == 1:
+        magnitude_low = 1000.0
+        magnitude_high = 4000.0
+    elif type == 2:
+        magnitude_low = 4000.0
+        magnitude_high = 7000.0
+    elif type == 3:
+        magnitude_low = 7000.0
+        magnitude_high = 10000.0
+    else:
+        magnitude_low = 10000.0
+        magnitude_high = 16000.0
+
+    for k in range(4):
+        apply_random_shear(displacement_field, xory="x", image_size=image_size, image_pad=image_pad, magnitude_low=magnitude_low, magnitude_high=magnitude_high)
+        apply_random_shear(displacement_field, xory="y", image_size=image_size, image_pad=image_pad, magnitude_low=magnitude_low, magnitude_high=magnitude_high)
+
+    displacement_field = torch.tensor(displacement_field, dtype=dtype, device=device)
+
+    return displacement_field
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a simple U-Net model")
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs to train for. Default 100.")
@@ -224,14 +278,16 @@ if __name__ == "__main__":
                     expanded_seg_mask = dilate(seg_mask, dilation_kernel)
                     expanded_seg_mask = torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device)
                     if use_deep_supervision:
-                        train_background_weights_batch[k - trained, :, :, :] = torch.linspace(positive_weight, 0.5, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * expanded_seg_mask \
-                                                                               + torch.linspace(negative_weight, 0.5, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * (1.0 - expanded_seg_mask)
+                        train_background_weights_batch[k - trained, :, :, :] = torch.exp(torch.arange(-args.pyramid_height + 1, 1, dtype=torch.float32, device=config.device)).unsqueeze(-1).unsqueeze(-1)\
+                                                                               * (torch.linspace(positive_weight, 0.6, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * expanded_seg_mask
+                                                                               + torch.linspace(negative_weight, 0.4, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * (1.0 - expanded_seg_mask))
                     else:
                         train_background_weights_batch[k - trained, :, :] = positive_weight * expanded_seg_mask + negative_weight * (1.0 - expanded_seg_mask)
                 else:
                     if use_deep_supervision:
-                        train_background_weights_batch[k - trained, :, :, :] = torch.linspace(positive_weight, 0.5, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * train_image_ground_truth_batch[k - trained, :, :]\
-                                                                               + torch.linspace(negative_weight, 0.5, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * (1.0 - train_image_ground_truth_batch[k - trained, :, :])
+                        train_background_weights_batch[k - trained, :, :, :] = torch.exp(torch.arange(-args.pyramid_height + 1, 1, dtype=torch.float32, device=config.device)).unsqueeze(-1).unsqueeze(-1)\
+                                                                               * (torch.linspace(positive_weight, 0.6, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * train_image_ground_truth_batch[k - trained, :, :]
+                                                                               + torch.linspace(negative_weight, 0.4, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * (1.0 - train_image_ground_truth_batch[k - trained, :, :]))
                     else:
                         train_background_weights_batch[k - trained, :, :] = positive_weight * train_image_ground_truth_batch[k - trained, :, :] + negative_weight * (1.0 - train_image_ground_truth_batch[k - trained, :, :])
 
@@ -249,6 +305,35 @@ if __name__ == "__main__":
                     train_dataset1_entries[k - trained, 0, 0] = 1.0
 
             if rotation_augmentation:
+                # flip the images
+                if np.random.uniform(0, 1) < 0.5:
+                    train_image_data_batch = torch.flip(train_image_data_batch, dims=[3])
+                    train_image_ground_truth_batch = torch.flip(train_image_ground_truth_batch, dims=[2])
+                    if use_deep_supervision:
+                        train_background_weights_batch = torch.flip(train_background_weights_batch, dims=[3])
+                    else:
+                        train_background_weights_batch = torch.flip(train_background_weights_batch, dims=[2])
+
+                # apply elastic deformation
+                train_image_data_batch = torch.nn.functional.pad(train_image_data_batch, (image_height-1, image_height-1, image_width-1, image_width-1), mode="reflect")
+                train_image_ground_truth_batch = torch.nn.functional.pad(train_image_ground_truth_batch, (image_height-1, image_height-1, image_width-1, image_width-1), mode="reflect")
+                train_background_weights_batch = torch.nn.functional.pad(train_background_weights_batch, (image_height-1, image_height-1, image_width-1, image_width-1), mode="reflect")
+
+                displacement_field = generate_displacement_field()
+                train_image_data_batch = torchvision.transforms.functional.elastic_transform(train_image_data_batch, displacement_field)
+                train_image_ground_truth_batch = torchvision.transforms.functional.elastic_transform(train_image_ground_truth_batch.unsqueeze(1), displacement_field).squeeze(1)
+                if use_deep_supervision:
+                    weights_shape = list(train_background_weights_batch.shape)
+                    train_background_weights_batch = torchvision.transforms.functional.elastic_transform(
+                        train_background_weights_batch.view(weights_shape[0]*weights_shape[1], 1, weights_shape[2], weights_shape[3]),
+                    displacement_field).view(weights_shape[0], weights_shape[1], weights_shape[2], weights_shape[3])
+                else:
+                    train_background_weights_batch = torchvision.transforms.functional.elastic_transform(train_background_weights_batch.unsqueeze(1), displacement_field).squeeze(1)
+
+                train_image_data_batch = train_image_data_batch[..., image_height-1:-image_height+1, image_width-1:-image_width+1]
+                train_image_ground_truth_batch = train_image_ground_truth_batch[..., image_height-1:-image_height+1, image_width-1:-image_width+1]
+                train_background_weights_batch = train_background_weights_batch[..., image_height-1:-image_height+1, image_width-1:-image_width+1]
+
                 angle_in_deg = np.random.uniform(0, 360)
                 with torch.no_grad():
                     train_image_data_batch = torchvision.transforms.functional.rotate(train_image_data_batch, angle_in_deg)
@@ -382,15 +467,17 @@ if __name__ == "__main__":
                     if background_weights_split:
                         expanded_seg_mask = dilate(seg_mask, dilation_kernel)
                         if use_deep_supervision:
-                            test_background_weights_batch[k - tested, :, :, :] = torch.linspace(positive_weight, 0.5, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device)\
-                                                                              + torch.linspace(negative_weight, 0.5, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * (1.0 - torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device))
+                            test_background_weights_batch[k - tested, :, :, :] = torch.exp(torch.arange(-args.pyramid_height + 1, 1, dtype=torch.float32, device=config.device)).unsqueeze(-1).unsqueeze(-1)\
+                                                                                 * (torch.linspace(positive_weight, 0.6, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device)
+                                                                              + torch.linspace(negative_weight, 0.4, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * (1.0 - torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device)))
                         else:
                             test_background_weights_batch[k - tested, :, :] = positive_weight * torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device)\
                                                                               + negative_weight * (1.0 - torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device))
                     else:
                         if use_deep_supervision:
-                            test_background_weights_batch[k - tested, :, :, :] = torch.linspace(positive_weight, 0.5, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * test_image_ground_truth_batch[k - tested, :, :]\
-                                                                              + torch.linspace(negative_weight, 0.5, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * (1.0 - test_image_ground_truth_batch[k - tested, :, :])
+                            test_background_weights_batch[k - tested, :, :, :] = torch.exp(torch.arange(-args.pyramid_height + 1, 1, dtype=torch.float32, device=config.device)).unsqueeze(-1).unsqueeze(-1)\
+                                                                                 * (torch.linspace(positive_weight, 0.6, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * test_image_ground_truth_batch[k - tested, :, :]
+                                                                              + torch.linspace(negative_weight, 0.4, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * (1.0 - test_image_ground_truth_batch[k - tested, :, :]))
                         else:
                             test_background_weights_batch[k - tested, :, :] = positive_weight * test_image_ground_truth_batch[k - tested, :, :]\
                                                                               + negative_weight * (1.0 - test_image_ground_truth_batch[k - tested, :, :])
@@ -467,6 +554,10 @@ if __name__ == "__main__":
             print("Val Recall: {}".format(train_history["val_recall"][-1]))
         print("Learning Rate: {}".format(scheduler.get_lr()))
         print("")
+
+        train_history_save = pd.DataFrame(train_history)
+        train_history_save.to_csv(os.path.join(model_dir, "train_history.csv"), index=False)
+
         ctime = time.time()
 
         del train_image_data_batch, train_image_ground_truth_batch, test_image_data_batch, test_image_ground_truth_batch

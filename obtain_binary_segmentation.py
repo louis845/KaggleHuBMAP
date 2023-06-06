@@ -10,6 +10,34 @@ import h5py
 
 import config
 
+kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+large_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (20, 20))
+def get_mask_information(mask):
+    large_mask = cv2.dilate(mask, large_kernel, iterations=1)
+
+    original_mask = mask
+    erosion_history = [mask]
+    # Erode with a 3x3 circular kernel
+    while np.sum(mask) > 0:
+        mask = cv2.erode(mask, kernel, iterations=1)
+        erosion_history.append(mask)
+
+    erode5_mask = erosion_history[min(5, len(erosion_history) - 1)]
+    erode10_mask = erosion_history[min(10, len(erosion_history) - 1)]
+    erode25_percent_mask = erosion_history[int(0.25 * (len(erosion_history) - 1))]
+    erode50_percent_mask = erosion_history[int(0.50 * (len(erosion_history) - 1))]
+    erode75_percent_mask = erosion_history[int(0.75 * (len(erosion_history) - 1))]
+
+    return {
+        "original_mask": original_mask,
+        "large_mask": large_mask,
+        "erode5_mask": erode5_mask,
+        "erode10_mask": erode10_mask,
+        "erode25_percent_mask": erode25_percent_mask,
+        "erode50_percent_mask": erode50_percent_mask,
+        "erode75_percent_mask": erode75_percent_mask
+    }
+
 
 if __name__ == '__main__':
     data_information = pd.read_csv(os.path.join(config.input_data_path, "tile_meta.csv"), index_col=0)
@@ -53,21 +81,68 @@ if __name__ == '__main__':
             blood_vessel_mask = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
             unknown_mask = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
 
+            glomerulus_mask_large = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+            blood_vessel_mask_large = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+            unknown_mask_large = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+
+            glomerulus_mask_erode5 = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+            blood_vessel_mask_erode5 = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+            unknown_mask_erode5 = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+
+            glomerulus_mask_erode10 = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+            blood_vessel_mask_erode10 = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+            unknown_mask_erode10 = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+
+            glomerulus_mask_erode25_percent = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+            blood_vessel_mask_erode25_percent = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+            unknown_mask_erode25_percent = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+
+            glomerulus_mask_erode50_percent = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+            blood_vessel_mask_erode50_percent = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+            unknown_mask_erode50_percent = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+
+            glomerulus_mask_erode75_percent = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+            blood_vessel_mask_erode75_percent = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+            unknown_mask_erode75_percent = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+
             for polygon_mask in all_polygon_masks[entry]:
                 # The color depends on the type, default unknown color = blue
                 polygon_coordinate_list = polygon_mask["coordinates"][0]  # This is a list of integer 2-tuples, representing the coordinates.
                 mask = np.zeros_like(glomerulus_mask, dtype=np.uint8)
                 cv2.fillPoly(mask, [np.array(polygon_coordinate_list)], (1,))
+
+                mask_deviants = get_mask_information(mask)
                 if polygon_mask["type"] == "glomerulus":
                     glomerulus_mask = np.bitwise_or(glomerulus_mask, mask)
+                    glomerulus_mask_large = np.bitwise_or(glomerulus_mask_large, mask_deviants["large_mask"])
+                    glomerulus_mask_erode5 = np.bitwise_or(glomerulus_mask_erode5, mask_deviants["erode5_mask"])
+                    glomerulus_mask_erode10 = np.bitwise_or(glomerulus_mask_erode10, mask_deviants["erode10_mask"])
+                    glomerulus_mask_erode25_percent = np.bitwise_or(glomerulus_mask_erode25_percent, mask_deviants["erode25_percent_mask"])
+                    glomerulus_mask_erode50_percent = np.bitwise_or(glomerulus_mask_erode50_percent, mask_deviants["erode50_percent_mask"])
+                    glomerulus_mask_erode75_percent = np.bitwise_or(glomerulus_mask_erode75_percent, mask_deviants["erode75_percent_mask"])
+
                     num_glomerulus += 1
                     glomerulus_size.append(np.sum(mask))
                 elif polygon_mask["type"] == "blood_vessel":
                     blood_vessel_mask = np.bitwise_or(blood_vessel_mask, mask)
+                    blood_vessel_mask_large = np.bitwise_or(blood_vessel_mask_large, mask_deviants["large_mask"])
+                    blood_vessel_mask_erode5 = np.bitwise_or(blood_vessel_mask_erode5, mask_deviants["erode5_mask"])
+                    blood_vessel_mask_erode10 = np.bitwise_or(blood_vessel_mask_erode10, mask_deviants["erode10_mask"])
+                    blood_vessel_mask_erode25_percent = np.bitwise_or(blood_vessel_mask_erode25_percent, mask_deviants["erode25_percent_mask"])
+                    blood_vessel_mask_erode50_percent = np.bitwise_or(blood_vessel_mask_erode50_percent, mask_deviants["erode50_percent_mask"])
+                    blood_vessel_mask_erode75_percent = np.bitwise_or(blood_vessel_mask_erode75_percent, mask_deviants["erode75_percent_mask"])
+
                     num_blood_vessel += 1
                     blood_vessel_size.append(np.sum(mask))
                 else:
                     unknown_mask = np.bitwise_or(unknown_mask, mask)
+                    unknown_mask_large = np.bitwise_or(unknown_mask_large, mask_deviants["large_mask"])
+                    unknown_mask_erode5 = np.bitwise_or(unknown_mask_erode5, mask_deviants["erode5_mask"])
+                    unknown_mask_erode10 = np.bitwise_or(unknown_mask_erode10, mask_deviants["erode10_mask"])
+                    unknown_mask_erode25_percent = np.bitwise_or(unknown_mask_erode25_percent, mask_deviants["erode25_percent_mask"])
+                    unknown_mask_erode50_percent = np.bitwise_or(unknown_mask_erode50_percent, mask_deviants["erode50_percent_mask"])
+                    unknown_mask_erode75_percent = np.bitwise_or(unknown_mask_erode75_percent, mask_deviants["erode75_percent_mask"])
+
                     num_unknown += 1
                     unknown_size.append(np.sum(mask))
 
@@ -86,9 +161,33 @@ if __name__ == '__main__':
 
             entry_h5 = segmentation_data_h5.create_group(entry)
 
-            entry_h5.create_dataset(name="glomerulus", data = (np.squeeze(glomerulus_mask, axis=-1) > 0))
-            entry_h5.create_dataset(name="blood_vessel", data = (np.squeeze(blood_vessel_mask, axis=-1) > 0))
-            entry_h5.create_dataset(name="unknown", data = (np.squeeze(unknown_mask, axis=-1) > 0))
+            entry_h5.create_dataset(name="glomerulus", data = (np.squeeze(glomerulus_mask, axis=-1) > 0), compression="gzip", compression_opts=9)
+            entry_h5.create_dataset(name="blood_vessel", data = (np.squeeze(blood_vessel_mask, axis=-1) > 0), compression="gzip", compression_opts=9)
+            entry_h5.create_dataset(name="unknown", data = (np.squeeze(unknown_mask, axis=-1) > 0), compression="gzip", compression_opts=9)
+
+            entry_h5.create_dataset(name="glomerulus_large", data = (np.squeeze(glomerulus_mask_large, axis=-1) > 0), compression="gzip", compression_opts=9)
+            entry_h5.create_dataset(name="blood_vessel_large", data = (np.squeeze(blood_vessel_mask_large, axis=-1) > 0), compression="gzip", compression_opts=9)
+            entry_h5.create_dataset(name="unknown_large", data = (np.squeeze(unknown_mask_large, axis=-1) > 0), compression="gzip", compression_opts=9)
+
+            entry_h5.create_dataset(name="glomerulus_erode5", data = (np.squeeze(glomerulus_mask_erode5, axis=-1) > 0), compression="gzip", compression_opts=9)
+            entry_h5.create_dataset(name="blood_vessel_erode5", data = (np.squeeze(blood_vessel_mask_erode5, axis=-1) > 0), compression="gzip", compression_opts=9)
+            entry_h5.create_dataset(name="unknown_erode5", data = (np.squeeze(unknown_mask_erode5, axis=-1) > 0), compression="gzip", compression_opts=9)
+
+            entry_h5.create_dataset(name="glomerulus_erode10", data = (np.squeeze(glomerulus_mask_erode10, axis=-1) > 0), compression="gzip", compression_opts=9)
+            entry_h5.create_dataset(name="blood_vessel_erode10", data = (np.squeeze(blood_vessel_mask_erode10, axis=-1) > 0), compression="gzip", compression_opts=9)
+            entry_h5.create_dataset(name="unknown_erode10", data = (np.squeeze(unknown_mask_erode10, axis=-1) > 0), compression="gzip", compression_opts=9)
+
+            entry_h5.create_dataset(name="glomerulus_erode25_percent", data = (np.squeeze(glomerulus_mask_erode25_percent, axis=-1) > 0), compression="gzip", compression_opts=9)
+            entry_h5.create_dataset(name="blood_vessel_erode25_percent", data = (np.squeeze(blood_vessel_mask_erode25_percent, axis=-1) > 0), compression="gzip", compression_opts=9)
+            entry_h5.create_dataset(name="unknown_erode25_percent", data = (np.squeeze(unknown_mask_erode25_percent, axis=-1) > 0), compression="gzip", compression_opts=9)
+
+            entry_h5.create_dataset(name="glomerulus_erode50_percent", data = (np.squeeze(glomerulus_mask_erode50_percent, axis=-1) > 0), compression="gzip", compression_opts=9)
+            entry_h5.create_dataset(name="blood_vessel_erode50_percent", data = (np.squeeze(blood_vessel_mask_erode50_percent, axis=-1) > 0), compression="gzip", compression_opts=9)
+            entry_h5.create_dataset(name="unknown_erode50_percent", data = (np.squeeze(unknown_mask_erode50_percent, axis=-1) > 0), compression="gzip", compression_opts=9)
+
+            entry_h5.create_dataset(name="glomerulus_erode75_percent", data = (np.squeeze(glomerulus_mask_erode75_percent, axis=-1) > 0), compression="gzip", compression_opts=9)
+            entry_h5.create_dataset(name="blood_vessel_erode75_percent", data = (np.squeeze(blood_vessel_mask_erode75_percent, axis=-1) > 0), compression="gzip", compression_opts=9)
+            entry_h5.create_dataset(name="unknown_erode75_percent", data = (np.squeeze(unknown_mask_erode75_percent, axis=-1) > 0), compression="gzip", compression_opts=9)
 
             # Save the masks as 3 png files using cv2.imwrite
             cv2.imwrite(os.path.join("segmentation_data", entry, "glomerulus.png"), glomerulus_mask.astype(np.uint8) * 255)
@@ -96,7 +195,7 @@ if __name__ == '__main__':
             cv2.imwrite(os.path.join("segmentation_data", entry, "unknown.png"), unknown_mask.astype(np.uint8) * 255)
 
         count += 1
-        if count % 1000 == 0:
+        if count % 100 == 0:
             print("Processed {} images. Time elapsed: {}".format(count, time.time() - ctime))
             ctime = time.time()
 
@@ -107,8 +206,8 @@ if __name__ == '__main__':
                         unknown_size=np.sort(unknown_size))
 
     statistics = data_summary.create_group("statistics")
-    statistics.create_dataset(name="glomerulus_size", data=np.sort(glomerulus_size))
-    statistics.create_dataset(name="blood_vessel_size", data=np.sort(blood_vessel_size))
-    statistics.create_dataset(name="unknown_size", data=np.sort(unknown_size))
+    statistics.create_dataset(name="glomerulus_size", data=np.sort(glomerulus_size), compression="gzip", compression_opts=9)
+    statistics.create_dataset(name="blood_vessel_size", data=np.sort(blood_vessel_size), compression="gzip", compression_opts=9)
+    statistics.create_dataset(name="unknown_size", data=np.sort(unknown_size), compression="gzip", compression_opts=9)
 
     data_summary.close()
