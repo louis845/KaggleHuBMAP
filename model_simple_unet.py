@@ -75,12 +75,34 @@ def generate_displacement_field(image_size=512, image_pad=1534, dtype=torch.floa
 
     return displacement_field
 
+def compute_background_foreground(training_entries, dataset_loader, ground_truth_mask_data, foreground_mask_data):
+    num_background_positive_pixels = 0
+    num_background_negative_pixels = 0
+    num_foreground_positive_pixels = 0
+    num_foreground_negative_pixels = 0
+    num_dset1_entries = 0
+
+    for k in range(len(training_entries)):
+        if model_data_manager.data_information.loc[training_entries[k], "dataset"] == 1:
+            num_dset1_entries += 1
+            seg_mask = dataset_loader.get_segmentation_mask(training_entries[k], ground_truth_mask_data)
+            foreground_mask = dataset_loader.get_segmentation_mask(training_entries[k], foreground_mask_data)
+
+            num_foreground_positive_pixels += np.sum(np.logical_and(seg_mask, foreground_mask))
+            num_foreground_negative_pixels += np.sum(np.logical_and(np.logical_not(seg_mask), foreground_mask))
+            num_background_positive_pixels += np.sum(np.logical_and(seg_mask, np.logical_not(foreground_mask)))
+            num_background_negative_pixels += np.sum(
+                np.logical_and(np.logical_not(seg_mask), np.logical_not(foreground_mask)))
+
+    return num_background_positive_pixels, num_background_negative_pixels, num_foreground_positive_pixels, num_foreground_negative_pixels, num_dset1_entries
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a simple U-Net model")
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs to train for. Default 100.")
     parser.add_argument("--rotation_augmentation", action="store_true", help="Whether to use rotation augmentation. Default False.")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size to use. Default 2.")
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate to use. Default 1e-5.")
+    parser.add_argument("--optimizer", type=str, default="adam", help="Which optimizer to use. Available options: adam, sgd. Default adam.")
     parser.add_argument("--epochs_per_save", type=int, default=2, help="Number of epochs between saves. Default 2.")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Number of gradient accumulation steps. Default 1. If set to -1, accumulate for the whole dataset.")
     parser.add_argument("--use_batch_norm", action="store_true", help="Whether to use batch normalization. Default False.")
@@ -125,7 +147,13 @@ if __name__ == "__main__":
         model = model_unet_plus.UNetClassifier(hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                   use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
                                                   use_deep_supervision=use_deep_supervision, in_channels=args.in_channels).to(device=config.device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    if args.optimizer.lower() == "adam":
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    elif args.optimizer.lower() == "sgd":
+        optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, momentum=0.99)
+    else:
+        print("Invalid optimizer. The available options are: adam, sgd.")
+        exit(1)
     scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=1.0, total_iters=10)
 
     if prev_model_checkpoint_dir is not None:
@@ -168,6 +196,7 @@ if __name__ == "__main__":
         "rotation_augmentation": rotation_augmentation,
         "batch_size": batch_size,
         "learning_rate": args.learning_rate,
+        "optimizer": args.optimizer,
         "epochs_per_save": epochs_per_save,
         "gradient_accumulation_steps": gradient_accumulation_steps,
         "use_batch_norm": args.use_batch_norm,
@@ -178,6 +207,7 @@ if __name__ == "__main__":
         "unet_attention": args.unet_attention,
         "in_channels": args.in_channels,
         "background_weights_split": args.background_weights_split,
+        "training_script": "model_simple_unet.py",
     }
     for key, value in extra_info.items():
         model_config[key] = value
@@ -191,30 +221,16 @@ if __name__ == "__main__":
             exit(1)
 
     with torch.no_grad():
-        num_background_positive_pixels = 0
-        num_background_negative_pixels = 0
-        num_foreground_positive_pixels = 0
-        num_foreground_negative_pixels = 0
-        num_dset1_entries = 0
-
-        for k in range(len(training_entries)):
-            if model_data_manager.data_information.loc[training_entries[k], "dataset"] == 1:
-                num_dset1_entries += 1
-                seg_mask = dataset_loader.get_segmentation_mask(training_entries[k], "blood_vessel")
-                foreground_mask = dataset_loader.get_segmentation_mask(training_entries[k], background_weights_split)
-
-                num_foreground_positive_pixels += np.sum(np.logical_and(seg_mask, foreground_mask))
-                num_foreground_negative_pixels += np.sum(np.logical_and(np.logical_not(seg_mask), foreground_mask))
-                num_background_positive_pixels += np.sum(np.logical_and(seg_mask, np.logical_not(foreground_mask)))
-                num_background_negative_pixels += np.sum(np.logical_and(np.logical_not(seg_mask), np.logical_not(foreground_mask)))
+        num_background_positive_pixels, num_background_negative_pixels, num_foreground_positive_pixels,\
+            num_foreground_negative_pixels, num_dset1_entries = compute_background_foreground(training_entries, dataset_loader, "blood_vessel", background_weights_split)
 
         print("Number of foreground positive pixels: {}".format(num_foreground_positive_pixels))
         print("Number of foreground negative pixels: {}".format(num_foreground_negative_pixels))
         print("Number of background positive pixels: {}".format(num_background_positive_pixels))
         print("Number of background negative pixels: {}".format(num_background_negative_pixels))
 
-        foreground_weight = (num_foreground_positive_pixels - num_foreground_negative_pixels) / (num_foreground_positive_pixels - num_foreground_negative_pixels + num_background_negative_pixels - num_background_positive_pixels)
-        background_weight = (num_background_negative_pixels - num_background_positive_pixels) / (num_foreground_positive_pixels - num_foreground_negative_pixels + num_background_negative_pixels - num_background_positive_pixels)
+        foreground_weight = (num_background_negative_pixels - num_background_positive_pixels) / (num_foreground_positive_pixels - num_foreground_negative_pixels + num_background_negative_pixels - num_background_positive_pixels)
+        background_weight = (num_foreground_positive_pixels - num_foreground_negative_pixels) / (num_foreground_positive_pixels - num_foreground_negative_pixels + num_background_negative_pixels - num_background_positive_pixels)
 
         print("Foreground weight: {}".format(foreground_weight))
         print("Background weight: {}".format(background_weight))
@@ -258,11 +274,12 @@ if __name__ == "__main__":
 
             for k in range(trained, batch_end):
                 train_image_data_batch[k - trained, :, :, :] = torch.tensor(dataset_loader.get_image_data(training_entries_shuffle[k]), dtype=torch.float32, device=config.device).permute(2, 0, 1)
-                seg_mask = dataset_loader.get_segmentation_masks(training_entries_shuffle[k], "blood_vessel")
+                seg_mask = dataset_loader.get_segmentation_mask(training_entries_shuffle[k], "blood_vessel")
                 train_image_ground_truth_batch[k - trained, :, :] = torch.tensor(seg_mask, dtype=torch.float32, device=config.device)
 
                 foreground = dataset_loader.get_segmentation_mask(training_entries_shuffle[k], background_weights_split)
                 foreground_mask = torch.tensor(foreground, dtype=torch.float32, device=config.device)
+
                 if use_deep_supervision:
                     train_background_weights_batch[k - trained, :, :, :] = torch.exp(torch.arange(-args.pyramid_height + 1, 1, dtype=torch.float32, device=config.device)).unsqueeze(-1).unsqueeze(-1)\
                                                                            * (torch.linspace(foreground_weight, 0.6, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * foreground_mask
