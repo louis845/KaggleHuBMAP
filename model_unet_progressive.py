@@ -22,6 +22,7 @@ class UNetBackbone(torch.nn.Module):
         # contracting path
         ret = []
         x = self.conv0(self.first_conv(x))
+
         ret.append(x)
         for i in range(self.pyr_height):
             x = self.conv_down[i](self.maxpool(x))
