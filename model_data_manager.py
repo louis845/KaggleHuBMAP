@@ -45,12 +45,18 @@ class DatasetDataLoader():
         else:
             return np.array(self.data_store["image_data"][entry_name])
 
+    def list_segmentation_masks(self):
+        return self.segmentation_store["segmentation_data"][data_information.index[0]].keys()
+
     def get_segmentation_masks(self, entry_name):
         glomerulus = self.segmentation_store["segmentation_data"][entry_name]["glomerulus"]
         blood_vessel = self.segmentation_store["segmentation_data"][entry_name]["blood_vessel"]
         unknown = self.segmentation_store["segmentation_data"][entry_name]["unknown"]
 
         return {"glomerulus": np.array(glomerulus), "blood_vessel": np.array(blood_vessel), "unknown": np.array(unknown)}
+
+    def get_segmentation_mask(self, entry_name, mask_name):
+        return np.array(self.segmentation_store["segmentation_data"][entry_name][mask_name])
 
     def close(self):
         if self.data_store is not None:

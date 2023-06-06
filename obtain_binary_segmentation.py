@@ -13,7 +13,8 @@ import config
 kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 large_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (20, 20))
 def get_mask_information(mask):
-    large_mask = cv2.dilate(mask, large_kernel, iterations=1)
+    tmask = np.squeeze(mask, axis=-1)
+    large_mask = cv2.dilate(tmask, large_kernel, iterations=1)
 
     original_mask = mask
     erosion_history = [mask]
@@ -29,13 +30,12 @@ def get_mask_information(mask):
     erode75_percent_mask = erosion_history[int(0.75 * (len(erosion_history) - 1))]
 
     return {
-        "original_mask": original_mask,
-        "large_mask": large_mask,
-        "erode5_mask": erode5_mask,
-        "erode10_mask": erode10_mask,
-        "erode25_percent_mask": erode25_percent_mask,
-        "erode50_percent_mask": erode50_percent_mask,
-        "erode75_percent_mask": erode75_percent_mask
+        "large_mask": np.expand_dims(large_mask, axis=-1),
+        "erode5_mask": np.expand_dims(erode5_mask, axis=-1),
+        "erode10_mask": np.expand_dims(erode10_mask, axis=-1),
+        "erode25_percent_mask": np.expand_dims(erode25_percent_mask, axis=-1),
+        "erode50_percent_mask": np.expand_dims(erode50_percent_mask, axis=-1),
+        "erode75_percent_mask": np.expand_dims(erode75_percent_mask, axis=-1)
     }
 
 

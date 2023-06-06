@@ -21,11 +21,6 @@ import model_unet_base
 import model_unet_plus
 import model_unet_attention
 
-def dilate(image, kernel):
-    image = np.array(image).astype(dtype=np.uint8)
-    image = cv2.dilate(image, kernel, iterations=1)
-    return image.astype(dtype=np.float32)
-
 def apply_random_shear(displacement_field, xory="x", image_size=512, image_pad=1534, magnitude_low=10000.0, magnitude_high=16000.0):
     diff = (image_pad - image_size) // 2
     x = np.random.randint(low=0, high=image_size) + diff
@@ -95,7 +90,7 @@ if __name__ == "__main__":
     parser.add_argument("--unet_plus", type=str, default="none", help="Whether to use unet plus plus. Available options: none, standard, or deep_supervision. Default none.")
     parser.add_argument("--unet_attention", action="store_true", help="Whether to use attention in the U-Net. Default False. Cannot be used with unet_plus.")
     parser.add_argument("--in_channels", type=int, default=3, help="Number of input channels to use. Default 3.")
-    parser.add_argument("--background_weights_split", action="store_true", help="Whether to use larger weights for close backgrounds. Default False.")
+    parser.add_argument("--background_weights_split", type=str, help="Whether to use another mask for the background. Default None.", default="None")
 
     image_width = 512
     image_height = 512
@@ -188,50 +183,41 @@ if __name__ == "__main__":
         model_config[key] = value
 
     # Compute the number of positive and negative pixels in the training data
-    dilation_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (20, 20))
+    if background_weights_split == "None":
+        background_weights_split = "blood_vessel"
+    else:
+        if background_weights_split not in dataset_loader.list_segmentation_masks():
+            print("Invalid background weights split. The available options are: {}".format(dataset_loader.list_segmentation_masks()))
+            exit(1)
 
     with torch.no_grad():
-        num_positive_pixels = 0
-        num_negative_pixels = 0
+        num_background_positive_pixels = 0
+        num_background_negative_pixels = 0
+        num_foreground_positive_pixels = 0
+        num_foreground_negative_pixels = 0
         num_dset1_entries = 0
-        if background_weights_split:
-            num_background_negative_pixels = 0
 
         for k in range(len(training_entries)):
             if model_data_manager.data_information.loc[training_entries[k], "dataset"] == 1:
                 num_dset1_entries += 1
-                seg_mask = dataset_loader.get_segmentation_masks(training_entries[k])["blood_vessel"]
-                if background_weights_split:
-                    expanded_seg_mask = dilate(seg_mask, dilation_kernel)
-                    mask_tensor = torch.tensor(seg_mask, dtype=torch.float32, device=config.device)
-                    expanded_mask_tensor = torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device)
+                seg_mask = dataset_loader.get_segmentation_mask(training_entries[k], "blood_vessel")
+                foreground_mask = dataset_loader.get_segmentation_mask(training_entries[k], background_weights_split)
 
-                    num_positive_pixels = num_positive_pixels + torch.sum(mask_tensor)
-                    num_negative_pixels = num_negative_pixels + torch.sum(expanded_mask_tensor * (1.0 - mask_tensor))
-                    num_background_negative_pixels = num_background_negative_pixels + torch.sum(1.0 - expanded_mask_tensor)
+                num_foreground_positive_pixels += np.sum(np.logical_and(seg_mask, foreground_mask))
+                num_foreground_negative_pixels += np.sum(np.logical_and(np.logical_not(seg_mask), foreground_mask))
+                num_background_positive_pixels += np.sum(np.logical_and(seg_mask, np.logical_not(foreground_mask)))
+                num_background_negative_pixels += np.sum(np.logical_and(np.logical_not(seg_mask), np.logical_not(foreground_mask)))
 
-                    del mask_tensor, expanded_mask_tensor, expanded_seg_mask, seg_mask
-                else:
-                    mask_tensor = torch.tensor(seg_mask, dtype = torch.float32, device = config.device)
-                    num_positive_pixels = num_positive_pixels + torch.sum(mask_tensor)
-                    num_negative_pixels = num_negative_pixels + torch.sum(1.0 - mask_tensor)
-                    del mask_tensor
+        print("Number of foreground positive pixels: {}".format(num_foreground_positive_pixels))
+        print("Number of foreground negative pixels: {}".format(num_foreground_negative_pixels))
+        print("Number of background positive pixels: {}".format(num_background_positive_pixels))
+        print("Number of background negative pixels: {}".format(num_background_negative_pixels))
 
-        print("Number of positive pixels: {}".format(num_positive_pixels))
-        print("Number of negative pixels: {}".format(num_negative_pixels))
-        if background_weights_split:
-            print("Number of background negative pixels: {}".format(num_background_negative_pixels))
+        foreground_weight = (num_foreground_positive_pixels - num_foreground_negative_pixels) / (num_foreground_positive_pixels - num_foreground_negative_pixels + num_background_negative_pixels - num_background_positive_pixels)
+        background_weight = (num_background_negative_pixels - num_background_positive_pixels) / (num_foreground_positive_pixels - num_foreground_negative_pixels + num_background_negative_pixels - num_background_positive_pixels)
 
-        # Compute the class weights
-        if background_weights_split:
-            positive_weight = num_background_negative_pixels / (num_positive_pixels - num_negative_pixels + num_background_negative_pixels)
-            negative_weight = (num_positive_pixels - num_negative_pixels) / (num_positive_pixels - num_negative_pixels + num_background_negative_pixels)
-        else:
-            positive_weight = num_negative_pixels / (num_positive_pixels + num_negative_pixels)
-            negative_weight = num_positive_pixels / (num_positive_pixels + num_negative_pixels)
-
-        print("Positive weight: {}".format(positive_weight))
-        print("Negative weight: {}".format(negative_weight))
+        print("Foreground weight: {}".format(foreground_weight))
+        print("Background weight: {}".format(background_weight))
 
     rng = np.random.default_rng()
     for epoch in range(num_epochs):
@@ -272,34 +258,23 @@ if __name__ == "__main__":
 
             for k in range(trained, batch_end):
                 train_image_data_batch[k - trained, :, :, :] = torch.tensor(dataset_loader.get_image_data(training_entries_shuffle[k]), dtype=torch.float32, device=config.device).permute(2, 0, 1)
-                seg_mask = dataset_loader.get_segmentation_masks(training_entries_shuffle[k])["blood_vessel"]
+                seg_mask = dataset_loader.get_segmentation_masks(training_entries_shuffle[k], "blood_vessel")
                 train_image_ground_truth_batch[k - trained, :, :] = torch.tensor(seg_mask, dtype=torch.float32, device=config.device)
-                if background_weights_split:
-                    expanded_seg_mask = dilate(seg_mask, dilation_kernel)
-                    expanded_seg_mask = torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device)
-                    if use_deep_supervision:
-                        train_background_weights_batch[k - trained, :, :, :] = torch.exp(torch.arange(-args.pyramid_height + 1, 1, dtype=torch.float32, device=config.device)).unsqueeze(-1).unsqueeze(-1)\
-                                                                               * (torch.linspace(positive_weight, 0.6, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * expanded_seg_mask
-                                                                               + torch.linspace(negative_weight, 0.4, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * (1.0 - expanded_seg_mask))
-                    else:
-                        train_background_weights_batch[k - trained, :, :] = positive_weight * expanded_seg_mask + negative_weight * (1.0 - expanded_seg_mask)
+
+                foreground = dataset_loader.get_segmentation_mask(training_entries_shuffle[k], background_weights_split)
+                foreground_mask = torch.tensor(foreground, dtype=torch.float32, device=config.device)
+                if use_deep_supervision:
+                    train_background_weights_batch[k - trained, :, :, :] = torch.exp(torch.arange(-args.pyramid_height + 1, 1, dtype=torch.float32, device=config.device)).unsqueeze(-1).unsqueeze(-1)\
+                                                                           * (torch.linspace(foreground_weight, 0.6, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * foreground_mask
+                                                                           + torch.linspace(background_weight, 0.4, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * (1.0 - foreground_mask))
                 else:
-                    if use_deep_supervision:
-                        train_background_weights_batch[k - trained, :, :, :] = torch.exp(torch.arange(-args.pyramid_height + 1, 1, dtype=torch.float32, device=config.device)).unsqueeze(-1).unsqueeze(-1)\
-                                                                               * (torch.linspace(positive_weight, 0.6, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * train_image_ground_truth_batch[k - trained, :, :]
-                                                                               + torch.linspace(negative_weight, 0.4, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * (1.0 - train_image_ground_truth_batch[k - trained, :, :]))
-                    else:
-                        train_background_weights_batch[k - trained, :, :] = positive_weight * train_image_ground_truth_batch[k - trained, :, :] + negative_weight * (1.0 - train_image_ground_truth_batch[k - trained, :, :])
+                    train_background_weights_batch[k - trained, :, :] = foreground_weight * foreground_mask + background_weight * (1.0 - foreground_mask)
 
                 if model_data_manager.data_information.loc[training_entries_shuffle[k], "dataset"] != 1:
-                    if not background_weights_split:
-                        expanded_seg_mask = dilate(seg_mask, dilation_kernel)
-                        expanded_seg_mask = torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device)
-
                     if use_deep_supervision:
-                        train_background_weights_batch[k - trained, :, :, :] = train_background_weights_batch[k - trained, :, :, :] * expanded_seg_mask * 0.75
+                        train_background_weights_batch[k - trained, :, :, :] = train_background_weights_batch[k - trained, :, :, :] * foreground_mask * 0.75
                     else:
-                        train_background_weights_batch[k - trained, :, :] = train_background_weights_batch[k - trained, :, :] * expanded_seg_mask * 0.75
+                        train_background_weights_batch[k - trained, :, :] = train_background_weights_batch[k - trained, :, :] * foreground_mask * 0.75
                     train_dataset1_entries[k - trained, 0, 0] = 0.0
                 else:
                     train_dataset1_entries[k - trained, 0, 0] = 1.0
@@ -462,25 +437,18 @@ if __name__ == "__main__":
 
                 for k in range(tested, batch_end):
                     test_image_data_batch[k - tested, :, :, :] = torch.tensor(dataset_loader.get_image_data(validation_entries[k]), dtype=torch.float32, device=config.device).permute(2, 0, 1)
-                    seg_mask = dataset_loader.get_segmentation_masks(validation_entries[k])["blood_vessel"]
+                    seg_mask = dataset_loader.get_segmentation_mask(validation_entries[k], "blood_vessel")
                     test_image_ground_truth_batch[k - tested, :, :] = torch.tensor(seg_mask, dtype=torch.float32, device=config.device)
-                    if background_weights_split:
-                        expanded_seg_mask = dilate(seg_mask, dilation_kernel)
-                        if use_deep_supervision:
-                            test_background_weights_batch[k - tested, :, :, :] = torch.exp(torch.arange(-args.pyramid_height + 1, 1, dtype=torch.float32, device=config.device)).unsqueeze(-1).unsqueeze(-1)\
-                                                                                 * (torch.linspace(positive_weight, 0.6, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device)
-                                                                              + torch.linspace(negative_weight, 0.4, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * (1.0 - torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device)))
-                        else:
-                            test_background_weights_batch[k - tested, :, :] = positive_weight * torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device)\
-                                                                              + negative_weight * (1.0 - torch.tensor(expanded_seg_mask, dtype=torch.float32, device=config.device))
+
+                    foreground = dataset_loader.get_segmentation_mask(validation_entries[k], background_weights_split)
+                    foreground_mask = torch.tensor(foreground, dtype=torch.float32, device=config.device)
+
+                    if use_deep_supervision:
+                        test_background_weights_batch[k - tested, :, :, :] = torch.exp(torch.arange(-args.pyramid_height + 1, 1, dtype=torch.float32, device=config.device)).unsqueeze(-1).unsqueeze(-1)\
+                                                                             * (torch.linspace(foreground_weight, 0.6, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * foreground_mask
+                                                                          + torch.linspace(background_weight, 0.4, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * (1.0 - foreground_mask))
                     else:
-                        if use_deep_supervision:
-                            test_background_weights_batch[k - tested, :, :, :] = torch.exp(torch.arange(-args.pyramid_height + 1, 1, dtype=torch.float32, device=config.device)).unsqueeze(-1).unsqueeze(-1)\
-                                                                                 * (torch.linspace(positive_weight, 0.6, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * test_image_ground_truth_batch[k - tested, :, :]
-                                                                              + torch.linspace(negative_weight, 0.4, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * (1.0 - test_image_ground_truth_batch[k - tested, :, :]))
-                        else:
-                            test_background_weights_batch[k - tested, :, :] = positive_weight * test_image_ground_truth_batch[k - tested, :, :]\
-                                                                              + negative_weight * (1.0 - test_image_ground_truth_batch[k - tested, :, :])
+                        test_background_weights_batch[k - tested, :, :] = foreground_weight * foreground_mask + background_weight * (1.0 - foreground_mask)
 
                 y_pred = model(test_image_data_batch)
 

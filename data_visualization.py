@@ -12,6 +12,7 @@ import pandas as pd
 import numpy as np
 import torch
 import torchvision.transforms.functional
+import h5py
 
 import cv2
 import sklearn.cluster
@@ -28,6 +29,7 @@ for json_str in json_list:
     polygon_masks = json.loads(json_str)
     all_polygon_masks[polygon_masks["id"]] = polygon_masks["annotations"]
 
+segmentation_store = h5py.File(os.path.join("segmentation_data", "data_summary.h5"), "r")
 
 class MainWindow(PyQt5.QtWidgets.QMainWindow):
     def __init__(self):
@@ -132,6 +134,8 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         self.comparison_segmentation_dropdown.addItem("None")
         for dataset in model_data_manager.list_datasets():
             self.comparison_segmentation_dropdown.addItem(dataset)
+        for segmentation in segmentation_store["segmentation_data"][model_data_manager.data_information.index[0]].keys():
+            self.comparison_segmentation_dropdown.addItem("Segmentation data: " + segmentation)
 
         # Loop through the existing subdata, set the options for the subdata dropdown.
         self.subdata_restriction.addItem("None")
@@ -204,20 +208,36 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
             del data_loader
 
             # Add the segmentation mask as a white overlay if it exists
-            if segmentation_dataset != "None" and model_data_manager.dataset_exists(segmentation_dataset):
-                data_loader = model_data_manager.get_dataset_dataloader(segmentation_dataset)
-                segmentation_mask = np.array(data_loader.get_image_data(clicked_data_entry))
-                data_loader.close()
-                del data_loader
+            if segmentation_dataset != "None":
+                if segmentation_dataset.startswith("Segmentation data: "):
+                    try:
+                        dataset_name = segmentation_dataset[len("Segmentation data: "):]
+                        segmentation_mask = np.array(segmentation_store["segmentation_data"][clicked_data_entry][dataset_name], dtype=np.uint8) * 255
 
-                if len(segmentation_mask.shape) == 2:
-                    segmentation_mask = np.repeat(np.expand_dims(segmentation_mask, axis=2), axis=2, repeats=3)
+                        if len(segmentation_mask.shape) == 2:
+                            segmentation_mask = np.repeat(np.expand_dims(segmentation_mask, axis=2), axis=2, repeats=3)
 
-                if segmentation_mask.shape[2] == 1:
-                    segmentation_mask = np.repeat(segmentation_mask, 3, axis=2)
+                        if segmentation_mask.shape[2] == 1:
+                            segmentation_mask = np.repeat(segmentation_mask, 3, axis=2)
 
-                image_transformed = cv2.addWeighted(image_transformed, 0.5, segmentation_mask, 0.5, 0)
-                del segmentation_mask
+                        image_transformed = cv2.addWeighted(image_transformed, 0.5, segmentation_mask, 0.5, 0)
+                        del segmentation_mask
+                    except Exception as e:
+                        traceback.print_exc()
+                elif model_data_manager.dataset_exists(segmentation_dataset):
+                    data_loader = model_data_manager.get_dataset_dataloader(segmentation_dataset)
+                    segmentation_mask = np.array(data_loader.get_image_data(clicked_data_entry))
+                    data_loader.close()
+                    del data_loader
+
+                    if len(segmentation_mask.shape) == 2:
+                        segmentation_mask = np.repeat(np.expand_dims(segmentation_mask, axis=2), axis=2, repeats=3)
+
+                    if segmentation_mask.shape[2] == 1:
+                        segmentation_mask = np.repeat(segmentation_mask, 3, axis=2)
+
+                    image_transformed = cv2.addWeighted(image_transformed, 0.5, segmentation_mask, 0.5, 0)
+                    del segmentation_mask
 
             label2 = self.create_label_from_image(image_transformed, widget)
 
