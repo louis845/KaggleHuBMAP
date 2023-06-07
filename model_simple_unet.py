@@ -550,7 +550,7 @@ if __name__ == "__main__":
         torch.cuda.empty_cache()
 
         # Save the model and optimizer
-        if epoch % epochs_per_save == 0:
+        if epoch % epochs_per_save == 0 and epoch > 0:
             torch.save(model.state_dict(), os.path.join(model_dir, "model_epoch{}.pt".format(epoch)))
             torch.save(optimizer.state_dict(), os.path.join(model_dir, "optimizer_epoch{}.pt".format(epoch)))
 

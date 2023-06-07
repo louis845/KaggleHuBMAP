@@ -115,6 +115,9 @@ if __name__ == "__main__":
     }
     for key, value in extra_info.items():
         model_config[key] = value
+    # Save the model config
+    with open(os.path.join(model_dir, "config.json"), "w") as f:
+        json.dump(model_config, f, indent=4)
 
     # Compute the number of positive and negative pixels in the training data
     if data_crude_level_background not in dataset_loader.list_segmentation_masks():
@@ -473,7 +476,7 @@ if __name__ == "__main__":
         torch.cuda.empty_cache()
 
         # Save the model and optimizer
-        if epoch % epochs_per_save == 0:
+        if epoch % epochs_per_save == 0 and epoch > 0:
             torch.save(model.state_dict(), os.path.join(model_dir, "model_epoch{}.pt".format(epoch)))
             torch.save(optimizer.state_dict(), os.path.join(model_dir, "optimizer_epoch{}.pt".format(epoch)))
 
@@ -485,11 +488,8 @@ if __name__ == "__main__":
     # Save the training history by converting it to a dataframe
     train_history = pd.DataFrame(train_history)
     train_history.to_csv(os.path.join(model_dir, "train_history.csv"), index=False)
-    # Save the model config
-    with open(os.path.join(model_dir, "config.json"), "w") as f:
-        json.dump(model_config, f, indent=4)
 
-    fig, (ax1, ax2, ax3) = plt.subplots(2, 1, figsize=(12, 12))
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 12))
     ax1.plot(train_history["loss"], label="Loss")
     ax1.plot(train_history["val_loss"], label="Val Loss")
     ax1.plot(train_history["loss_crude"], label="Loss Crude")
