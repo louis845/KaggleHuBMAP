@@ -185,15 +185,21 @@ class UNetProgressiveWrapper:
             decay_values = torch.pow(input=decay_exponent_base, exponent=torch.arange(0, self.outputs, dtype=torch.float32, device=config.device))
 
         with torch.no_grad():
-            probas = []
+            probas_list = []
             for k in range(self.outputs):
                 self.model[k].to(config.device)
-                probas.append(self.model[k](input))
+                probas_list.append(self.model[k](input))
                 self.model[k].to(device_cpu)
-            probas = torch.stack(probas, dim=1)
+            probas = torch.stack(probas_list, dim=1)
             return_metrics = self.compute_metrics(
                 torch.cumprod(probas, dim=1), ground_truth_mask, foreground_mask, foreground_weight, background_weight, frozen_outputs=frozen_outputs
             )
+        del probas_list[:]
+        del probas_list
+        gc.collect()
+        torch.cuda.empty_cache()
+        gc.collect()
+
 
         foreground_weights, background_weights = compute_total_weights(foreground_weight, background_weight, self.outputs)
 
@@ -206,38 +212,44 @@ class UNetProgressiveWrapper:
 
             losses = []
 
-            preprobas = None
-            if k > 0:
-                preprobas = torch.prod(probas[:, 0:k, :, :], dim=1)
+            dummy_tensors = []
+            with torch.no_grad():
+                preprobas = None
+                if k > 0:
+                    preprobas = torch.prod(probas[:, 0:k, :, :], dim=1)
+                    dummy_tensors.append(preprobas)
 
             for j in range(k, self.outputs):
-                if j > k:
-                    postprobas = torch.prod(probas[:, (k + 1):(j + 1), :, :], dim=1)
-                    if k > 0:
-                        prepostprobas = preprobas * postprobas
+                with torch.no_grad():
+                    if j > k:
+                        postprobas = torch.prod(probas[:, (k + 1):(j + 1), :, :], dim=1)
+                        dummy_tensors.append(postprobas)
+                        if k > 0:
+                            prepostprobas = preprobas * postprobas
+                            dummy_tensors.append(prepostprobas)
+                        else:
+                            prepostprobas = postprobas
+                            dummy_tensors.append(prepostprobas)
                     else:
-                        prepostprobas = postprobas
-                else:
-                    prepostprobas = preprobas
+                        prepostprobas = preprobas
+                        dummy_tensors.append(prepostprobas)
 
                 if prepostprobas is None:
                     loss = torch.nn.functional.binary_cross_entropy(self.model[k](input), ground_truth_mask, reduction='none')
                 else:
                     loss = torch.nn.functional.binary_cross_entropy(self.model[k](input) * prepostprobas, ground_truth_mask, reduction='none')
+                dummy_tensors.append(loss)
                 loss = torch.sum(loss * foreground_mask * foreground_weights[j] + loss * (1.0 - foreground_mask) * background_weights[j])
                 losses.append(loss)
             loss = torch.sum(torch.stack(losses) * decay_values[(k - frozen_outputs):])
-
 
             loss.backward()
             optimizer.step()
 
             self.model[k].to(device_cpu)
             copy_optimizer(self.model[k], optimizer, self.optimizer[k], device_cpu)
-            del losses[:]
-            del optimizer, loss, losses
-            if k > 0:
-                del preprobas
+            del losses[:], dummy_tensors[:]
+            del optimizer, loss, losses, dummy_tensors, probas
 
             gc.collect()
             torch.cuda.empty_cache()
