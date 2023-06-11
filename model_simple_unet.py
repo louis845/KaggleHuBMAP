@@ -107,6 +107,7 @@ if __name__ == "__main__":
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Number of gradient accumulation steps. Default 1. If set to -1, accumulate for the whole dataset.")
     parser.add_argument("--use_batch_norm", action="store_true", help="Whether to use batch normalization. Default False.")
     parser.add_argument("--use_res_conv", action="store_true", help="Whether to use deeper residual convolutional networks. Default False.")
+    parser.add_argument("--use_atrous_conv", action="store_true", help="Whether to use atrous convolutional networks. Default False.")
     parser.add_argument("--hidden_channels", type=int, default=64, help="Number of hidden channels to use. Default 64.")
     parser.add_argument("--pyramid_height", type=int, default=4, help="Number of pyramid levels to use. Default 4.")
     parser.add_argument("--unet_plus", type=str, default="none", help="Whether to use unet plus plus. Available options: none, standard, or deep_supervision. Default none.")
@@ -134,15 +135,18 @@ if __name__ == "__main__":
     if net_mode != "none" and args.unet_attention:
         print("Cannot use attention with unet plus.")
         exit(1)
+    if net_mode != "none" and args.use_atrous_conv:
+        print("Cannot use atrous convolution with unet plus.")
+        exit(1)
 
     use_deep_supervision = (net_mode == "deep_supervision")
     if net_mode == "none":
         if args.unet_attention:
             model = model_unet_attention.UNetClassifier(hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
-                                                   use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height, in_channels=args.in_channels).to(device=config.device)
+                                                   use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height, in_channels=args.in_channels, use_atrous_conv=args.use_atrous_conv).to(device=config.device)
         else:
             model = model_unet_base.UNetClassifier(hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
-                                                   use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height, in_channels=args.in_channels).to(device=config.device)
+                                                   use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height, in_channels=args.in_channels, use_atrous_conv=args.use_atrous_conv).to(device=config.device)
     else:
         model = model_unet_plus.UNetClassifier(hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                   use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
@@ -201,6 +205,7 @@ if __name__ == "__main__":
         "gradient_accumulation_steps": gradient_accumulation_steps,
         "use_batch_norm": args.use_batch_norm,
         "use_res_conv": args.use_res_conv,
+        "use_atrous_conv": args.use_atrous_conv,
         "hidden_channels": args.hidden_channels,
         "pyramid_height": args.pyramid_height,
         "unet_plus": args.unet_plus,
@@ -231,6 +236,9 @@ if __name__ == "__main__":
 
         foreground_weight = (num_background_negative_pixels - num_background_positive_pixels) / (num_foreground_positive_pixels - num_foreground_negative_pixels + num_background_negative_pixels - num_background_positive_pixels)
         background_weight = (num_foreground_positive_pixels - num_foreground_negative_pixels) / (num_foreground_positive_pixels - num_foreground_negative_pixels + num_background_negative_pixels - num_background_positive_pixels)
+
+        foreground_weight = 0.5
+        background_weight = 0.5
 
         print("Foreground weight: {}".format(foreground_weight))
         print("Background weight: {}".format(background_weight))

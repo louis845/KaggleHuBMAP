@@ -155,6 +155,9 @@ if __name__ == "__main__":
         foreground_weight_crude = (num_background_negative_pixels_crude - num_background_positive_pixels_crude) / (num_foreground_positive_pixels_crude - num_foreground_negative_pixels_crude + num_background_negative_pixels_crude - num_background_positive_pixels_crude)
         background_weight_crude = (num_foreground_positive_pixels_crude - num_foreground_negative_pixels_crude) / (num_foreground_positive_pixels_crude - num_foreground_negative_pixels_crude + num_background_negative_pixels_crude - num_background_positive_pixels_crude)
 
+        foreground_weight = 0.5
+        background_weight = 0.5
+
         print("Foreground weight: {}".format(foreground_weight))
         print("Background weight: {}".format(background_weight))
         print("Foreground weight crude: {}".format(foreground_weight_crude))

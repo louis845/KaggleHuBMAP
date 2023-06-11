@@ -240,6 +240,7 @@ def model_get_argparse_arguments(args, allow_missing_validation=False):
 def transform_add_argparse_arguments(parser, requires_model=True):
     parser.add_argument("--original_data_name", type=str, help="The name of the original data. Don't type anything to use the original data.")
     parser.add_argument("--transformed_data_name", type=str, required=True, help="The name of the transformed data.")
+    parser.add_argument("--subdata", type=str, help="The subdata to transform the data on. If not specified, the whole data will be used.")
 
     if requires_model:
         parser.add_argument("--model_name", type=str, required=True, help="The name of the model.")
@@ -270,14 +271,26 @@ def transform_get_argparse_arguments(args, requires_model=True) -> (DatasetDataL
             print("Data already exists! Pick another name.")
             quit()
 
+    subdata = args.subdata
+    subdata_entries = None
+    if subdata is not None:
+        if not subdata_exists(subdata):
+            print("Subdata does not exist! Pick another subdata. Available subdata:", os.listdir(subdata_dir))
+            quit()
+        print("Using subdata {}".format(subdata))
+        with open(os.path.join(subdata_dir, subdata + ".json")) as json_file:
+            subdata_json = json.load(json_file)
+
+        subdata_entries = subdata_json["entry_list"]
+
     input_data_loader = get_dataset_dataloader(input_data)
     output_data_writer = get_dataset_datawriter(output_data)
 
     if requires_model:
         model_path = os.path.join(model_dir, model_name)
-        return input_data_loader, output_data_writer, model_path
+        return input_data_loader, output_data_writer, model_path, subdata_entries
     else:
-        return input_data_loader, output_data_writer, None
+        return input_data_loader, output_data_writer, None, subdata_entries
 
 
 def subdata_exists(subdata_name):
