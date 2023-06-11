@@ -27,14 +27,26 @@ if not os.path.exists(subdata_dir):
 data_information = pd.read_csv(os.path.join(config.input_data_path, "tile_meta.csv"), index_col=0)
 entries_index_to_int_map = pd.Series(np.arange(len(data_information)), index=data_information.index)
 
+def hdf5_load_in_memory(recursive):
+    if isinstance(recursive, h5py.Dataset):
+        return np.array(recursive)
+    result = {}
+    for key, val in recursive.items():
+        result[key] = hdf5_load_in_memory(val)
+    return result
+
 class DatasetDataLoader():
-    def __init__(self, dataset_name):
+    def __init__(self, dataset_name, load_in_memory=False):
         self.dataset_name = dataset_name
         if dataset_name is None:
             self.data_store = None
         else:
             self.data_store = h5py.File(os.path.join(transformed_data_dir, dataset_name, "data.hdf5"), "r")
         self.segmentation_store = h5py.File(os.path.join("segmentation_data", "data_summary.h5"), "r")
+
+        if load_in_memory:
+            self.data_store = hdf5_load_in_memory(self.data_store)
+            self.segmentation_store = hdf5_load_in_memory(self.segmentation_store)
 
     def get_image_data(self, entry_name):
         if self.data_store is None:
@@ -80,10 +92,10 @@ class DatasetDataWriter():
     def close(self):
         self.data_store.close()
 
-def get_dataset_dataloader(dataset_name) -> DatasetDataLoader:
+def get_dataset_dataloader(dataset_name, load_in_memory: bool) -> DatasetDataLoader:
     if dataset_name is not None:
         assert dataset_exists(dataset_name)
-    return DatasetDataLoader(dataset_name)
+    return DatasetDataLoader(dataset_name, load_in_memory)
 
 def get_dataset_datawriter(dataset_name) -> DatasetDataWriter:
     return DatasetDataWriter(dataset_name)
@@ -155,6 +167,7 @@ def model_add_argparse_arguments(parser, allow_missing_validation=False):
     else:
         parser.add_argument("--val_subdata", type=str, required=True, help="The subdata to be used for validation.")
     parser.add_argument("--prev_model_ckpt", type=str, help="The previous model to be loaded to continue training.")
+    parser.add_argument("--load_in_memory", action="store_true", help="Whether to load the data in memory.")
 
 def model_get_argparse_arguments(args, allow_missing_validation=False):
     model_name = args.model_name
@@ -181,6 +194,7 @@ def model_get_argparse_arguments(args, allow_missing_validation=False):
             print("Validation subdata does not exist! Pick another subdata. Available subdata:", os.listdir(subdata_dir))
             quit()
     prev_model_ckpt = args.prev_model_ckpt
+    load_in_memory = args.load_in_memory
 
     # Load the json of train_subdata and val_subdata
     with open(os.path.join(subdata_dir, train_subdata + ".json")) as json_file:
@@ -225,7 +239,7 @@ def model_get_argparse_arguments(args, allow_missing_validation=False):
     prev_model_dir = None
     if prev_model_ckpt is not None:
         prev_model_dir = os.path.join(model_dir, prev_model_ckpt)
-    data_loader = get_dataset_dataloader(dataset)
+    data_loader = get_dataset_dataloader(dataset, load_in_memory)
 
     if not os.path.exists(new_model_dir):
         os.mkdir(new_model_dir)
