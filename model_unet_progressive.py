@@ -234,8 +234,12 @@ class UNetProgressiveWrapper:
 
             self.model[k].to(device_cpu)
             copy_optimizer(self.model[k], optimizer, self.optimizer[k], device_cpu)
-            del optimizer
+            del losses[:]
+            del optimizer, loss, losses
+            if k > 0:
+                del preprobas
 
+            gc.collect()
             torch.cuda.empty_cache()
             gc.collect()
 
