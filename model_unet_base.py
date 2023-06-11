@@ -46,6 +46,11 @@ class AtrousConv(torch.nn.Module):
             self.batchnorm2 = torch.nn.GroupNorm(num_groups=out_channels // 8, num_channels=out_channels)
         self.elu2 = torch.nn.ELU(inplace=True)
 
+        self.conv3 = torch.nn.Conv2d(out_channels, out_channels, 3, bias=True, padding="same", padding_mode="replicate")
+        if use_batch_norm:
+            self.batchnorm3 = torch.nn.GroupNorm(num_groups=out_channels // 4, num_channels=out_channels)
+        self.elu3 = torch.nn.ELU(inplace=True)
+
         torch.nn.init.constant_(self.conv1.bias, 0.0)
         for k in range(1, 5):
             torch.nn.init.constant_(self.conv2[k - 1].bias, 0.0)
@@ -61,6 +66,10 @@ class AtrousConv(torch.nn.Module):
         if self.use_batch_norm:
             x = self.batchnorm2(x)
         x = self.elu2(x)
+        x = self.conv3(x)
+        if self.use_batch_norm:
+            x = self.batchnorm3(x)
+        x = self.elu3(x)
         return x
 
 class ResConvBlock(torch.nn.Module):
