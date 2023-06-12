@@ -171,7 +171,7 @@ class UNetBackbone(torch.nn.Module):
         return ret
 
 class UNetEndClassifier(torch.nn.Module):
-    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, deep_supervision=False):
+    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, deep_supervision=False, num_classes=1):
         super(UNetEndClassifier, self).__init__()
         self.pyr_height = pyr_height
         self.conv_up = torch.nn.ModuleList()

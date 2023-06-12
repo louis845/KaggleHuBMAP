@@ -92,7 +92,7 @@ class DatasetDataWriter():
     def close(self):
         self.data_store.close()
 
-def get_dataset_dataloader(dataset_name, load_in_memory: bool) -> DatasetDataLoader:
+def get_dataset_dataloader(dataset_name, load_in_memory:bool=False) -> DatasetDataLoader:
     if dataset_name is not None:
         assert dataset_exists(dataset_name)
     return DatasetDataLoader(dataset_name, load_in_memory)

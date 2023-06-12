@@ -160,59 +160,76 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
             button.setVisible(visible)
 
     def selection_button_clicked(self, clicked_data_entry):
-        # Create a new tab in the tabbed interface, and add the data visualization for the selected dataset into the new tab.
-        # Load an image from os.path.join(config.input_data_path, "train", clicked_data_entry + ".tif") using cv2, and save it as a numpy array.
-        # The image is to be displayed in a Qt widget, so it needs to be converted into a QImage first.
+        try:
+            # Create a new tab in the tabbed interface, and add the data visualization for the selected dataset into the new tab.
+            # Load an image from os.path.join(config.input_data_path, "train", clicked_data_entry + ".tif") using cv2, and save it as a numpy array.
+            # The image is to be displayed in a Qt widget, so it needs to be converted into a QImage first.
 
-        # Load the image here
-        image = cv2.imread(os.path.join(config.input_data_path, "train", clicked_data_entry + ".tif"))
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            # Load the image here
+            image = cv2.imread(os.path.join(config.input_data_path, "train", clicked_data_entry + ".tif"))
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        # Add the polygon annotations if it exists
-        if clicked_data_entry in all_polygon_masks:
-            for polygon_mask in all_polygon_masks[clicked_data_entry]:
-                # The color depends on the type, default unknown color = blue
-                color = (0, 0, 255)
-                if polygon_mask["type"] == "glomerulus":
-                    color = (0, 255, 0) # green
-                elif polygon_mask["type"] == "blood_vessel":
-                    color = (255, 0, 0) # red
+            # Add the polygon annotations if it exists
+            if clicked_data_entry in all_polygon_masks:
+                for polygon_mask in all_polygon_masks[clicked_data_entry]:
+                    # The color depends on the type, default unknown color = blue
+                    color = (0, 0, 255)
+                    if polygon_mask["type"] == "glomerulus":
+                        color = (0, 255, 0) # green
+                    elif polygon_mask["type"] == "blood_vessel":
+                        color = (255, 0, 0) # red
 
-                # Draw the polygon
-                polygon_coordinate_list = polygon_mask["coordinates"][0] # This is a list of integer 2-tuples, representing the coordinates.
-                for i in range(len(polygon_coordinate_list)):
-                    cv2.line(image, polygon_coordinate_list[i], polygon_coordinate_list[(i + 1) % len(polygon_coordinate_list)], color, 3)
+                    # Draw the polygon
+                    polygon_coordinate_list = polygon_mask["coordinates"][0] # This is a list of integer 2-tuples, representing the coordinates.
+                    for i in range(len(polygon_coordinate_list)):
+                        cv2.line(image, polygon_coordinate_list[i], polygon_coordinate_list[(i + 1) % len(polygon_coordinate_list)], color, 3)
 
-                # Fill the polygon with the color, with 35% opacity
-                overlay = image.copy()
-                cv2.fillPoly(overlay, [np.array(polygon_coordinate_list)], color)
-                image = cv2.addWeighted(overlay, 0.35, image, 0.65, 0)
+                    # Fill the polygon with the color, with 35% opacity
+                    overlay = image.copy()
+                    cv2.fillPoly(overlay, [np.array(polygon_coordinate_list)], color)
+                    image = cv2.addWeighted(overlay, 0.35, image, 0.65, 0)
 
-        widget = PyQt5.QtWidgets.QWidget()
-        layout = PyQt5.QtWidgets.QVBoxLayout()
-        widget.setLayout(layout)
+            widget = PyQt5.QtWidgets.QWidget()
+            layout = PyQt5.QtWidgets.QVBoxLayout()
+            widget.setLayout(layout)
 
-        label = self.create_label_from_image(image, widget)
-        alt_dataset = str(self.comparison_dropdown.currentText())
-        segmentation_dataset = str(self.comparison_segmentation_dropdown.currentText())
+            label = self.create_label_from_image(image, widget)
+            alt_dataset = str(self.comparison_dropdown.currentText())
+            segmentation_dataset = str(self.comparison_segmentation_dropdown.currentText())
 
-        if model_data_manager.dataset_exists(alt_dataset):
-            data_loader = model_data_manager.get_dataset_dataloader(alt_dataset)
-            image_transformed = np.array(data_loader.get_image_data(clicked_data_entry))
+            if model_data_manager.dataset_exists(alt_dataset):
+                data_loader = model_data_manager.get_dataset_dataloader(alt_dataset)
+                image_transformed = np.array(data_loader.get_image_data(clicked_data_entry))
 
-            if image_transformed.shape[2] == 1:
-                image_transformed = np.repeat(image_transformed, 3, axis=2)
-                image_transformed = image_transformed.astype(dtype=np.uint8)
+                if image_transformed.shape[2] == 1:
+                    image_transformed = np.repeat(image_transformed, 3, axis=2)
+                    image_transformed = image_transformed.astype(dtype=np.uint8)
 
-            data_loader.close()
-            del data_loader
+                data_loader.close()
+                del data_loader
 
-            # Add the segmentation mask as a white overlay if it exists
-            if segmentation_dataset != "None":
-                if segmentation_dataset.startswith("Segmentation data: "):
-                    try:
-                        dataset_name = segmentation_dataset[len("Segmentation data: "):]
-                        segmentation_mask = np.array(segmentation_store["segmentation_data"][clicked_data_entry][dataset_name], dtype=np.uint8) * 255
+                # Add the segmentation mask as a white overlay if it exists
+                if segmentation_dataset != "None":
+                    if segmentation_dataset.startswith("Segmentation data: "):
+                        try:
+                            dataset_name = segmentation_dataset[len("Segmentation data: "):]
+                            segmentation_mask = np.array(segmentation_store["segmentation_data"][clicked_data_entry][dataset_name], dtype=np.uint8) * 255
+
+                            if len(segmentation_mask.shape) == 2:
+                                segmentation_mask = np.repeat(np.expand_dims(segmentation_mask, axis=2), axis=2, repeats=3)
+
+                            if segmentation_mask.shape[2] == 1:
+                                segmentation_mask = np.repeat(segmentation_mask, 3, axis=2)
+
+                            image_transformed = cv2.addWeighted(image_transformed, 0.5, segmentation_mask, 0.5, 0)
+                            del segmentation_mask
+                        except Exception as e:
+                            traceback.print_exc()
+                    elif model_data_manager.dataset_exists(segmentation_dataset):
+                        data_loader = model_data_manager.get_dataset_dataloader(segmentation_dataset)
+                        segmentation_mask = np.array(data_loader.get_image_data(clicked_data_entry))
+                        data_loader.close()
+                        del data_loader
 
                         if len(segmentation_mask.shape) == 2:
                             segmentation_mask = np.repeat(np.expand_dims(segmentation_mask, axis=2), axis=2, repeats=3)
@@ -222,44 +239,30 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
 
                         image_transformed = cv2.addWeighted(image_transformed, 0.5, segmentation_mask, 0.5, 0)
                         del segmentation_mask
-                    except Exception as e:
-                        traceback.print_exc()
-                elif model_data_manager.dataset_exists(segmentation_dataset):
-                    data_loader = model_data_manager.get_dataset_dataloader(segmentation_dataset)
-                    segmentation_mask = np.array(data_loader.get_image_data(clicked_data_entry))
-                    data_loader.close()
-                    del data_loader
 
-                    if len(segmentation_mask.shape) == 2:
-                        segmentation_mask = np.repeat(np.expand_dims(segmentation_mask, axis=2), axis=2, repeats=3)
+                label2 = self.create_label_from_image(image_transformed, widget)
 
-                    if segmentation_mask.shape[2] == 1:
-                        segmentation_mask = np.repeat(segmentation_mask, 3, axis=2)
+            # Add another label beneath the image label for text. The text says "Red: blood vessel, Green: Glomerulus, Blue: Unknown".
+            text_label = PyQt5.QtWidgets.QLabel(self.tabbed_interface)
+            text_label.setText("Red: blood vessel, Green: Glomerulus, Blue: Unknown")
+            text_label.setAlignment(PyQt5.QtCore.Qt.AlignCenter)
+            text_label.show()
 
-                    image_transformed = cv2.addWeighted(image_transformed, 0.5, segmentation_mask, 0.5, 0)
-                    del segmentation_mask
-
-            label2 = self.create_label_from_image(image_transformed, widget)
-
-        # Add another label beneath the image label for text. The text says "Red: blood vessel, Green: Glomerulus, Blue: Unknown".
-        text_label = PyQt5.QtWidgets.QLabel(self.tabbed_interface)
-        text_label.setText("Red: blood vessel, Green: Glomerulus, Blue: Unknown")
-        text_label.setAlignment(PyQt5.QtCore.Qt.AlignCenter)
-        text_label.show()
-
-        layout.addWidget(label)
-        if model_data_manager.dataset_exists(alt_dataset):
-            layout.addWidget(label2)
-        layout.addWidget(text_label)
+            layout.addWidget(label)
+            if model_data_manager.dataset_exists(alt_dataset):
+                layout.addWidget(label2)
+            layout.addWidget(text_label)
 
 
-        self.tabbed_interface.addTab(widget, clicked_data_entry)
+            self.tabbed_interface.addTab(widget, clicked_data_entry)
 
-        # Add the tab into the list of tabs.
-        self.total_tabs.append(widget)
+            # Add the tab into the list of tabs.
+            self.total_tabs.append(widget)
 
-        # Set the current tab to be the newly created tab.
-        self.tabbed_interface.setCurrentWidget(widget)
+            # Set the current tab to be the newly created tab.
+            self.tabbed_interface.setCurrentWidget(widget)
+        except Exception as e:
+            traceback.print_exc()
 
     def create_label_from_image(self, image_np, parent):
         # Convert the image into a QImage

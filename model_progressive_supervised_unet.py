@@ -198,9 +198,8 @@ if __name__ == "__main__":
                     train_image_data_batch = train_image_data_batch[..., image_height - 1:-image_height + 1, image_width - 1:-image_width + 1]
                     train_image_ground_truth_batch = train_image_ground_truth_batch[..., image_height - 1:-image_height + 1, image_width - 1:-image_width + 1]
 
-                # Crop image to random 448x448
-                crop_height = 448
-                crop_width = 448
+                crop_height = 384
+                crop_width = 384
 
                 crop_y = np.random.randint(0, image_height - crop_height + 1)
                 crop_x = np.random.randint(0, image_width - crop_width + 1)

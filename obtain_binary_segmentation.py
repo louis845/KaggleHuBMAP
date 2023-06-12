@@ -42,6 +42,8 @@ def get_mask_information(mask):
     erode50_percent_mask = erosion_history[int(0.50 * (len(erosion_history) - 1))]
     erode75_percent_mask = erosion_history[int(0.75 * (len(erosion_history) - 1))]
 
+    boundary_mask = erosion_history[0] - erode50_percent_mask
+
     assert np.sum(erode5_mask * (1 - erosion_history[0])) == 0
     assert np.sum(erode10_mask * (1 - erosion_history[0])) == 0
     assert np.sum(erode25_percent_mask * (1 - erosion_history[0])) == 0
@@ -56,6 +58,7 @@ def get_mask_information(mask):
     assert erode25_percent_mask.shape == (512, 512)
     assert erode50_percent_mask.shape == (512, 512)
     assert erode75_percent_mask.shape == (512, 512)
+    assert boundary_mask.shape == (512, 512)
 
     return {
         "large_mask": np.expand_dims(large_mask, axis=-1),
@@ -65,7 +68,8 @@ def get_mask_information(mask):
         "erode10_mask": np.expand_dims(erode10_mask, axis=-1),
         "erode25_percent_mask": np.expand_dims(erode25_percent_mask, axis=-1),
         "erode50_percent_mask": np.expand_dims(erode50_percent_mask, axis=-1),
-        "erode75_percent_mask": np.expand_dims(erode75_percent_mask, axis=-1)
+        "erode75_percent_mask": np.expand_dims(erode75_percent_mask, axis=-1),
+        "boundary_mask": np.expand_dims(boundary_mask, axis=-1)
     }
 
 
@@ -143,6 +147,10 @@ if __name__ == '__main__':
             blood_vessel_mask_erode75_percent = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
             unknown_mask_erode75_percent = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
 
+            glomerulus_mask_boundary = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+            blood_vessel_mask_boundary = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+            unknown_mask_boundary = np.zeros(shape=(image.shape[0], image.shape[1], 1), dtype=np.uint8)
+
             for polygon_mask in all_polygon_masks[entry]:
                 # The color depends on the type, default unknown color = blue
                 polygon_coordinate_list = polygon_mask["coordinates"][0]  # This is a list of integer 2-tuples, representing the coordinates.
@@ -160,6 +168,7 @@ if __name__ == '__main__':
                     glomerulus_mask_erode25_percent = np.bitwise_or(glomerulus_mask_erode25_percent, mask_deviants["erode25_percent_mask"])
                     glomerulus_mask_erode50_percent = np.bitwise_or(glomerulus_mask_erode50_percent, mask_deviants["erode50_percent_mask"])
                     glomerulus_mask_erode75_percent = np.bitwise_or(glomerulus_mask_erode75_percent, mask_deviants["erode75_percent_mask"])
+                    glomerulus_mask_boundary = np.bitwise_or(glomerulus_mask_boundary, mask_deviants["boundary_mask"])
 
                     num_glomerulus += 1
                     glomerulus_size.append(np.sum(mask))
@@ -173,6 +182,7 @@ if __name__ == '__main__':
                     blood_vessel_mask_erode25_percent = np.bitwise_or(blood_vessel_mask_erode25_percent, mask_deviants["erode25_percent_mask"])
                     blood_vessel_mask_erode50_percent = np.bitwise_or(blood_vessel_mask_erode50_percent, mask_deviants["erode50_percent_mask"])
                     blood_vessel_mask_erode75_percent = np.bitwise_or(blood_vessel_mask_erode75_percent, mask_deviants["erode75_percent_mask"])
+                    blood_vessel_mask_boundary = np.bitwise_or(blood_vessel_mask_boundary, mask_deviants["boundary_mask"])
 
                     num_blood_vessel += 1
                     blood_vessel_size.append(np.sum(mask))
@@ -186,6 +196,7 @@ if __name__ == '__main__':
                     unknown_mask_erode25_percent = np.bitwise_or(unknown_mask_erode25_percent, mask_deviants["erode25_percent_mask"])
                     unknown_mask_erode50_percent = np.bitwise_or(unknown_mask_erode50_percent, mask_deviants["erode50_percent_mask"])
                     unknown_mask_erode75_percent = np.bitwise_or(unknown_mask_erode75_percent, mask_deviants["erode75_percent_mask"])
+                    unknown_mask_boundary = np.bitwise_or(unknown_mask_boundary, mask_deviants["boundary_mask"])
 
                     num_unknown += 1
                     unknown_size.append(np.sum(mask))
@@ -240,6 +251,10 @@ if __name__ == '__main__':
             entry_h5.create_dataset(name="glomerulus_erode75_percent", data = (np.squeeze(glomerulus_mask_erode75_percent, axis=-1) > 0), compression="gzip", compression_opts=9)
             entry_h5.create_dataset(name="blood_vessel_erode75_percent", data = (np.squeeze(blood_vessel_mask_erode75_percent, axis=-1) > 0), compression="gzip", compression_opts=9)
             entry_h5.create_dataset(name="unknown_erode75_percent", data = (np.squeeze(unknown_mask_erode75_percent, axis=-1) > 0), compression="gzip", compression_opts=9)
+
+            entry_h5.create_dataset(name="glomerulus_boundary", data = (np.squeeze(glomerulus_mask_boundary, axis=-1) > 0), compression="gzip", compression_opts=9)
+            entry_h5.create_dataset(name="blood_vessel_boundary", data = (np.squeeze(blood_vessel_mask_boundary, axis=-1) > 0), compression="gzip", compression_opts=9)
+            entry_h5.create_dataset(name="unknown_boundary", data = (np.squeeze(unknown_mask_boundary, axis=-1) > 0), compression="gzip", compression_opts=9)
 
             # Save the masks as 3 png files using cv2.imwrite
             cv2.imwrite(os.path.join("segmentation_data", entry, "glomerulus.png"), glomerulus_mask.astype(np.uint8) * 255)
