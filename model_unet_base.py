@@ -192,8 +192,14 @@ class UNetEndClassifier(torch.nn.Module):
             self.outconv_deep = torch.nn.ModuleList()
             for i in range(pyr_height - 1):
                 self.outconv_deep.append(torch.nn.Conv2d(hidden_channels * 2 ** (pyr_height - i - 1), 1, 1, bias=True))
-        self.outconv = torch.nn.Conv2d(hidden_channels, 1, 1, bias=True)
+
+        if num_classes > 1:
+            self.outconv = torch.nn.Conv2d(hidden_channels, num_classes + 1, 1, bias=True)
+        else:
+            self.outconv = torch.nn.Conv2d(hidden_channels, 1, 1, bias=True)
         self.sigmoid = torch.nn.Sigmoid()
+
+        self.num_classes = num_classes
 
 
     def forward(self, x_list):
@@ -206,17 +212,20 @@ class UNetEndClassifier(torch.nn.Module):
             if self.deep_supervision and i < self.pyr_height - 1:
                 deep_outputs.append(torch.squeeze(self.sigmoid(self.outconv_deep[i](x)), dim=1))
 
-        result = torch.squeeze(self.sigmoid(self.outconv(x)), dim=1)
+        if self.num_classes > 1:
+            result = self.outconv(x)
+        else:
+            result = torch.squeeze(self.sigmoid(self.outconv(x)), dim=1)
         if self.deep_supervision:
             return result, deep_outputs
         return result
 
 class UNetClassifier(torch.nn.Module):
 
-    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, in_channels=3, use_atrous_conv=False, deep_supervision=False):
+    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, in_channels=3, use_atrous_conv=False, deep_supervision=False, num_classes=1):
         super(UNetClassifier, self).__init__()
         self.backbone = UNetBackbone(in_channels, hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height, use_atrous_conv=use_atrous_conv)
-        self.classifier = UNetEndClassifier(hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height, deep_supervision=deep_supervision)
+        self.classifier = UNetEndClassifier(hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height, deep_supervision=deep_supervision, num_classes=num_classes)
         self.pyr_height = pyr_height
 
     def forward(self, x):

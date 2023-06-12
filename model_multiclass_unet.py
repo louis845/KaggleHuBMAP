@@ -56,14 +56,14 @@ if __name__ == "__main__":
         print("You need to create a multiclass config file \"multiclass_config.json\". A template file is generated for you.")
         model_multiclass_base.generate_multiclass_config("multiclass_config.json")
         exit(-1)
-    config, classes, num_classes = model_multiclass_base.load_multiclass_config("multiclass_config.json")
-    model_multiclass_base.save_multiclass_config("multiclass_config.json", config)
+    class_config, classes, num_classes = model_multiclass_base.load_multiclass_config("multiclass_config.json")
+    model_multiclass_base.save_multiclass_config(os.path.join(model_dir, "multiclass_config.json"), class_config)
 
     if args.unet_attention:
-        model = model_unet_attention.UNetClassifier(hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
+        model = model_unet_attention.UNetClassifier(num_classes=num_classes, hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height, in_channels=args.in_channels, use_atrous_conv=args.use_atrous_conv).to(device=config.device)
     else:
-        model = model_unet_base.UNetClassifier(hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
+        model = model_unet_base.UNetClassifier(num_classes=num_classes, hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height, in_channels=args.in_channels, use_atrous_conv=args.use_atrous_conv).to(device=config.device)
     if args.optimizer.lower() == "adam":
         optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.999))
@@ -72,7 +72,6 @@ if __name__ == "__main__":
     else:
         print("Invalid optimizer. The available options are: adam, sgd.")
         exit(1)
-    scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=1.0, total_iters=10)
 
     if prev_model_checkpoint_dir is not None:
         model_checkpoint_path = os.path.join(prev_model_checkpoint_dir, "model.pt")
@@ -85,37 +84,40 @@ if __name__ == "__main__":
             g['lr'] = args.learning_rate
 
     # Train the model
-    train_history = {"loss": [], "val_loss": [], "loss_dset1": [], "accuracy": [], "val_accuracy": [], "precision": [], "val_precision": [], "recall": [], "val_recall": []}
+    train_history = {"loss": [], "val_loss": [], "accuracy": [], "val_accuracy": [], "precision": [], "val_precision": [], "recall": [], "val_recall": []}
+    for seg_class in classes:
+        train_history["accuracy_{}".format(seg_class)] = []
+        train_history["val_accuracy_{}".format(seg_class)] = []
+        train_history["precision_{}".format(seg_class)] = []
+        train_history["val_precision_{}".format(seg_class)] = []
+        train_history["recall_{}".format(seg_class)] = []
+        train_history["val_recall_{}".format(seg_class)] = []
 
-    loss_function = torch.nn.BCELoss(reduction="none")
+    loss_function = torch.nn.CrossEntropyLoss(reduction="none")
 
     batch_size = args.batch_size
     num_epochs = args.epochs
     rotation_augmentation = args.rotation_augmentation
     epochs_per_save = args.epochs_per_save
-    gradient_accumulation_steps = args.gradient_accumulation_steps
     image_pixels_round = 2 ** args.pyramid_height
     in_channels = args.in_channels
 
     model_config = {
-        "model": "model_simple_unet",
+        "model": "model_multiclass_unet",
         "epochs": num_epochs,
         "rotation_augmentation": rotation_augmentation,
         "batch_size": batch_size,
         "learning_rate": args.learning_rate,
         "optimizer": args.optimizer,
         "epochs_per_save": epochs_per_save,
-        "gradient_accumulation_steps": gradient_accumulation_steps,
         "use_batch_norm": args.use_batch_norm,
         "use_res_conv": args.use_res_conv,
         "use_atrous_conv": args.use_atrous_conv,
         "hidden_channels": args.hidden_channels,
         "pyramid_height": args.pyramid_height,
-        "unet_plus": args.unet_plus,
         "unet_attention": args.unet_attention,
         "in_channels": args.in_channels,
-        "background_weights_split": args.background_weights_split,
-        "training_script": "model_simple_unet.py",
+        "training_script": "model_multiclass_unet.py",
     }
     for key, value in extra_info.items():
         model_config[key] = value
@@ -124,8 +126,8 @@ if __name__ == "__main__":
         if seg_class not in dataset_loader.list_segmentation_masks():
             print("Invalid segmentation class in multiclass_config.json. The available options are: {}".format(dataset_loader.list_segmentation_masks()))
             exit(1)
-    # Compute the number of positive and negative pixels in the training data
 
+    # Compute the number of positive and negative pixels in the training data
     with torch.no_grad():
         num_background_positive_pixels, num_background_negative_pixels, num_foreground_positive_pixels,\
             num_foreground_negative_pixels, num_dset1_entries = model_simple_unet.compute_background_foreground(training_entries, dataset_loader, "blood_vessel", "blood_vessel")
@@ -144,6 +146,11 @@ if __name__ == "__main__":
         foreground_weight = 0.5
         background_weight = 0.5
 
+    # Precompute the classes masks (long)
+    print("Precomputing the classes masks...")
+    class_labels_dict = model_multiclass_base.precompute_classes(dataset_loader, list(training_entries) + list(validation_entries), classes)
+    print("Finished precomputing. Training the model now......")
+
     rng = np.random.default_rng()
     for epoch in range(num_epochs):
         ctime = time.time()
@@ -159,23 +166,18 @@ if __name__ == "__main__":
         # Shuffle
         training_entries_shuffle = rng.permutation(training_entries)
 
-        if gradient_accumulation_steps == -1:
-            optimizer.zero_grad()
-
         steps = 0
         while trained < len(training_entries):
-            if gradient_accumulation_steps != -1:
-                if steps == 0:
-                    optimizer.zero_grad()
+            optimizer.zero_grad()
 
             batch_end = min(trained + batch_size, len(training_entries))
             train_image_data_batch = torch.zeros((batch_end - trained, in_channels, image_height, image_width), dtype=torch.float32, device=config.device)
-            train_image_ground_truth_batch = torch.zeros((batch_end - trained, image_height, image_width), dtype=torch.float32, device=config.device)
+            train_image_ground_truth_batch = torch.zeros((batch_end - trained, image_height, image_width), dtype=torch.long, device=config.device)
 
             for k in range(trained, batch_end):
                 train_image_data_batch[k - trained, :, :, :] = torch.tensor(dataset_loader.get_image_data(training_entries_shuffle[k]), dtype=torch.float32, device=config.device).permute(2, 0, 1)
-                seg_mask = dataset_loader.get_segmentation_mask(training_entries_shuffle[k], "blood_vessel")
-                train_image_ground_truth_batch[k - trained, :, :] = torch.tensor(seg_mask, dtype=torch.float32, device=config.device)
+                seg_mask_labels = class_labels_dict[training_entries_shuffle[k]]
+                train_image_ground_truth_batch[k - trained, :, :] = torch.tensor(seg_mask_labels, dtype=torch.long, device=config.device)
 
             if rotation_augmentation:
                 # flip the images
@@ -185,11 +187,13 @@ if __name__ == "__main__":
 
                 # apply elastic deformation
                 train_image_data_batch = torch.nn.functional.pad(train_image_data_batch, (image_height-1, image_height-1, image_width-1, image_width-1), mode="reflect")
-                train_image_ground_truth_batch = torch.nn.functional.pad(train_image_ground_truth_batch, (image_height-1, image_height-1, image_width-1, image_width-1), mode="reflect")
+                train_image_ground_truth_batch = torch.nn.functional.pad(train_image_ground_truth_batch.to(torch.float32),
+                                                        (image_height-1, image_height-1, image_width-1, image_width-1), mode="reflect").to(torch.long)
 
                 displacement_field = model_simple_unet.generate_displacement_field()
                 train_image_data_batch = torchvision.transforms.functional.elastic_transform(train_image_data_batch, displacement_field)
-                train_image_ground_truth_batch = torchvision.transforms.functional.elastic_transform(train_image_ground_truth_batch.unsqueeze(1), displacement_field).squeeze(1)
+                train_image_ground_truth_batch = torchvision.transforms.functional.elastic_transform(train_image_ground_truth_batch.unsqueeze(1), displacement_field,
+                                                    interpolation=torchvision.transforms.InterpolationMode.NEAREST).squeeze(1)
 
                 train_image_data_batch = train_image_data_batch[..., image_height-1:-image_height+1, image_width-1:-image_width+1]
                 train_image_ground_truth_batch = train_image_ground_truth_batch[..., image_height-1:-image_height+1, image_width-1:-image_width+1]
@@ -197,7 +201,7 @@ if __name__ == "__main__":
                 angle_in_deg = np.random.uniform(0, 360)
                 with torch.no_grad():
                     train_image_data_batch = torchvision.transforms.functional.rotate(train_image_data_batch, angle_in_deg)
-                    train_image_ground_truth_batch = torchvision.transforms.functional.rotate(train_image_ground_truth_batch, angle_in_deg)
+                    train_image_ground_truth_batch = torchvision.transforms.functional.rotate(train_image_ground_truth_batch, angle_in_deg, interpolation=torchvision.transforms.InterpolationMode.NEAREST)
 
                     rads = np.radians(angle_in_deg % 90.0)
                     lims = 0.5 / (np.sin(rads) + np.cos(rads))
@@ -220,28 +224,27 @@ if __name__ == "__main__":
 
             loss = loss_function(y_pred, train_image_ground_truth_batch)
             # Weighted loss, with precomputed weights
-            loss = torch.sum(train_background_weights_batch * loss)
+            loss = torch.sum(loss)
             loss.backward()
+            optimizer.step()
             total_loss += loss.item()
 
-            true_positive += int(torch.sum((y_pred > 0.5) & (train_image_ground_truth_batch == 1)).item())
-            true_negative += int(torch.sum((y_pred <= 0.5) & (train_image_ground_truth_batch == 0)).item())
-            false_positive += int(torch.sum((y_pred > 0.5) & (train_image_ground_truth_batch == 0)).item())
-            false_negative += int(torch.sum((y_pred <= 0.5) & (train_image_ground_truth_batch == 1)).item())
+            with torch.no_grad():
+                y_pred = torch.argmax(y_pred, dim=1)
+                true_positive += int(torch.sum((y_pred > 0) & (train_image_ground_truth_batch > 0)).item())
+                true_negative += int(torch.sum((y_pred == 0) & (train_image_ground_truth_batch == 0)).item())
+                false_positive += int(torch.sum((y_pred > 0) & (train_image_ground_truth_batch == 0)).item())
+                false_negative += int(torch.sum((y_pred == 0) & (train_image_ground_truth_batch > 0)).item())
+
+                for seg_idx in range(len(classes)):
+                    seg_class = classes[seg_idx]
+                    seg_ps = seg_idx + 1
+                    true_positive_class[seg_class] += int(torch.sum((y_pred == seg_ps) & (train_image_ground_truth_batch == seg_ps)).item())
+                    true_negative_class[seg_class] += int(torch.sum((y_pred != seg_ps) & (train_image_ground_truth_batch != seg_ps)).item())
+                    false_positive_class[seg_class] += int(torch.sum((y_pred == seg_ps) & (train_image_ground_truth_batch != seg_ps)).item())
+                    false_negative_class[seg_class] += int(torch.sum((y_pred != seg_ps) & (train_image_ground_truth_batch == seg_ps)).item())
 
             trained += batch_size
-
-            if gradient_accumulation_steps != -1:
-                steps += 1
-                if steps == gradient_accumulation_steps:
-                    optimizer.step()
-                    steps = 0
-        if gradient_accumulation_steps == -1:
-            optimizer.step()
-        else:
-            if steps > 0:
-                optimizer.step()
-        scheduler.step()
 
         total_loss /= len(training_entries)
         train_history["loss"].append(total_loss)
@@ -256,36 +259,55 @@ if __name__ == "__main__":
         else:
             train_history["recall"].append(true_positive / (true_positive + false_negative))
 
+        for seg_class in classes:
+            train_history["accuracy_" + seg_class].append((true_positive_class[seg_class] + true_negative_class[seg_class]) / (true_positive_class[seg_class] + true_negative_class[seg_class] + false_positive_class[seg_class] + false_negative_class[seg_class]))
+            if true_positive_class[seg_class] + false_positive_class[seg_class] == 0:
+                train_history["precision_" + seg_class].append(0.0)
+            else:
+                train_history["precision_" + seg_class].append(true_positive_class[seg_class] / (true_positive_class[seg_class] + false_positive_class[seg_class]))
+            if true_positive_class[seg_class] + false_negative_class[seg_class] == 0:
+                train_history["recall_" + seg_class].append(0.0)
+            else:
+                train_history["recall_" + seg_class].append(true_positive_class[seg_class] / (true_positive_class[seg_class] + false_negative_class[seg_class]))
+
+
         # Test the model
         with torch.no_grad():
             tested = 0
             total_loss = 0.0
             true_negative, true_positive, false_negative, false_positive = 0, 0, 0, 0
+            true_negative_class, true_positive_class, false_negative_class, false_positive_class = {}, {}, {}, {}
+            for seg_class in classes:
+                true_negative_class[seg_class], true_positive_class[seg_class], false_negative_class[seg_class], false_positive_class[seg_class] = 0, 0, 0, 0
             while tested < len(validation_entries):
                 batch_end = min(tested + batch_size, len(validation_entries))
                 test_image_data_batch = torch.zeros((batch_end - tested, in_channels, image_height, image_width), dtype=torch.float32, device=config.device)
-                test_image_ground_truth_batch = torch.zeros((batch_end - tested, image_height, image_width), dtype=torch.float32, device=config.device)
-                test_background_weights_batch = torch.zeros((batch_end - tested, image_height, image_width), dtype=torch.float32, device=config.device)
+                test_image_ground_truth_batch = torch.zeros((batch_end - tested, image_height, image_width), dtype=torch.long, device=config.device)
 
                 for k in range(tested, batch_end):
                     test_image_data_batch[k - tested, :, :, :] = torch.tensor(dataset_loader.get_image_data(validation_entries[k]), dtype=torch.float32, device=config.device).permute(2, 0, 1)
-                    seg_mask = dataset_loader.get_segmentation_mask(validation_entries[k], "blood_vessel")
-                    test_image_ground_truth_batch[k - tested, :, :] = torch.tensor(seg_mask, dtype=torch.float32, device=config.device)
-
-                    foreground = dataset_loader.get_segmentation_mask(validation_entries[k], background_weights_split)
-                    foreground_mask = torch.tensor(foreground, dtype=torch.float32, device=config.device)
-                    test_background_weights_batch[k - tested, :, :] = foreground_weight * foreground_mask + background_weight * (1.0 - foreground_mask)
+                    seg_mask_labels = class_labels_dict[validation_entries[k]]
+                    test_image_ground_truth_batch[k - tested, :, :] = torch.tensor(seg_mask_labels, dtype=torch.long, device=config.device)
 
                 y_pred = model(test_image_data_batch)
                 loss = loss_function(y_pred, test_image_ground_truth_batch)
                 # Weighted loss, with precomputed weights
-                loss = torch.sum(test_background_weights_batch * loss)
+                loss = torch.sum(loss)
                 total_loss += loss.item()
 
-                true_positive += int(torch.sum((y_pred > 0.5) & (test_image_ground_truth_batch == 1)).item())
-                true_negative += int(torch.sum((y_pred <= 0.5) & (test_image_ground_truth_batch == 0)).item())
-                false_positive += int(torch.sum((y_pred > 0.5) & (test_image_ground_truth_batch == 0)).item())
-                false_negative += int(torch.sum((y_pred <= 0.5) & (test_image_ground_truth_batch == 1)).item())
+                y_pred = torch.argmax(y_pred, dim=1)
+                true_positive += int(torch.sum((y_pred > 0) & (test_image_ground_truth_batch > 0)).item())
+                true_negative += int(torch.sum((y_pred == 0) & (test_image_ground_truth_batch == 0)).item())
+                false_positive += int(torch.sum((y_pred > 0) & (test_image_ground_truth_batch == 0)).item())
+                false_negative += int(torch.sum((y_pred == 0) & (test_image_ground_truth_batch > 0)).item())
+
+                for seg_idx in range(len(classes)):
+                    seg_class = classes[seg_idx]
+                    seg_ps = seg_idx + 1
+                    true_positive_class[seg_class] += int(torch.sum((y_pred == seg_ps) & (test_image_ground_truth_batch == seg_ps)).item())
+                    true_negative_class[seg_class] += int(torch.sum((y_pred != seg_ps) & (test_image_ground_truth_batch != seg_ps)).item())
+                    false_positive_class[seg_class] += int(torch.sum((y_pred == seg_ps) & (test_image_ground_truth_batch != seg_ps)).item())
+                    false_negative_class[seg_class] += int(torch.sum((y_pred != seg_ps) & (test_image_ground_truth_batch == seg_ps)).item())
 
                 tested += batch_size
 
@@ -300,19 +322,34 @@ if __name__ == "__main__":
                 train_history["val_recall"].append(0.0)
             else:
                 train_history["val_recall"].append(true_positive / (true_positive + false_negative))
+            for seg_class in classes:
+                train_history["val_accuracy_" + seg_class].append((true_positive_class[seg_class] + true_negative_class[seg_class]) / (true_positive_class[seg_class] + true_negative_class[seg_class] + false_positive_class[seg_class] + false_negative_class[seg_class]))
+                if true_positive_class[seg_class] + false_positive_class[seg_class] == 0:
+                    train_history["val_precision_" + seg_class].append(0.0)
+                else:
+                    train_history["val_precision_" + seg_class].append(true_positive_class[seg_class] / (true_positive_class[seg_class] + false_positive_class[seg_class]))
+                if true_positive_class[seg_class] + false_negative_class[seg_class] == 0:
+                    train_history["val_recall_" + seg_class].append(0.0)
+                else:
+                    train_history["val_recall_" + seg_class].append(true_positive_class[seg_class] / (true_positive_class[seg_class] + false_negative_class[seg_class]))
 
         print("Time Elapsed: {}".format(time.time() - ctime))
         print("Epoch: {}/{}".format(epoch, num_epochs))
-        print("Loss: {}".format(train_history["loss"][-1]))
-        print("Loss Dset1: {}".format(train_history["loss_dset1"][-1]))
-        print("Val Loss: {}".format(train_history["val_loss"][-1]))
-        print("Accuracy: {}".format(train_history["accuracy"][-1]))
-        print("Val Accuracy: {}".format(train_history["val_accuracy"][-1]))
-        print("Precision: {}".format(train_history["precision"][-1]))
-        print("Val Precision: {}".format(train_history["val_precision"][-1]))
-        print("Recall: {}".format(train_history["recall"][-1]))
-        print("Val Recall: {}".format(train_history["val_recall"][-1]))
-        print("Learning Rate: {}".format(scheduler.get_lr()))
+        print("{} (Loss)".format(train_history["loss"][-1]))
+        print("{} (Val Loss)".format(train_history["val_loss"][-1]))
+        print("{} (Accuracy)".format(train_history["accuracy"][-1]))
+        print("{} (Val Accuracy)".format(train_history["val_accuracy"][-1]))
+        print("{} (Precision)".format(train_history["precision"][-1]))
+        print("{} (Val Precision)".format(train_history["val_precision"][-1]))
+        print("{} (Recall)".format(train_history["recall"][-1]))
+        print("{} (Val Recall)".format(train_history["val_recall"][-1]))
+        for seg_class in classes:
+            print("{} (Accuracy {})".format(train_history["accuracy_" + seg_class][-1], seg_class))
+            print("{} (Val Accuracy {})".format(train_history["val_accuracy_" + seg_class][-1], seg_class))
+            print("{} (Precision {})".format(train_history["precision_" + seg_class][-1], seg_class))
+            print("{} (Val Precision {})".format(train_history["val_precision_" + seg_class][-1], seg_class))
+            print("{} (Recall {})".format(train_history["recall_" + seg_class][-1], seg_class))
+            print("{} (Val Recall {})".format(train_history["val_recall_" + seg_class][-1], seg_class))
         print("")
 
         train_history_save = pd.DataFrame(train_history)
@@ -342,21 +379,33 @@ if __name__ == "__main__":
         json.dump(model_config, f, indent=4)
 
     # Plot the training history. If we use deep supervision we create args.pyramid_height + 1 number of plots.
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
-    ax1.plot(train_history["loss"], label="Loss")
-    ax1.plot(train_history["val_loss"], label="Val Loss")
-    ax1.plot(train_history["loss_dset1"], label="Loss Dset1")
-    ax2.plot(train_history["accuracy"], label="Accuracy")
-    ax2.plot(train_history["val_accuracy"], label="Val Accuracy")
-    ax2.plot(train_history["precision"], label="Precision")
-    ax2.plot(train_history["val_precision"], label="Val Precision")
-    ax2.plot(train_history["recall"], label="Recall")
-    ax2.plot(train_history["val_recall"], label="Val Recall")
-    ax1.set_xlabel("Epoch")
-    ax1.set_ylabel("Loss")
-    ax2.set_xlabel("Epoch")
-    ax2.set_ylabel("Metric")
-    ax1.legend()
-    ax2.legend()
+    fig, axes = plt.subplots(2 + num_classes, 1, figsize=(12, 8 + num_classes * 4))
+    axes[0].plot(train_history["loss"], label="Loss")
+    axes[0].plot(train_history["val_loss"], label="Val Loss")
+    axes[1].plot(train_history["accuracy"], label="Accuracy")
+    axes[1].plot(train_history["val_accuracy"], label="Val Accuracy")
+    axes[1].plot(train_history["precision"], label="Precision")
+    axes[1].plot(train_history["val_precision"], label="Val Precision")
+    axes[1].plot(train_history["recall"], label="Recall")
+    axes[1].plot(train_history["val_recall"], label="Val Recall")
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("Loss")
+    axes[1].set_xlabel("Epoch")
+    axes[1].set_ylabel("Metric")
+    axes[0].legend()
+    axes[1].legend()
+
+    for seg_idx in range(len(classes)):
+        seg_class = classes[seg_idx]
+        axes[2 + seg_idx].plot(train_history["accuracy_" + seg_class], label="Accuracy " + seg_class)
+        axes[2 + seg_idx].plot(train_history["val_accuracy_" + seg_class], label="Val Accuracy " + seg_class)
+        axes[2 + seg_idx].plot(train_history["precision_" + seg_class], label="Precision " + seg_class)
+        axes[2 + seg_idx].plot(train_history["val_precision_" + seg_class], label="Val Precision " + seg_class)
+        axes[2 + seg_idx].plot(train_history["recall_" + seg_class], label="Recall " + seg_class)
+        axes[2 + seg_idx].plot(train_history["val_recall_" + seg_class], label="Val Recall " + seg_class)
+        axes[2 + seg_idx].set_xlabel("Epoch")
+        axes[2 + seg_idx].set_ylabel("Metric")
+        axes[2 + seg_idx].legend()
+
 
     plt.savefig(os.path.join(model_dir, "train_history.png"))
