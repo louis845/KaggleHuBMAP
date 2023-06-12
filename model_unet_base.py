@@ -171,7 +171,7 @@ class UNetBackbone(torch.nn.Module):
         return ret
 
 class UNetEndClassifier(torch.nn.Module):
-    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4):
+    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, deep_supervision=False):
         super(UNetEndClassifier, self).__init__()
         self.pyr_height = pyr_height
         self.conv_up = torch.nn.ModuleList()
@@ -186,6 +186,12 @@ class UNetEndClassifier(torch.nn.Module):
         self.maxpool = torch.nn.MaxPool2d(2)
         for i in range(pyr_height):
             self.conv_up_transpose.append(torch.nn.ConvTranspose2d(hidden_channels * 2 ** (pyr_height - i), hidden_channels * 2 ** (pyr_height - i - 1), kernel_size=2, stride=2, bias=True))
+
+        self.deep_supervision = deep_supervision
+        if deep_supervision:
+            self.outconv_deep = torch.nn.ModuleList()
+            for i in range(pyr_height - 1):
+                self.outconv_deep.append(torch.nn.Conv2d(hidden_channels * 2 ** (pyr_height - i - 1), 1, 1, bias=True))
         self.outconv = torch.nn.Conv2d(hidden_channels, 1, 1, bias=True)
         self.sigmoid = torch.nn.Sigmoid()
 
@@ -193,17 +199,24 @@ class UNetEndClassifier(torch.nn.Module):
     def forward(self, x_list):
         # expanding path
         x = self.conv_up[0](torch.concat([self.conv_up_transpose[0](x_list[self.pyr_height]), x_list[self.pyr_height - 1]], dim=1))
+        if self.deep_supervision:
+            deep_outputs = [torch.squeeze(self.sigmoid(self.outconv_deep[0](x)), dim=1)]
         for i in range(1, self.pyr_height):
             x = self.conv_up[i](torch.concat([self.conv_up_transpose[i](x), x_list[self.pyr_height - i - 1]], dim=1))
+            if self.deep_supervision and i < self.pyr_height - 1:
+                deep_outputs.append(torch.squeeze(self.sigmoid(self.outconv_deep[i](x)), dim=1))
 
-        return torch.squeeze(self.sigmoid(self.outconv(x)), dim=1)
+        result = torch.squeeze(self.sigmoid(self.outconv(x)), dim=1)
+        if self.deep_supervision:
+            return result, deep_outputs
+        return result
 
 class UNetClassifier(torch.nn.Module):
 
-    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, in_channels=3, use_atrous_conv=False):
+    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, in_channels=3, use_atrous_conv=False, deep_supervision=False):
         super(UNetClassifier, self).__init__()
         self.backbone = UNetBackbone(in_channels, hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height, use_atrous_conv=use_atrous_conv)
-        self.classifier = UNetEndClassifier(hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height)
+        self.classifier = UNetEndClassifier(hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height, deep_supervision=deep_supervision)
         self.pyr_height = pyr_height
 
     def forward(self, x):
