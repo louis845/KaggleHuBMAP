@@ -37,6 +37,7 @@ if __name__ == "__main__":
     parser.add_argument("--unet_attention", action="store_true", help="Whether to use attention in the U-Net. Default False. Cannot be used with unet_plus.")
     parser.add_argument("--in_channels", type=int, default=3, help="Number of input channels to use. Default 3.")
     parser.add_argument("--multiclass_config", type=str, default=None, help="Path to the multiclass config file for multiple class training. Default None.")
+    parser.add_argument("--deep_exponent_base", type=float, default=2.0, help="The base of the exponent for the deep supervision loss. Default 2.0.")
 
     image_width = 512
     image_height = 512
@@ -115,6 +116,7 @@ if __name__ == "__main__":
     image_pixels_round = 2 ** args.pyramid_height
     in_channels = args.in_channels
     pyr_height = args.pyramid_height
+    deep_exponent_base = args.deep_exponent_base
 
     model_config = {
         "model": "model_progressive_supervised_unet",
@@ -132,6 +134,7 @@ if __name__ == "__main__":
         "unet_attention": args.unet_attention,
         "in_channels": args.in_channels,
         "multiclass_config": multiclass_config_file,
+        "deep_exponent_base": deep_exponent_base,
         "training_script": "model_progressive_supervised_unet.py",
     }
     for key, value in extra_info.items():
@@ -268,8 +271,9 @@ if __name__ == "__main__":
                     train_image_ground_truth_pooled_batch = torch.nn.functional.max_pool2d(train_image_ground_truth_pooled_batch, kernel_size=2, stride=2)
 
                 scale_factor = 2 ** (pyr_height - 1 - k)
+                multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
                 k_loss = torch.nn.functional.binary_cross_entropy(deep_outputs[k], train_image_ground_truth_pooled_batch.view(current_batch_size, crop_height // scale_factor, crop_width // scale_factor),
-                                                         reduction="sum") * scale_factor
+                                                         reduction="sum") * multiply_scale_factor
                 loss += k_loss
 
                 total_loss_per_output[k] += k_loss.item()
