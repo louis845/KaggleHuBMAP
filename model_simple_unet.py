@@ -152,7 +152,7 @@ if __name__ == "__main__":
                                                   use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
                                                   use_deep_supervision=use_deep_supervision, in_channels=args.in_channels).to(device=config.device)
     if args.optimizer.lower() == "adam":
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, betas=(0.99, 0.999))
     elif args.optimizer.lower() == "sgd":
         optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, momentum=0.99)
     else:
