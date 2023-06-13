@@ -5,7 +5,7 @@ import model_unet_base
 # https://arxiv.org/pdf/1804.03999.pdf
 
 class UNetEndClassifier(torch.nn.Module):
-    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, gate_activation=torch.nn.ELU(), deep_supervision=False, num_classes=1):
+    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, gate_activation=torch.nn.ELU(), deep_supervision=False, num_classes=1, num_deep_multiclasses=0):
         super(UNetEndClassifier, self).__init__()
         self.pyr_height = pyr_height
         self.conv_up = torch.nn.ModuleList()
@@ -37,8 +37,10 @@ class UNetEndClassifier(torch.nn.Module):
         self.deep_supervision = deep_supervision
         if deep_supervision:
             self.outconv_deep = torch.nn.ModuleList()
-            for i in range(pyr_height - 1):
+            for i in range(pyr_height - 1 - num_deep_multiclasses):
                 self.outconv_deep.append(torch.nn.Conv2d(hidden_channels * 2 ** (pyr_height - i - 1), 1, 1, bias=True))
+            for i in range(pyr_height - 1 - num_deep_multiclasses, pyr_height - 1):
+                self.outconv_deep.append(torch.nn.Conv2d(hidden_channels * 2 ** (pyr_height - i - 1), num_classes + 1, 1, bias=True))
         if num_classes > 1:
             self.outconv = torch.nn.Conv2d(hidden_channels, num_classes + 1, 1, bias=True)
         else:
@@ -46,6 +48,10 @@ class UNetEndClassifier(torch.nn.Module):
         self.sigmoid = torch.nn.Sigmoid()
 
         self.num_classes = num_classes
+        self.num_deep_multiclasses = num_deep_multiclasses
+
+        assert num_deep_multiclasses < pyr_height - 1, "num_deep_multiclasses must be less than pyr_height - 1"
+        assert (num_deep_multiclasses == 0) or (num_classes > 1), "num_classes must be greater than 1 if num_deep_multiclasses > 0"
 
 
     def forward(self, x_list):
@@ -81,8 +87,11 @@ class UNetEndClassifier(torch.nn.Module):
             x = self.conv_up[i](
                 torch.concat([self.conv_up_transpose[i](x), x_list[self.pyr_height - i - 1] * attention_layer], dim=1))
 
-            if self.deep_supervision and i < self.pyr_height - 1:
-                deep_outputs.append(torch.squeeze(self.sigmoid(self.outconv_deep[i](x)), dim=1))
+            if self.deep_supervision:
+                if i < self.pyr_height - 1 - self.num_deep_multiclasses:
+                    deep_outputs.append(torch.squeeze(self.sigmoid(self.outconv_deep[i](x)), dim=1))
+                elif i < self.pyr_height - 1:
+                    deep_outputs.append(self.outconv_deep[i](x))
 
         if self.num_classes > 1:
             result = self.outconv(x)
@@ -94,10 +103,10 @@ class UNetEndClassifier(torch.nn.Module):
 
 class UNetClassifier(torch.nn.Module):
 
-    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, in_channels=3, use_atrous_conv=False, deep_supervision=False, num_classes=1):
+    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, in_channels=3, use_atrous_conv=False, deep_supervision=False, num_classes=1, num_deep_multiclasses=0):
         super(UNetClassifier, self).__init__()
         self.backbone = model_unet_base.UNetBackbone(in_channels, hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height, use_atrous_conv=use_atrous_conv)
-        self.classifier = UNetEndClassifier(hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height, deep_supervision=deep_supervision, num_classes=num_classes)
+        self.classifier = UNetEndClassifier(hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height, deep_supervision=deep_supervision, num_classes=num_classes, num_deep_multiclasses=num_deep_multiclasses)
         self.pyr_height = pyr_height
 
     def forward(self, x):

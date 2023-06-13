@@ -37,6 +37,7 @@ if __name__ == "__main__":
     parser.add_argument("--unet_attention", action="store_true", help="Whether to use attention in the U-Net. Default False. Cannot be used with unet_plus.")
     parser.add_argument("--in_channels", type=int, default=3, help="Number of input channels to use. Default 3.")
     parser.add_argument("--multiclass_config", type=str, default=None, help="Path to the multiclass config file for multiple class training. Default None.")
+    parser.add_argument("--multiclass_deep_losses", type=int, default=0, help="Number of multiclass losses to use in deep layers. Default 0.")
     parser.add_argument("--deep_exponent_base", type=float, default=2.0, help="The base of the exponent for the deep supervision loss. Default 2.0.")
 
     image_width = 512
@@ -53,6 +54,11 @@ if __name__ == "__main__":
     validation_entries = np.array(validation_entries, dtype=object)
     multiclass_config_file = args.multiclass_config
     use_multiclass = multiclass_config_file is not None
+    multiclass_deep_losses = args.multiclass_deep_losses
+
+    if multiclass_deep_losses > 0 and not use_multiclass:
+        print("Cannot use multiclass deep losses without multiclass training.")
+        exit(-1)
 
     if use_multiclass:
         # Load the configuration and classes
@@ -69,13 +75,13 @@ if __name__ == "__main__":
                 exit(1)
 
         if args.unet_attention:
-            model = model_unet_attention.UNetClassifier(num_classes=num_classes, hidden_channels=args.hidden_channels,
-                                                        use_batch_norm=args.use_batch_norm,
+            model = model_unet_attention.UNetClassifier(num_classes=num_classes, num_deep_multiclasses=multiclass_deep_losses,
+                                                        hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                         use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
-                                                        in_channels=args.in_channels,
-                                                        use_atrous_conv=args.use_atrous_conv, deep_supervision=True).to(device=config.device)
+                                                        in_channels=args.in_channels, use_atrous_conv=args.use_atrous_conv,
+                                                        deep_supervision=True).to(device=config.device)
         else:
-            model = model_unet_base.UNetClassifier(num_classes=num_classes,
+            model = model_unet_base.UNetClassifier(num_classes=num_classes, num_deep_multiclasses=multiclass_deep_losses,
                                                     hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                    use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
                                                    in_channels=args.in_channels, use_atrous_conv=args.use_atrous_conv, deep_supervision=True).to(device=config.device)
@@ -134,6 +140,7 @@ if __name__ == "__main__":
         "unet_attention": args.unet_attention,
         "in_channels": args.in_channels,
         "multiclass_config": multiclass_config_file,
+        "multiclass_deep_losses": multiclass_deep_losses,
         "deep_exponent_base": deep_exponent_base,
         "training_script": "model_progressive_supervised_unet.py",
     }
@@ -267,22 +274,37 @@ if __name__ == "__main__":
             train_image_ground_truth_pooled_batch = train_image_ground_truth_batch.view(current_batch_size, 1, crop_height, crop_width)
             loss = 0.0
             for k in range(pyr_height - 2, -1, -1):
-                with torch.no_grad():
-                    train_image_ground_truth_pooled_batch = torch.nn.functional.max_pool2d(train_image_ground_truth_pooled_batch, kernel_size=2, stride=2)
-
                 scale_factor = 2 ** (pyr_height - 1 - k)
                 multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
-                k_loss = torch.nn.functional.binary_cross_entropy(deep_outputs[k], train_image_ground_truth_pooled_batch.view(current_batch_size, crop_height // scale_factor, crop_width // scale_factor),
-                                                         reduction="sum") * multiply_scale_factor
+                with torch.no_grad():
+                    train_image_ground_truth_pooled_batch = torch.nn.functional.max_pool2d(train_image_ground_truth_pooled_batch, kernel_size=2, stride=2)
+                    if use_multiclass and k >= pyr_height - 1 - multiclass_deep_losses:
+                        train_image_multiclass_gt_onehot = torch.nn.functional.one_hot(train_image_multiclass_gt_batch, num_classes=num_classes).permute(0, 3, 1, 2).to(torch.float32)
+                        train_image_multiclass_gt_majority = torch.argmax(torch.nn.functional.avg_pool2d(train_image_multiclass_gt_onehot, kernel_size=scale_factor, stride=scale_factor), dim=1)
+                        del train_image_multiclass_gt_onehot
+
+                if use_multiclass and k >= pyr_height - 1 - multiclass_deep_losses:
+                    k_loss = torch.nn.functional.cross_entropy(deep_outputs[k], train_image_multiclass_gt_majority,reduction="sum") * multiply_scale_factor
+                else:
+                    k_loss = torch.nn.functional.binary_cross_entropy(deep_outputs[k], train_image_ground_truth_pooled_batch.view(current_batch_size, crop_height // scale_factor, crop_width // scale_factor),
+                                                             reduction="sum") * multiply_scale_factor
                 loss += k_loss
 
                 total_loss_per_output[k] += k_loss.item()
 
                 with torch.no_grad():
-                    true_negative_per_output[k] += ((deep_outputs[k] < 0.5) & (train_image_ground_truth_pooled_batch < 0.5)).sum().item()
-                    false_negative_per_output[k] += ((deep_outputs[k] < 0.5) & (train_image_ground_truth_pooled_batch >= 0.5)).sum().item()
-                    true_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (train_image_ground_truth_pooled_batch >= 0.5)).sum().item()
-                    false_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (train_image_ground_truth_pooled_batch < 0.5)).sum().item()
+                    if use_multiclass and k >= pyr_height - 1 - multiclass_deep_losses:
+                        deep_class_prediction = torch.argmax(deep_outputs[k], dim=1)
+                        true_negative_per_output[k] += ((deep_class_prediction == 0) & (train_image_ground_truth_pooled_batch < 0.5)).sum().item()
+                        false_negative_per_output[k] += ((deep_class_prediction == 0) & (train_image_ground_truth_pooled_batch >= 0.5)).sum().item()
+                        true_positive_per_output[k] += ((deep_class_prediction > 0) & (train_image_ground_truth_pooled_batch >= 0.5)).sum().item()
+                        false_positive_per_output[k] += ((deep_class_prediction > 0) & (train_image_ground_truth_pooled_batch < 0.5)).sum().item()
+                        del deep_class_prediction
+                    else:
+                        true_negative_per_output[k] += ((deep_outputs[k] < 0.5) & (train_image_ground_truth_pooled_batch < 0.5)).sum().item()
+                        false_negative_per_output[k] += ((deep_outputs[k] < 0.5) & (train_image_ground_truth_pooled_batch >= 0.5)).sum().item()
+                        true_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (train_image_ground_truth_pooled_batch >= 0.5)).sum().item()
+                        false_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (train_image_ground_truth_pooled_batch < 0.5)).sum().item()
 
             if use_multiclass:
                 result_loss = torch.nn.functional.cross_entropy(result, train_image_multiclass_gt_batch, reduction="sum")
@@ -394,26 +416,38 @@ if __name__ == "__main__":
                                                                                             crop_width)
                 loss = 0.0
                 for k in range(pyr_height - 2, -1, -1):
-                    test_image_ground_truth_pooled_batch = torch.nn.functional.max_pool2d(test_image_ground_truth_pooled_batch, kernel_size=2, stride=2)
-
                     scale_factor = 2 ** (pyr_height - 1 - k)
-                    k_loss = torch.nn.functional.binary_cross_entropy(deep_outputs[k],
-                                                                      test_image_ground_truth_pooled_batch.view(
-                                                                          current_batch_size, crop_height // scale_factor,
-                                                                          crop_width // scale_factor),
-                                                                      reduction="sum") * scale_factor
+                    multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
+
+                    test_image_ground_truth_pooled_batch = torch.nn.functional.max_pool2d(test_image_ground_truth_pooled_batch, kernel_size=2, stride=2)
+                    if use_multiclass and k >= pyr_height - 1 - multiclass_deep_losses:
+                        test_image_multiclass_gt_onehot = torch.nn.functional.one_hot(test_image_multiclass_gt_batch, num_classes=num_classes).permute(0, 3, 1, 2).to(torch.float32)
+                        test_image_multiclass_gt_majority = torch.argmax(torch.nn.functional.avg_pool2d(test_image_multiclass_gt_onehot, kernel_size=scale_factor, stride=scale_factor), dim=1)
+                        del test_image_multiclass_gt_onehot
+
+                        k_loss = torch.nn.functional.cross_entropy(deep_outputs[k], test_image_multiclass_gt_majority, reduction="sum") * multiply_scale_factor
+                    else:
+                        k_loss = torch.nn.functional.binary_cross_entropy(deep_outputs[k],
+                                                                          test_image_ground_truth_pooled_batch.view(
+                                                                              current_batch_size, crop_height // scale_factor,
+                                                                              crop_width // scale_factor),
+                                                                          reduction="sum") * multiply_scale_factor
                     loss += k_loss
 
                     total_loss_per_output[k] += k_loss.item()
 
-                    true_negative_per_output[k] += ((deep_outputs[k] < 0.5) & (
-                                test_image_ground_truth_pooled_batch < 0.5)).sum().item()
-                    false_negative_per_output[k] += ((deep_outputs[k] < 0.5) & (
-                                test_image_ground_truth_pooled_batch >= 0.5)).sum().item()
-                    true_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (
-                                test_image_ground_truth_pooled_batch >= 0.5)).sum().item()
-                    false_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (
-                                test_image_ground_truth_pooled_batch < 0.5)).sum().item()
+                    if use_multiclass and k >= pyr_height - 1 - multiclass_deep_losses:
+                        deep_class_prediction = torch.argmax(deep_outputs[k], dim=1)
+                        true_negative_per_output[k] += ((deep_class_prediction == 0) & (test_image_ground_truth_pooled_batch < 0.5)).sum().item()
+                        false_negative_per_output[k] += ((deep_class_prediction == 0) & (test_image_ground_truth_pooled_batch >= 0.5)).sum().item()
+                        true_positive_per_output[k] += ((deep_class_prediction > 0) & (test_image_ground_truth_pooled_batch >= 0.5)).sum().item()
+                        false_positive_per_output[k] += ((deep_class_prediction > 0) & (test_image_ground_truth_pooled_batch < 0.5)).sum().item()
+                        del deep_class_prediction
+                    else:
+                        true_negative_per_output[k] += ((deep_outputs[k] < 0.5) & (test_image_ground_truth_pooled_batch < 0.5)).sum().item()
+                        false_negative_per_output[k] += ((deep_outputs[k] < 0.5) & (test_image_ground_truth_pooled_batch >= 0.5)).sum().item()
+                        true_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (test_image_ground_truth_pooled_batch >= 0.5)).sum().item()
+                        false_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (test_image_ground_truth_pooled_batch < 0.5)).sum().item()
 
                 if use_multiclass:
                     result_loss = torch.nn.functional.cross_entropy(result, test_image_multiclass_gt_batch, reduction="sum")
