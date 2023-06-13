@@ -17,12 +17,8 @@ class UNetEndClassifier(torch.nn.Module):
         self.attention_batch_norm = torch.nn.ModuleList()
         self.attention_upsample = torch.nn.Upsample(scale_factor=(2, 2), mode="bilinear")
 
-        if use_res_conv:
-            for i in range(pyr_height):
-                self.conv_up.append(model_unet_base.ResConv(hidden_channels * 2 ** (pyr_height - i), hidden_channels * 2 ** (pyr_height - i - 1), use_batch_norm=use_batch_norm))
-        else:
-            for i in range(pyr_height):
-                self.conv_up.append(model_unet_base.Conv(hidden_channels * 2 ** (pyr_height - i), hidden_channels * 2 ** (pyr_height - i - 1), use_batch_norm=use_batch_norm))
+        for i in range(pyr_height):
+            self.conv_up.append(model_unet_base.Conv(hidden_channels * 2 ** (pyr_height - i), hidden_channels * 2 ** (pyr_height - i - 1), use_batch_norm=use_batch_norm))
 
         self.maxpool = torch.nn.MaxPool2d(2)
         for i in range(pyr_height):
