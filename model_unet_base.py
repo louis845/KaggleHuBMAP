@@ -142,12 +142,14 @@ class ResConv(torch.nn.Module):
         self.conv_res1 = ResConvBlock(in_channels, out_channels, use_batch_norm=use_batch_norm, downsample=downsample)
         self.conv_res2 = ResConvBlock(out_channels, out_channels, use_batch_norm=use_batch_norm)
         self.conv_res3 = ResConvBlock(out_channels, out_channels, use_batch_norm=use_batch_norm)
+        self.conv_res4 = ResConvBlock(out_channels, out_channels, use_batch_norm=use_batch_norm)
 
         self.use_batch_norm = use_batch_norm
     def forward(self, x):
         x = self.conv_res1(x)
         x = self.conv_res2(x)
         x = self.conv_res3(x)
+        x = self.conv_res4(x)
 
         return x
 
