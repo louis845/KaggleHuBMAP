@@ -279,12 +279,12 @@ if __name__ == "__main__":
                 with torch.no_grad():
                     train_image_ground_truth_pooled_batch = torch.nn.functional.max_pool2d(train_image_ground_truth_pooled_batch, kernel_size=2, stride=2)
                     if use_multiclass and k >= pyr_height - 1 - multiclass_deep_losses:
-                        train_image_multiclass_gt_onehot = torch.nn.functional.one_hot(train_image_multiclass_gt_batch, num_classes=num_classes).permute(0, 3, 1, 2).to(torch.float32)
+                        train_image_multiclass_gt_onehot = torch.nn.functional.one_hot(train_image_multiclass_gt_batch, num_classes=num_classes + 1).permute(0, 3, 1, 2).to(torch.float32)
                         train_image_multiclass_gt_majority = torch.argmax(torch.nn.functional.avg_pool2d(train_image_multiclass_gt_onehot, kernel_size=scale_factor, stride=scale_factor), dim=1)
                         del train_image_multiclass_gt_onehot
 
                 if use_multiclass and k >= pyr_height - 1 - multiclass_deep_losses:
-                    k_loss = torch.nn.functional.cross_entropy(deep_outputs[k], train_image_multiclass_gt_majority,reduction="sum") * multiply_scale_factor
+                    k_loss = torch.nn.functional.cross_entropy(deep_outputs[k], train_image_multiclass_gt_majority, reduction="sum") * multiply_scale_factor
                 else:
                     k_loss = torch.nn.functional.binary_cross_entropy(deep_outputs[k], train_image_ground_truth_pooled_batch.view(current_batch_size, crop_height // scale_factor, crop_width // scale_factor),
                                                              reduction="sum") * multiply_scale_factor
@@ -421,7 +421,7 @@ if __name__ == "__main__":
 
                     test_image_ground_truth_pooled_batch = torch.nn.functional.max_pool2d(test_image_ground_truth_pooled_batch, kernel_size=2, stride=2)
                     if use_multiclass and k >= pyr_height - 1 - multiclass_deep_losses:
-                        test_image_multiclass_gt_onehot = torch.nn.functional.one_hot(test_image_multiclass_gt_batch, num_classes=num_classes).permute(0, 3, 1, 2).to(torch.float32)
+                        test_image_multiclass_gt_onehot = torch.nn.functional.one_hot(test_image_multiclass_gt_batch, num_classes=num_classes + 1).permute(0, 3, 1, 2).to(torch.float32)
                         test_image_multiclass_gt_majority = torch.argmax(torch.nn.functional.avg_pool2d(test_image_multiclass_gt_onehot, kernel_size=scale_factor, stride=scale_factor), dim=1)
                         del test_image_multiclass_gt_onehot
 
