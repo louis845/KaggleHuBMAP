@@ -20,6 +20,7 @@ import model_unet_base
 import model_unet_attention
 import model_simple_unet
 import model_multiclass_base
+import image_sampling
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a simple U-Net model")
@@ -200,93 +201,29 @@ if __name__ == "__main__":
 
         steps = 0
         while trained < len(training_entries):
-            with torch.no_grad():
-                batch_end = min(trained + batch_size, len(training_entries))
-                current_batch_size = batch_end - trained
-                train_image_data_batch = torch.zeros((current_batch_size, in_channels, image_height, image_width), dtype=torch.float32, device=config.device)
-                train_image_ground_truth_batch = torch.zeros((current_batch_size, image_height, image_width), dtype=torch.float32, device=config.device)
-                if use_multiclass:
-                    train_image_multiclass_gt_batch = torch.zeros((batch_end - trained, image_height, image_width), dtype=torch.long, device=config.device)
+            batch_end = min(trained + batch_size, len(training_entries))
+            batch_indices = training_entries_shuffle[trained:batch_end]
 
-                for k in range(trained, batch_end):
-                    train_image_data_batch[k - trained, :, :, :] = torch.tensor(dataset_loader.get_image_data(training_entries_shuffle[k]), dtype=torch.float32, device=config.device).permute(2, 0, 1)
-                    seg_mask = dataset_loader.get_segmentation_mask(training_entries_shuffle[k], "blood_vessel")
-                    train_image_ground_truth_batch[k - trained, :, :] = torch.tensor(seg_mask, dtype=torch.float32, device=config.device)
+            multiclass_labels_dict = class_labels_dict if use_multiclass else None
+            train_image_data_batch, train_image_ground_truth_batch, train_image_multiclass_gt_batch, train_image_ground_truth_ds_batch,\
+                train_image_multiclass_gt_ds_batch = image_sampling.sample_images(batch_indices, dataset_loader, rotation_augmentation=rotation_augmentation,
+                                                                multiclass_labels_dict=multiclass_labels_dict, deep_supervision_downsamples=pyr_height - 1,
+                                                                crop_height=448, crop_width=448)
 
-                    if use_multiclass:
-                        class_labels = class_labels_dict[training_entries_shuffle[k]]
-                        train_image_multiclass_gt_batch[k - trained, :, :] = torch.tensor(class_labels, dtype=torch.long, device=config.device)
-
-                if rotation_augmentation:
-                    # flip the images
-                    if np.random.uniform(0, 1) < 0.5:
-                        train_image_data_batch = torch.flip(train_image_data_batch, dims=[3])
-                        train_image_ground_truth_batch = torch.flip(train_image_ground_truth_batch, dims=[2])
-                        if use_multiclass:
-                            train_image_multiclass_gt_batch = torch.flip(train_image_multiclass_gt_batch, dims=[2])
-
-                    # apply elastic deformation
-                    train_image_data_batch = torch.nn.functional.pad(train_image_data_batch, (image_height-1, image_height-1, image_width-1, image_width-1), mode="reflect")
-                    train_image_ground_truth_batch = torch.nn.functional.pad(train_image_ground_truth_batch, (image_height-1, image_height-1, image_width-1, image_width-1), mode="reflect")
-                    if use_multiclass:
-                        train_image_multiclass_gt_batch = torch.nn.functional.pad(train_image_multiclass_gt_batch.to(torch.float32),
-                                                                    (image_height-1, image_height-1, image_width-1, image_width-1), mode="reflect").to(torch.long)
-
-                    displacement_field = model_simple_unet.generate_displacement_field()
-                    train_image_data_batch = torchvision.transforms.functional.elastic_transform(train_image_data_batch, displacement_field)
-                    train_image_ground_truth_batch = torchvision.transforms.functional.elastic_transform(train_image_ground_truth_batch.unsqueeze(1), displacement_field).squeeze(1)
-                    if use_multiclass:
-                        train_image_multiclass_gt_batch = torchvision.transforms.functional.elastic_transform(train_image_multiclass_gt_batch.unsqueeze(1), displacement_field,
-                            interpolation=torchvision.transforms.InterpolationMode.NEAREST).squeeze(1)
-
-                    # apply rotation
-                    angle_in_deg = np.random.uniform(0, 360)
-                    train_image_data_batch = torchvision.transforms.functional.rotate(train_image_data_batch, angle_in_deg)
-                    train_image_ground_truth_batch = torchvision.transforms.functional.rotate(train_image_ground_truth_batch, angle_in_deg)
-                    if use_multiclass:
-                        train_image_multiclass_gt_batch = torchvision.transforms.functional.rotate(train_image_multiclass_gt_batch, angle_in_deg,
-                            interpolation=torchvision.transforms.InterpolationMode.NEAREST)
-
-                    train_image_data_batch = train_image_data_batch[..., image_height - 1:-image_height + 1, image_width - 1:-image_width + 1]
-                    train_image_ground_truth_batch = train_image_ground_truth_batch[..., image_height - 1:-image_height + 1, image_width - 1:-image_width + 1]
-                    if use_multiclass:
-                        train_image_multiclass_gt_batch = train_image_multiclass_gt_batch[..., image_height - 1:-image_height + 1, image_width - 1:-image_width + 1]
-
-                crop_height = 448
-                crop_width = 448
-
-                crop_y = np.random.randint(0, image_height - crop_height + 1)
-                crop_x = np.random.randint(0, image_width - crop_width + 1)
-
-                train_image_data_batch = train_image_data_batch[..., crop_y:crop_y + crop_height, crop_x:crop_x + crop_width]
-                train_image_ground_truth_batch = train_image_ground_truth_batch[..., crop_y:crop_y + crop_height, crop_x:crop_x + crop_width]
-                if use_multiclass:
-                    train_image_multiclass_gt_batch = train_image_multiclass_gt_batch[..., crop_y:crop_y + crop_height, crop_x:crop_x + crop_width]
-
-                gc.collect()
-                torch.cuda.empty_cache()
+            gc.collect()
+            torch.cuda.empty_cache()
 
             optimizer.zero_grad()
             result, deep_outputs = model(train_image_data_batch)
 
-            crop_height = train_image_ground_truth_batch.shape[1]
-            crop_width = train_image_ground_truth_batch.shape[2]
-            train_image_ground_truth_pooled_batch = train_image_ground_truth_batch.view(current_batch_size, 1, crop_height, crop_width)
             loss = 0.0
             for k in range(pyr_height - 2, -1, -1):
-                scale_factor = 2 ** (pyr_height - 1 - k)
                 multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
-                with torch.no_grad():
-                    train_image_ground_truth_pooled_batch = torch.nn.functional.max_pool2d(train_image_ground_truth_pooled_batch, kernel_size=2, stride=2)
-                    if use_multiclass and k >= pyr_height - 1 - multiclass_deep_losses:
-                        train_image_multiclass_gt_majority = torch.nn.functional.max_pool2d(train_image_multiclass_gt_batch.view(current_batch_size, 1, crop_height, crop_width).to(torch.float32),
-                                                                    kernel_size=scale_factor, stride=scale_factor).to(torch.long).squeeze(1)
 
                 if use_multiclass and k >= pyr_height - 1 - multiclass_deep_losses:
-                    k_loss = torch.nn.functional.cross_entropy(deep_outputs[k], train_image_multiclass_gt_majority, reduction="sum") * multiply_scale_factor
+                    k_loss = torch.nn.functional.cross_entropy(deep_outputs[k], train_image_multiclass_gt_ds_batch[pyr_height - 2 - k], reduction="sum") * multiply_scale_factor
                 else:
-                    k_loss = torch.nn.functional.binary_cross_entropy(deep_outputs[k], train_image_ground_truth_pooled_batch.view(current_batch_size, crop_height // scale_factor, crop_width // scale_factor),
-                                                             reduction="sum") * multiply_scale_factor
+                    k_loss = torch.nn.functional.binary_cross_entropy(deep_outputs[k], train_image_ground_truth_ds_batch[pyr_height - 2 - k], reduction="sum") * multiply_scale_factor
                 loss += k_loss
 
                 total_loss_per_output[k] += k_loss.item()
@@ -294,16 +231,16 @@ if __name__ == "__main__":
                 with torch.no_grad():
                     if use_multiclass and k >= pyr_height - 1 - multiclass_deep_losses:
                         deep_class_prediction = torch.argmax(deep_outputs[k], dim=1)
-                        true_negative_per_output[k] += ((deep_class_prediction == 0) & (train_image_ground_truth_pooled_batch < 0.5)).sum().item()
-                        false_negative_per_output[k] += ((deep_class_prediction == 0) & (train_image_ground_truth_pooled_batch >= 0.5)).sum().item()
-                        true_positive_per_output[k] += ((deep_class_prediction > 0) & (train_image_ground_truth_pooled_batch >= 0.5)).sum().item()
-                        false_positive_per_output[k] += ((deep_class_prediction > 0) & (train_image_ground_truth_pooled_batch < 0.5)).sum().item()
+                        true_negative_per_output[k] += ((deep_class_prediction == 0) & (train_image_ground_truth_ds_batch[pyr_height - 2 - k] < 0.5)).sum().item()
+                        false_negative_per_output[k] += ((deep_class_prediction == 0) & (train_image_ground_truth_ds_batch[pyr_height - 2 - k] >= 0.5)).sum().item()
+                        true_positive_per_output[k] += ((deep_class_prediction > 0) & (train_image_ground_truth_ds_batch[pyr_height - 2 - k] >= 0.5)).sum().item()
+                        false_positive_per_output[k] += ((deep_class_prediction > 0) & (train_image_ground_truth_ds_batch[pyr_height - 2 - k] < 0.5)).sum().item()
                         del deep_class_prediction
                     else:
-                        true_negative_per_output[k] += ((deep_outputs[k] < 0.5) & (train_image_ground_truth_pooled_batch < 0.5)).sum().item()
-                        false_negative_per_output[k] += ((deep_outputs[k] < 0.5) & (train_image_ground_truth_pooled_batch >= 0.5)).sum().item()
-                        true_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (train_image_ground_truth_pooled_batch >= 0.5)).sum().item()
-                        false_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (train_image_ground_truth_pooled_batch < 0.5)).sum().item()
+                        true_negative_per_output[k] += ((deep_outputs[k] < 0.5) & (train_image_ground_truth_ds_batch[pyr_height - 2 - k] < 0.5)).sum().item()
+                        false_negative_per_output[k] += ((deep_outputs[k] < 0.5) & (train_image_ground_truth_ds_batch[pyr_height - 2 - k] >= 0.5)).sum().item()
+                        true_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (train_image_ground_truth_ds_batch[pyr_height - 2 - k] >= 0.5)).sum().item()
+                        false_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (train_image_ground_truth_ds_batch[pyr_height - 2 - k] < 0.5)).sum().item()
 
             if use_multiclass:
                 result_loss = torch.nn.functional.cross_entropy(result, train_image_multiclass_gt_batch, reduction="sum")
@@ -338,7 +275,7 @@ if __name__ == "__main__":
 
             total_cum_loss += loss.item()
 
-            trained += current_batch_size
+            trained += len(batch_indices)
 
             gc.collect()
             torch.cuda.empty_cache()
@@ -392,60 +329,41 @@ if __name__ == "__main__":
 
             while tested < len(validation_entries):
                 batch_end = min(tested + batch_size, len(validation_entries))
-                current_batch_size = batch_end - tested
-                test_image_data_batch = torch.zeros((batch_end - tested, in_channels, image_height, image_width), dtype=torch.float32, device=config.device)
-                test_image_ground_truth_batch = torch.zeros((batch_end - tested, image_height, image_width), dtype=torch.float32, device=config.device)
-                if use_multiclass:
-                    test_image_multiclass_gt_batch = torch.zeros((batch_end - tested, image_height, image_width), dtype=torch.long, device=config.device)
+                batch_indices = validation_entries[tested:batch_end]
 
-                for k in range(tested, batch_end):
-                    test_image_data_batch[k - tested, :, :, :] = torch.tensor(dataset_loader.get_image_data(validation_entries[k]), dtype=torch.float32, device=config.device).permute(2, 0, 1)
-                    seg_mask = dataset_loader.get_segmentation_mask(validation_entries[k], "blood_vessel")
-                    test_image_ground_truth_batch[k - tested, :, :] = torch.tensor(seg_mask, dtype=torch.float32, device=config.device)
-
-                    if use_multiclass:
-                        seg_mask_labels = class_labels_dict[validation_entries[k]]
-                        test_image_multiclass_gt_batch[k - tested, :, :] = torch.tensor(seg_mask_labels, dtype=torch.long, device=config.device)
+                multiclass_labels_dict = class_labels_dict if use_multiclass else None
+                test_image_data_batch, test_image_ground_truth_batch, test_image_multiclass_gt_batch, test_image_ground_truth_ds_batch, \
+                    test_image_multiclass_gt_ds_batch = image_sampling.sample_images(batch_indices, dataset_loader,
+                                                                                      rotation_augmentation=False,
+                                                                                      multiclass_labels_dict=multiclass_labels_dict,
+                                                                                      deep_supervision_downsamples=pyr_height - 1)
 
                 result, deep_outputs = model(test_image_data_batch)
 
-                crop_height = test_image_ground_truth_batch.shape[1]
-                crop_width = test_image_ground_truth_batch.shape[2]
-                test_image_ground_truth_pooled_batch = test_image_ground_truth_batch.view(current_batch_size, 1, crop_height,
-                                                                                            crop_width)
                 loss = 0.0
                 for k in range(pyr_height - 2, -1, -1):
-                    scale_factor = 2 ** (pyr_height - 1 - k)
                     multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
 
-                    test_image_ground_truth_pooled_batch = torch.nn.functional.max_pool2d(test_image_ground_truth_pooled_batch, kernel_size=2, stride=2)
                     if use_multiclass and k >= pyr_height - 1 - multiclass_deep_losses:
-                        test_image_multiclass_gt_majority = torch.nn.functional.max_pool2d(test_image_multiclass_gt_batch.view(current_batch_size, 1, crop_height, crop_width).to(torch.float32),
-                            kernel_size=scale_factor, stride=scale_factor).to(torch.long).squeeze(1)
-
-                        k_loss = torch.nn.functional.cross_entropy(deep_outputs[k], test_image_multiclass_gt_majority, reduction="sum") * multiply_scale_factor
+                        k_loss = torch.nn.functional.cross_entropy(deep_outputs[k], test_image_multiclass_gt_ds_batch[pyr_height - 2 - k], reduction="sum") * multiply_scale_factor
                     else:
-                        k_loss = torch.nn.functional.binary_cross_entropy(deep_outputs[k],
-                                                                          test_image_ground_truth_pooled_batch.view(
-                                                                              current_batch_size, crop_height // scale_factor,
-                                                                              crop_width // scale_factor),
-                                                                          reduction="sum") * multiply_scale_factor
+                        k_loss = torch.nn.functional.binary_cross_entropy(deep_outputs[k], test_image_ground_truth_ds_batch[pyr_height - 2 - k], reduction="sum") * multiply_scale_factor
                     loss += k_loss
 
                     total_loss_per_output[k] += k_loss.item()
 
                     if use_multiclass and k >= pyr_height - 1 - multiclass_deep_losses:
                         deep_class_prediction = torch.argmax(deep_outputs[k], dim=1)
-                        true_negative_per_output[k] += ((deep_class_prediction == 0) & (test_image_ground_truth_pooled_batch < 0.5)).sum().item()
-                        false_negative_per_output[k] += ((deep_class_prediction == 0) & (test_image_ground_truth_pooled_batch >= 0.5)).sum().item()
-                        true_positive_per_output[k] += ((deep_class_prediction > 0) & (test_image_ground_truth_pooled_batch >= 0.5)).sum().item()
-                        false_positive_per_output[k] += ((deep_class_prediction > 0) & (test_image_ground_truth_pooled_batch < 0.5)).sum().item()
+                        true_negative_per_output[k] += ((deep_class_prediction == 0) & (test_image_ground_truth_ds_batch[pyr_height - 2 - k] < 0.5)).sum().item()
+                        false_negative_per_output[k] += ((deep_class_prediction == 0) & (test_image_ground_truth_ds_batch[pyr_height - 2 - k] >= 0.5)).sum().item()
+                        true_positive_per_output[k] += ((deep_class_prediction > 0) & (test_image_ground_truth_ds_batch[pyr_height - 2 - k] >= 0.5)).sum().item()
+                        false_positive_per_output[k] += ((deep_class_prediction > 0) & (test_image_ground_truth_ds_batch[pyr_height - 2 - k] < 0.5)).sum().item()
                         del deep_class_prediction
                     else:
-                        true_negative_per_output[k] += ((deep_outputs[k] < 0.5) & (test_image_ground_truth_pooled_batch < 0.5)).sum().item()
-                        false_negative_per_output[k] += ((deep_outputs[k] < 0.5) & (test_image_ground_truth_pooled_batch >= 0.5)).sum().item()
-                        true_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (test_image_ground_truth_pooled_batch >= 0.5)).sum().item()
-                        false_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (test_image_ground_truth_pooled_batch < 0.5)).sum().item()
+                        true_negative_per_output[k] += ((deep_outputs[k] < 0.5) & (test_image_ground_truth_ds_batch[pyr_height - 2 - k] < 0.5)).sum().item()
+                        false_negative_per_output[k] += ((deep_outputs[k] < 0.5) & (test_image_ground_truth_ds_batch[pyr_height - 2 - k] >= 0.5)).sum().item()
+                        true_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (test_image_ground_truth_ds_batch[pyr_height - 2 - k] >= 0.5)).sum().item()
+                        false_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (test_image_ground_truth_ds_batch[pyr_height - 2 - k] < 0.5)).sum().item()
 
                 if use_multiclass:
                     result_loss = torch.nn.functional.cross_entropy(result, test_image_multiclass_gt_batch, reduction="sum")
@@ -481,7 +399,7 @@ if __name__ == "__main__":
 
                 total_cum_loss += loss.item()
 
-                tested += current_batch_size
+                tested += len(batch_indices)
 
                 gc.collect()
                 torch.cuda.empty_cache()

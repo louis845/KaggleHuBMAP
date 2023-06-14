@@ -20,60 +20,7 @@ import model_data_manager
 import model_unet_base
 import model_unet_plus
 import model_unet_attention
-
-def apply_random_shear(displacement_field, xory="x", image_size=512, image_pad=1534, magnitude_low=10000.0, magnitude_high=16000.0):
-    diff = (image_pad - image_size) // 2
-    x = np.random.randint(low=0, high=image_size) + diff
-    y = np.random.randint(low=0, high=image_size) + diff
-    sigma = np.random.uniform(low=100.0, high=200.0)
-    magnitude = np.random.uniform(low=magnitude_low, high=magnitude_high) * np.random.choice([-1, 1])
-
-    width = image_size
-
-    expand_left = min(x, width)
-    expand_right = min(image_size - x, width + 1)
-    expand_top = min(y, width)
-    expand_bottom = min(image_size - y, width + 1)
-
-    if xory == "x":
-        displacement_field[0, x - expand_left:x + expand_right, y - expand_top:y + expand_bottom, 0:1] += \
-            (np.expand_dims(cv2.getGaussianKernel(ksize=width * 2 + 1, sigma=sigma), axis=-1) * cv2.getGaussianKernel(
-                ksize=width * 2 + 1, sigma=sigma) * magnitude)[width - expand_left:width + expand_right,
-            width - expand_top:width + expand_bottom, :]
-    else:
-        displacement_field[0, x - expand_left:x + expand_right, y - expand_top:y + expand_bottom, 1:2] += \
-            (np.expand_dims(cv2.getGaussianKernel(ksize=width * 2 + 1, sigma=sigma),
-                            axis=-1) * cv2.getGaussianKernel(
-                ksize=width * 2 + 1, sigma=sigma) * magnitude)[width - expand_left:width + expand_right,
-            width - expand_top:width + expand_bottom, :]
-
-def generate_displacement_field(image_size=512, image_pad=1534, dtype=torch.float32, device=config.device):
-    displacement_field = np.zeros(shape=(1, image_pad, image_pad, 2), dtype=np.float32)
-
-    type = np.random.choice(5)
-    if type == 0:
-        magnitude_low = 0.0
-        magnitude_high = 1000.0
-    elif type == 1:
-        magnitude_low = 1000.0
-        magnitude_high = 4000.0
-    elif type == 2:
-        magnitude_low = 4000.0
-        magnitude_high = 7000.0
-    elif type == 3:
-        magnitude_low = 7000.0
-        magnitude_high = 10000.0
-    else:
-        magnitude_low = 10000.0
-        magnitude_high = 16000.0
-
-    for k in range(4):
-        apply_random_shear(displacement_field, xory="x", image_size=image_size, image_pad=image_pad, magnitude_low=magnitude_low, magnitude_high=magnitude_high)
-        apply_random_shear(displacement_field, xory="y", image_size=image_size, image_pad=image_pad, magnitude_low=magnitude_low, magnitude_high=magnitude_high)
-
-    displacement_field = torch.tensor(displacement_field, dtype=dtype, device=device)
-
-    return displacement_field
+import image_sampling
 
 def compute_background_foreground(training_entries, dataset_loader, ground_truth_mask_data, foreground_mask_data):
     num_background_positive_pixels = 0
@@ -172,7 +119,7 @@ if __name__ == "__main__":
 
     # Train the model
     if use_deep_supervision:
-        train_history = {"loss": [], "val_loss": [], "loss_dset1": []}
+        train_history = {"loss": [], "val_loss": []}
         for i in range(args.pyramid_height):
             train_history["accuracy_{}".format(i)] = []
             train_history["val_accuracy_{}".format(i)] = []
@@ -181,7 +128,7 @@ if __name__ == "__main__":
             train_history["recall_{}".format(i)] = []
             train_history["val_recall_{}".format(i)] = []
     else:
-        train_history = {"loss": [], "val_loss": [], "loss_dset1": [], "accuracy": [], "val_accuracy": [], "precision": [], "val_precision": [], "recall": [], "val_recall": []}
+        train_history = {"loss": [], "val_loss": [], "accuracy": [], "val_accuracy": [], "precision": [], "val_precision": [], "recall": [], "val_recall": []}
 
     loss_function = torch.nn.BCELoss(reduction="none")
 
@@ -250,7 +197,6 @@ if __name__ == "__main__":
         # Split the training data into batches
         trained = 0
         total_loss = 0.0
-        total_loss_dset1 = 0.0
         if use_deep_supervision:
             true_negative_per_level = [0] * args.pyramid_height
             true_positive_per_level = [0] * args.pyramid_height
@@ -272,105 +218,26 @@ if __name__ == "__main__":
                     optimizer.zero_grad()
 
             batch_end = min(trained + batch_size, len(training_entries))
-            train_image_data_batch = torch.zeros((batch_end - trained, in_channels, image_height, image_width), dtype=torch.float32, device=config.device)
-            train_image_ground_truth_batch = torch.zeros((batch_end - trained, image_height, image_width), dtype=torch.float32, device=config.device)
-            if use_deep_supervision:
-                train_background_weights_batch = torch.zeros((batch_end - trained, args.pyramid_height, image_height, image_width), dtype=torch.float32, device=config.device)
-            else:
-                train_background_weights_batch = torch.zeros((batch_end - trained, image_height, image_width), dtype=torch.float32, device=config.device)
-            train_dataset1_entries = torch.zeros((batch_end - trained, 1, 1), dtype=torch.float32, device=config.device)
+            batch_indices = training_entries_shuffle[trained:batch_end]
 
-            for k in range(trained, batch_end):
-                train_image_data_batch[k - trained, :, :, :] = torch.tensor(dataset_loader.get_image_data(training_entries_shuffle[k]), dtype=torch.float32, device=config.device).permute(2, 0, 1)
-                seg_mask = dataset_loader.get_segmentation_mask(training_entries_shuffle[k], "blood_vessel")
-                train_image_ground_truth_batch[k - trained, :, :] = torch.tensor(seg_mask, dtype=torch.float32, device=config.device)
+            train_image_data_batch, train_image_ground_truth_batch, train_image_multiclass_gt_batch, train_image_ground_truth_ds_batch, \
+                train_image_multiclass_gt_ds_batch = image_sampling.sample_images(batch_indices, dataset_loader,
+                                                                                  rotation_augmentation=rotation_augmentation,
+                                                                                  multiclass_labels_dict=None,
+                                                                                  deep_supervision_downsamples=0,
+                                                                                  crop_height=512, crop_width=512)
 
-                foreground = dataset_loader.get_segmentation_mask(training_entries_shuffle[k], background_weights_split)
-                foreground_mask = torch.tensor(foreground, dtype=torch.float32, device=config.device)
-
-                if use_deep_supervision:
-                    train_background_weights_batch[k - trained, :, :, :] = torch.exp(torch.arange(-args.pyramid_height + 1, 1, dtype=torch.float32, device=config.device)).unsqueeze(-1).unsqueeze(-1)\
-                                                                           * (torch.linspace(foreground_weight, 0.6, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * foreground_mask
-                                                                           + torch.linspace(background_weight, 0.4, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * (1.0 - foreground_mask))
-                else:
-                    train_background_weights_batch[k - trained, :, :] = foreground_weight * foreground_mask + background_weight * (1.0 - foreground_mask)
-
-                if model_data_manager.data_information.loc[training_entries_shuffle[k], "dataset"] != 1:
-                    if use_deep_supervision:
-                        train_background_weights_batch[k - trained, :, :, :] = train_background_weights_batch[k - trained, :, :, :] * foreground_mask * 0.75
-                    else:
-                        train_background_weights_batch[k - trained, :, :] = train_background_weights_batch[k - trained, :, :] * foreground_mask * 0.75
-                    train_dataset1_entries[k - trained, 0, 0] = 0.0
-                else:
-                    train_dataset1_entries[k - trained, 0, 0] = 1.0
-
-            if rotation_augmentation:
-                # flip the images
-                if np.random.uniform(0, 1) < 0.5:
-                    train_image_data_batch = torch.flip(train_image_data_batch, dims=[3])
-                    train_image_ground_truth_batch = torch.flip(train_image_ground_truth_batch, dims=[2])
-                    if use_deep_supervision:
-                        train_background_weights_batch = torch.flip(train_background_weights_batch, dims=[3])
-                    else:
-                        train_background_weights_batch = torch.flip(train_background_weights_batch, dims=[2])
-
-                # apply elastic deformation
-                train_image_data_batch = torch.nn.functional.pad(train_image_data_batch, (image_height-1, image_height-1, image_width-1, image_width-1), mode="reflect")
-                train_image_ground_truth_batch = torch.nn.functional.pad(train_image_ground_truth_batch, (image_height-1, image_height-1, image_width-1, image_width-1), mode="reflect")
-                train_background_weights_batch = torch.nn.functional.pad(train_background_weights_batch, (image_height-1, image_height-1, image_width-1, image_width-1), mode="reflect")
-
-                displacement_field = generate_displacement_field()
-                train_image_data_batch = torchvision.transforms.functional.elastic_transform(train_image_data_batch, displacement_field)
-                train_image_ground_truth_batch = torchvision.transforms.functional.elastic_transform(train_image_ground_truth_batch.unsqueeze(1), displacement_field).squeeze(1)
-                if use_deep_supervision:
-                    weights_shape = list(train_background_weights_batch.shape)
-                    train_background_weights_batch = torchvision.transforms.functional.elastic_transform(
-                        train_background_weights_batch.view(weights_shape[0]*weights_shape[1], 1, weights_shape[2], weights_shape[3]),
-                    displacement_field).view(weights_shape[0], weights_shape[1], weights_shape[2], weights_shape[3])
-                else:
-                    train_background_weights_batch = torchvision.transforms.functional.elastic_transform(train_background_weights_batch.unsqueeze(1), displacement_field).squeeze(1)
-
-                train_image_data_batch = train_image_data_batch[..., image_height-1:-image_height+1, image_width-1:-image_width+1]
-                train_image_ground_truth_batch = train_image_ground_truth_batch[..., image_height-1:-image_height+1, image_width-1:-image_width+1]
-                train_background_weights_batch = train_background_weights_batch[..., image_height-1:-image_height+1, image_width-1:-image_width+1]
-
-                angle_in_deg = np.random.uniform(0, 360)
-                with torch.no_grad():
-                    train_image_data_batch = torchvision.transforms.functional.rotate(train_image_data_batch, angle_in_deg)
-                    train_image_ground_truth_batch = torchvision.transforms.functional.rotate(train_image_ground_truth_batch, angle_in_deg)
-                    train_background_weights_batch = torchvision.transforms.functional.rotate(train_background_weights_batch, angle_in_deg)
-
-                    rads = np.radians(angle_in_deg % 90.0)
-                    lims = 0.5 / (np.sin(rads) + np.cos(rads))
-                    # Restrict to (centerx - imagewidth * lims, centery - imageheight * lims) to (centerx + imagewidth * lims, centery + imageheight * lims)
-                    ymin = int(image_height // 2 - image_height * lims)
-                    ymax = int(image_height // 2 + image_height * lims)
-                    xmin = int(image_width // 2 - image_width * lims)
-                    xmax = int(image_width // 2 + image_width * lims)
-
-                    xmax = image_pixels_round * ((xmax - xmin) // image_pixels_round) + xmin
-                    ymax = image_pixels_round * ((ymax - ymin) // image_pixels_round) + ymin
-
-                    train_image_data_batch = train_image_data_batch[:, :, ymin:ymax, xmin:xmax]
-                    train_image_ground_truth_batch = train_image_ground_truth_batch[:, ymin:ymax, xmin:xmax]
-
-                    if use_deep_supervision:
-                        train_background_weights_batch = train_background_weights_batch[:, :, ymin:ymax, xmin:xmax]
-                    else:
-                        train_background_weights_batch = train_background_weights_batch[:, ymin:ymax, xmin:xmax]
-
-                gc.collect()
-                torch.cuda.empty_cache()
+            gc.collect()
+            torch.cuda.empty_cache()
 
 
             y_pred = model(train_image_data_batch)
 
             if use_deep_supervision:
                 loss = 0.0
-                loss_dataset1 = 0.0
                 for k in range(args.pyramid_height):
                     y_pred_level = y_pred[k]
-                    loss_level = loss_function(y_pred_level, train_image_ground_truth_batch) * train_background_weights_batch[:, k, :, :]
+                    loss_level = loss_function(y_pred_level, train_image_ground_truth_batch)
                     # Weighted loss, with precomputed weights
                     loss = torch.sum(loss_level) + loss
 
@@ -379,17 +246,12 @@ if __name__ == "__main__":
                     false_positive_per_level[k] += int(torch.sum((y_pred_level > 0.5) & (train_image_ground_truth_batch == 0)).item())
                     false_negative_per_level[k] += int(torch.sum((y_pred_level <= 0.5) & (train_image_ground_truth_batch == 1)).item())
 
-                    loss_dataset1 = torch.sum(loss_level * train_dataset1_entries) + loss_dataset1
-
                 total_loss += loss.item()
-                total_loss_dset1 += loss_dataset1.item()
                 loss.backward()
             else:
                 loss = loss_function(y_pred, train_image_ground_truth_batch)
-                with torch.no_grad():
-                    total_loss_dset1 += torch.sum(train_background_weights_batch * loss * train_dataset1_entries).item()
                 # Weighted loss, with precomputed weights
-                loss = torch.sum(train_background_weights_batch * loss)
+                loss = torch.sum(loss)
                 loss.backward()
                 total_loss += loss.item()
 
@@ -398,7 +260,7 @@ if __name__ == "__main__":
                 false_positive += int(torch.sum((y_pred > 0.5) & (train_image_ground_truth_batch == 0)).item())
                 false_negative += int(torch.sum((y_pred <= 0.5) & (train_image_ground_truth_batch == 1)).item())
 
-            trained += batch_size
+            trained += len(batch_indices)
 
             if gradient_accumulation_steps != -1:
                 steps += 1
@@ -413,9 +275,7 @@ if __name__ == "__main__":
         scheduler.step()
 
         total_loss /= len(training_entries)
-        total_loss_dset1 /= num_dset1_entries
         train_history["loss"].append(total_loss)
-        train_history["loss_dset1"].append(total_loss_dset1)
 
         if use_deep_supervision:
             for k in range(args.pyramid_height):
@@ -453,34 +313,20 @@ if __name__ == "__main__":
                 true_negative, true_positive, false_negative, false_positive = 0, 0, 0, 0
             while tested < len(validation_entries):
                 batch_end = min(tested + batch_size, len(validation_entries))
-                test_image_data_batch = torch.zeros((batch_end - tested, in_channels, image_height, image_width), dtype=torch.float32, device=config.device)
-                test_image_ground_truth_batch = torch.zeros((batch_end - tested, image_height, image_width), dtype=torch.float32, device=config.device)
-                if use_deep_supervision:
-                    test_background_weights_batch = torch.zeros((batch_end - tested, args.pyramid_height, image_height, image_width), dtype=torch.float32, device=config.device)
-                else:
-                    test_background_weights_batch = torch.zeros((batch_end - tested, image_height, image_width), dtype=torch.float32, device=config.device)
+                batch_indices = validation_entries[tested:batch_end]
 
-                for k in range(tested, batch_end):
-                    test_image_data_batch[k - tested, :, :, :] = torch.tensor(dataset_loader.get_image_data(validation_entries[k]), dtype=torch.float32, device=config.device).permute(2, 0, 1)
-                    seg_mask = dataset_loader.get_segmentation_mask(validation_entries[k], "blood_vessel")
-                    test_image_ground_truth_batch[k - tested, :, :] = torch.tensor(seg_mask, dtype=torch.float32, device=config.device)
-
-                    foreground = dataset_loader.get_segmentation_mask(validation_entries[k], background_weights_split)
-                    foreground_mask = torch.tensor(foreground, dtype=torch.float32, device=config.device)
-
-                    if use_deep_supervision:
-                        test_background_weights_batch[k - tested, :, :, :] = torch.exp(torch.arange(-args.pyramid_height + 1, 1, dtype=torch.float32, device=config.device)).unsqueeze(-1).unsqueeze(-1)\
-                                                                             * (torch.linspace(foreground_weight, 0.6, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * foreground_mask
-                                                                          + torch.linspace(background_weight, 0.4, steps=args.pyramid_height, dtype=torch.float32, device=config.device).unsqueeze(-1).unsqueeze(-1) * (1.0 - foreground_mask))
-                    else:
-                        test_background_weights_batch[k - tested, :, :] = foreground_weight * foreground_mask + background_weight * (1.0 - foreground_mask)
+                test_image_data_batch, test_image_ground_truth_batch, test_image_multiclass_gt_batch, test_image_ground_truth_ds_batch, \
+                    test_image_multiclass_gt_ds_batch = image_sampling.sample_images(batch_indices, dataset_loader,
+                                                                                     rotation_augmentation=False,
+                                                                                     multiclass_labels_dict=None,
+                                                                                     deep_supervision_downsamples=0)
 
                 y_pred = model(test_image_data_batch)
 
                 if use_deep_supervision:
                     for k in range(args.pyramid_height):
                         # Weighted loss, with precomputed weights
-                        loss = loss_function(y_pred[k], test_image_ground_truth_batch) * test_background_weights_batch[:, k, :, :]
+                        loss = loss_function(y_pred[k], test_image_ground_truth_batch)
                         loss = torch.sum(loss)
                         total_loss += loss.item()
 
@@ -491,7 +337,7 @@ if __name__ == "__main__":
                 else:
                     loss = loss_function(y_pred, test_image_ground_truth_batch)
                     # Weighted loss, with precomputed weights
-                    loss = torch.sum(test_background_weights_batch * loss)
+                    loss = torch.sum(loss)
                     total_loss += loss.item()
 
                     true_positive += int(torch.sum((y_pred > 0.5) & (test_image_ground_truth_batch == 1)).item())
@@ -499,7 +345,7 @@ if __name__ == "__main__":
                     false_positive += int(torch.sum((y_pred > 0.5) & (test_image_ground_truth_batch == 0)).item())
                     false_negative += int(torch.sum((y_pred <= 0.5) & (test_image_ground_truth_batch == 1)).item())
 
-                tested += batch_size
+                tested += len(batch_indices)
 
             total_loss /= len(validation_entries)
             train_history["val_loss"].append(total_loss)

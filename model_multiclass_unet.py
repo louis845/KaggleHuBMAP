@@ -18,10 +18,10 @@ import torchvision.transforms.functional
 
 import model_data_manager
 import model_unet_base
-import model_unet_plus
 import model_unet_attention
 import model_multiclass_base
 import model_simple_unet
+import image_sampling
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a multiclass U-Net model")
@@ -171,58 +171,18 @@ if __name__ == "__main__":
             optimizer.zero_grad()
 
             batch_end = min(trained + batch_size, len(training_entries))
-            train_image_data_batch = torch.zeros((batch_end - trained, in_channels, image_height, image_width), dtype=torch.float32, device=config.device)
-            train_image_ground_truth_batch = torch.zeros((batch_end - trained, image_height, image_width), dtype=torch.long, device=config.device)
+            batch_indices = training_entries_shuffle[trained:batch_end]
 
-            for k in range(trained, batch_end):
-                train_image_data_batch[k - trained, :, :, :] = torch.tensor(dataset_loader.get_image_data(training_entries_shuffle[k]), dtype=torch.float32, device=config.device).permute(2, 0, 1)
-                seg_mask_labels = class_labels_dict[training_entries_shuffle[k]]
-                train_image_ground_truth_batch[k - trained, :, :] = torch.tensor(seg_mask_labels, dtype=torch.long, device=config.device)
-
-            if rotation_augmentation:
-                # flip the images
-                if np.random.uniform(0, 1) < 0.5:
-                    train_image_data_batch = torch.flip(train_image_data_batch, dims=[3])
-                    train_image_ground_truth_batch = torch.flip(train_image_ground_truth_batch, dims=[2])
-
-                # apply elastic deformation
-                train_image_data_batch = torch.nn.functional.pad(train_image_data_batch, (image_height-1, image_height-1, image_width-1, image_width-1), mode="reflect")
-                train_image_ground_truth_batch = torch.nn.functional.pad(train_image_ground_truth_batch.to(torch.float32),
-                                                        (image_height-1, image_height-1, image_width-1, image_width-1), mode="reflect").to(torch.long)
-
-                displacement_field = model_simple_unet.generate_displacement_field()
-                train_image_data_batch = torchvision.transforms.functional.elastic_transform(train_image_data_batch, displacement_field)
-                train_image_ground_truth_batch = torchvision.transforms.functional.elastic_transform(train_image_ground_truth_batch.unsqueeze(1), displacement_field,
-                                                    interpolation=torchvision.transforms.InterpolationMode.NEAREST).squeeze(1)
-
-                train_image_data_batch = train_image_data_batch[..., image_height-1:-image_height+1, image_width-1:-image_width+1]
-                train_image_ground_truth_batch = train_image_ground_truth_batch[..., image_height-1:-image_height+1, image_width-1:-image_width+1]
-
-                angle_in_deg = np.random.uniform(0, 360)
-                with torch.no_grad():
-                    train_image_data_batch = torchvision.transforms.functional.rotate(train_image_data_batch, angle_in_deg)
-                    train_image_ground_truth_batch = torchvision.transforms.functional.rotate(train_image_ground_truth_batch, angle_in_deg, interpolation=torchvision.transforms.InterpolationMode.NEAREST)
-
-                    rads = np.radians(angle_in_deg % 90.0)
-                    lims = 0.5 / (np.sin(rads) + np.cos(rads))
-                    # Restrict to (centerx - imagewidth * lims, centery - imageheight * lims) to (centerx + imagewidth * lims, centery + imageheight * lims)
-                    ymin = int(image_height // 2 - image_height * lims)
-                    ymax = int(image_height // 2 + image_height * lims)
-                    xmin = int(image_width // 2 - image_width * lims)
-                    xmax = int(image_width // 2 + image_width * lims)
-
-                    xmax = image_pixels_round * ((xmax - xmin) // image_pixels_round) + xmin
-                    ymax = image_pixels_round * ((ymax - ymin) // image_pixels_round) + ymin
-
-                    train_image_data_batch = train_image_data_batch[:, :, ymin:ymax, xmin:xmax]
-                    train_image_ground_truth_batch = train_image_ground_truth_batch[:, ymin:ymax, xmin:xmax]
-
-                gc.collect()
-                torch.cuda.empty_cache()
+            train_image_data_batch, train_image_ground_truth_batch, train_image_multiclass_gt_batch, train_image_ground_truth_ds_batch, \
+                train_image_multiclass_gt_ds_batch = image_sampling.sample_images(batch_indices, dataset_loader,
+                                                                                  rotation_augmentation=rotation_augmentation,
+                                                                                  multiclass_labels_dict=class_labels_dict,
+                                                                                  deep_supervision_downsamples=0,
+                                                                                  crop_height=512, crop_width=512)
 
             y_pred = model(train_image_data_batch)
 
-            loss = loss_function(y_pred, train_image_ground_truth_batch)
+            loss = loss_function(y_pred, train_image_multiclass_gt_batch)
             # Weighted loss, with precomputed weights
             loss = torch.sum(loss)
             loss.backward()
@@ -231,20 +191,20 @@ if __name__ == "__main__":
 
             with torch.no_grad():
                 y_pred = torch.argmax(y_pred, dim=1)
-                true_positive += int(torch.sum((y_pred > 0) & (train_image_ground_truth_batch > 0)).item())
-                true_negative += int(torch.sum((y_pred == 0) & (train_image_ground_truth_batch == 0)).item())
-                false_positive += int(torch.sum((y_pred > 0) & (train_image_ground_truth_batch == 0)).item())
-                false_negative += int(torch.sum((y_pred == 0) & (train_image_ground_truth_batch > 0)).item())
+                true_positive += int(torch.sum((y_pred > 0) & (train_image_multiclass_gt_batch > 0)).item())
+                true_negative += int(torch.sum((y_pred == 0) & (train_image_multiclass_gt_batch == 0)).item())
+                false_positive += int(torch.sum((y_pred > 0) & (train_image_multiclass_gt_batch == 0)).item())
+                false_negative += int(torch.sum((y_pred == 0) & (train_image_multiclass_gt_batch > 0)).item())
 
                 for seg_idx in range(len(classes)):
                     seg_class = classes[seg_idx]
                     seg_ps = seg_idx + 1
-                    true_positive_class[seg_class] += int(torch.sum((y_pred == seg_ps) & (train_image_ground_truth_batch == seg_ps)).item())
-                    true_negative_class[seg_class] += int(torch.sum((y_pred != seg_ps) & (train_image_ground_truth_batch != seg_ps)).item())
-                    false_positive_class[seg_class] += int(torch.sum((y_pred == seg_ps) & (train_image_ground_truth_batch != seg_ps)).item())
-                    false_negative_class[seg_class] += int(torch.sum((y_pred != seg_ps) & (train_image_ground_truth_batch == seg_ps)).item())
+                    true_positive_class[seg_class] += int(torch.sum((y_pred == seg_ps) & (train_image_multiclass_gt_batch == seg_ps)).item())
+                    true_negative_class[seg_class] += int(torch.sum((y_pred != seg_ps) & (train_image_multiclass_gt_batch != seg_ps)).item())
+                    false_positive_class[seg_class] += int(torch.sum((y_pred == seg_ps) & (train_image_multiclass_gt_batch != seg_ps)).item())
+                    false_negative_class[seg_class] += int(torch.sum((y_pred != seg_ps) & (train_image_multiclass_gt_batch == seg_ps)).item())
 
-            trained += batch_size
+            trained += len(batch_indices)
 
         total_loss /= len(training_entries)
         train_history["loss"].append(total_loss)
@@ -281,33 +241,32 @@ if __name__ == "__main__":
                 true_negative_class[seg_class], true_positive_class[seg_class], false_negative_class[seg_class], false_positive_class[seg_class] = 0, 0, 0, 0
             while tested < len(validation_entries):
                 batch_end = min(tested + batch_size, len(validation_entries))
-                test_image_data_batch = torch.zeros((batch_end - tested, in_channels, image_height, image_width), dtype=torch.float32, device=config.device)
-                test_image_ground_truth_batch = torch.zeros((batch_end - tested, image_height, image_width), dtype=torch.long, device=config.device)
-
-                for k in range(tested, batch_end):
-                    test_image_data_batch[k - tested, :, :, :] = torch.tensor(dataset_loader.get_image_data(validation_entries[k]), dtype=torch.float32, device=config.device).permute(2, 0, 1)
-                    seg_mask_labels = class_labels_dict[validation_entries[k]]
-                    test_image_ground_truth_batch[k - tested, :, :] = torch.tensor(seg_mask_labels, dtype=torch.long, device=config.device)
+                batch_indices = validation_entries[tested:batch_end]
+                test_image_data_batch, test_image_ground_truth_batch, test_image_multiclass_gt_batch, test_image_ground_truth_ds_batch, \
+                    test_image_multiclass_gt_ds_batch = image_sampling.sample_images(batch_indices, dataset_loader,
+                                                                                     rotation_augmentation=False,
+                                                                                     multiclass_labels_dict=class_labels_dict,
+                                                                                     deep_supervision_downsamples=0)
 
                 y_pred = model(test_image_data_batch)
-                loss = loss_function(y_pred, test_image_ground_truth_batch)
+                loss = loss_function(y_pred, test_image_multiclass_gt_batch)
                 # Weighted loss, with precomputed weights
                 loss = torch.sum(loss)
                 total_loss += loss.item()
 
                 y_pred = torch.argmax(y_pred, dim=1)
-                true_positive += int(torch.sum((y_pred > 0) & (test_image_ground_truth_batch > 0)).item())
-                true_negative += int(torch.sum((y_pred == 0) & (test_image_ground_truth_batch == 0)).item())
-                false_positive += int(torch.sum((y_pred > 0) & (test_image_ground_truth_batch == 0)).item())
-                false_negative += int(torch.sum((y_pred == 0) & (test_image_ground_truth_batch > 0)).item())
+                true_positive += int(torch.sum((y_pred > 0) & (test_image_multiclass_gt_batch > 0)).item())
+                true_negative += int(torch.sum((y_pred == 0) & (test_image_multiclass_gt_batch == 0)).item())
+                false_positive += int(torch.sum((y_pred > 0) & (test_image_multiclass_gt_batch == 0)).item())
+                false_negative += int(torch.sum((y_pred == 0) & (test_image_multiclass_gt_batch > 0)).item())
 
                 for seg_idx in range(len(classes)):
                     seg_class = classes[seg_idx]
                     seg_ps = seg_idx + 1
-                    true_positive_class[seg_class] += int(torch.sum((y_pred == seg_ps) & (test_image_ground_truth_batch == seg_ps)).item())
-                    true_negative_class[seg_class] += int(torch.sum((y_pred != seg_ps) & (test_image_ground_truth_batch != seg_ps)).item())
-                    false_positive_class[seg_class] += int(torch.sum((y_pred == seg_ps) & (test_image_ground_truth_batch != seg_ps)).item())
-                    false_negative_class[seg_class] += int(torch.sum((y_pred != seg_ps) & (test_image_ground_truth_batch == seg_ps)).item())
+                    true_positive_class[seg_class] += int(torch.sum((y_pred == seg_ps) & (test_image_multiclass_gt_batch == seg_ps)).item())
+                    true_negative_class[seg_class] += int(torch.sum((y_pred != seg_ps) & (test_image_multiclass_gt_batch != seg_ps)).item())
+                    false_positive_class[seg_class] += int(torch.sum((y_pred == seg_ps) & (test_image_multiclass_gt_batch != seg_ps)).item())
+                    false_negative_class[seg_class] += int(torch.sum((y_pred != seg_ps) & (test_image_multiclass_gt_batch == seg_ps)).item())
 
                 tested += batch_size
 
