@@ -205,6 +205,8 @@ if __name__ == "__main__":
 
             with torch.no_grad():
                 y_pred = torch.argmax(y_pred, dim=1)
+                if mixup > 0.0:
+                    train_image_multiclass_gt_batch = torch.argmax(train_image_multiclass_gt_batch, dim=1)
                 true_positive += int(torch.sum((y_pred > 0) & (train_image_multiclass_gt_batch > 0)).item())
                 true_negative += int(torch.sum((y_pred == 0) & (train_image_multiclass_gt_batch == 0)).item())
                 false_positive += int(torch.sum((y_pred > 0) & (train_image_multiclass_gt_batch == 0)).item())

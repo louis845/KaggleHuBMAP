@@ -265,6 +265,8 @@ if __name__ == "__main__":
             with torch.no_grad():
                 if use_multiclass:
                     pred_labels = torch.argmax(result, dim=1)
+                    if mixup > 0.0:
+                        train_image_multiclass_gt_batch = torch.argmax(train_image_multiclass_gt_batch, dim=1)
                     true_negative_per_output[-1] += ((pred_labels == 0) & (train_image_multiclass_gt_batch == 0)).sum().item()
                     false_negative_per_output[-1] += ((pred_labels == 0) & (train_image_multiclass_gt_batch > 0)).sum().item()
                     true_positive_per_output[-1] += ((pred_labels > 0) & (train_image_multiclass_gt_batch > 0)).sum().item()
