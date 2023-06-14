@@ -40,6 +40,7 @@ if __name__ == "__main__":
     parser.add_argument("--multiclass_config", type=str, default=None, help="Path to the multiclass config file for multiple class training. Default None.")
     parser.add_argument("--multiclass_deep_losses", type=int, default=0, help="Number of multiclass losses to use in deep layers. Default 0.")
     parser.add_argument("--deep_exponent_base", type=float, default=2.0, help="The base of the exponent for the deep supervision loss. Default 2.0.")
+    parser.add_argument("--mixup", type=float, default=0.0, help="The alpha value of mixup. Default 0, meaning no mixup.")
 
     image_width = 512
     image_height = 512
@@ -56,6 +57,7 @@ if __name__ == "__main__":
     multiclass_config_file = args.multiclass_config
     use_multiclass = multiclass_config_file is not None
     multiclass_deep_losses = args.multiclass_deep_losses
+    mixup = args.mixup
 
     if multiclass_deep_losses > 0 and not use_multiclass:
         print("Cannot use multiclass deep losses without multiclass training.")
@@ -143,6 +145,7 @@ if __name__ == "__main__":
         "multiclass_config": multiclass_config_file,
         "multiclass_deep_losses": multiclass_deep_losses,
         "deep_exponent_base": deep_exponent_base,
+        "mixup": mixup,
         "training_script": "model_progressive_supervised_unet.py",
     }
     for key, value in extra_info.items():
@@ -198,17 +201,27 @@ if __name__ == "__main__":
 
         # Shuffle
         training_entries_shuffle = rng.permutation(training_entries)
+        if mixup > 0.0:
+            training_entries_shuffle2 = rng.permutation(training_entries)
 
-        steps = 0
         while trained < len(training_entries):
             batch_end = min(trained + batch_size, len(training_entries))
             batch_indices = training_entries_shuffle[trained:batch_end]
 
             multiclass_labels_dict = class_labels_dict if use_multiclass else None
-            train_image_data_batch, train_image_ground_truth_batch, train_image_multiclass_gt_batch, train_image_ground_truth_ds_batch,\
-                train_image_multiclass_gt_ds_batch = image_sampling.sample_images(batch_indices, dataset_loader, rotation_augmentation=rotation_augmentation,
-                                                                multiclass_labels_dict=multiclass_labels_dict, deep_supervision_downsamples=pyr_height - 1,
-                                                                crop_height=448, crop_width=448)
+            if mixup > 0.0:
+                batch_indices2 = training_entries_shuffle2[trained:batch_end]
+                train_image_data_batch, train_image_ground_truth_batch, train_image_multiclass_gt_batch, train_image_ground_truth_ds_batch, \
+                    train_image_multiclass_gt_ds_batch = image_sampling.sample_images_mixup(batch_indices, batch_indices2, dataset_loader, mixup_alpha=mixup,
+                                                                                      rotation_augmentation=rotation_augmentation,
+                                                                                      multiclass_labels_dict=multiclass_labels_dict,
+                                                                                      deep_supervision_downsamples=pyr_height - 1,
+                                                                                      crop_height=448, crop_width=448)
+            else:
+                train_image_data_batch, train_image_ground_truth_batch, train_image_multiclass_gt_batch, train_image_ground_truth_ds_batch,\
+                    train_image_multiclass_gt_ds_batch = image_sampling.sample_images(batch_indices, dataset_loader, rotation_augmentation=rotation_augmentation,
+                                                                    multiclass_labels_dict=multiclass_labels_dict, deep_supervision_downsamples=pyr_height - 1,
+                                                                    crop_height=448, crop_width=448)
 
             gc.collect()
             torch.cuda.empty_cache()

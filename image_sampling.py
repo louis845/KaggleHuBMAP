@@ -1,10 +1,11 @@
+import gc
+
 import numpy as np
 import torch
 import torchvision.transforms.functional
 import cv2
 
 import model_data_manager
-
 import config
 
 def apply_random_shear(displacement_field, xory="x", image_size=512, image_pad=1534, magnitude_low=10000.0, magnitude_high=16000.0):
@@ -64,6 +65,26 @@ def generate_displacement_field(image_size=512, image_pad=1534, dtype=torch.floa
 
 def sample_images(indices: np.ndarray, dataset_loader: model_data_manager.DatasetDataLoader, ground_truth_mask="blood_vessel", rotation_augmentation=False, multiclass_labels_dict=None, deep_supervision_downsamples=0,
                   in_channels=3, image_height=512, image_width=512, crop_height=512, crop_width=512):
+    """
+    Sample images from the dataset.
+    :param indices: The indices of the samples
+    :param dataset_loader: The (images) loader of the dataset
+    :param ground_truth_mask: Which ground truth mask to use in the dataset
+    :param rotation_augmentation: Whether to do rotation augmentation and elastic deformation augmentation
+    :param multiclass_labels_dict: The dictionary of the multiclass labels. If None, then the multiclass labels are not used, and returned image_multiclass_gt_batch, image_multiclass_gt_ds_batch are None.
+    :param deep_supervision_downsamples: How many steps of stride2 maxpool downsampling are performed for deep supervision.
+    :param in_channels: Number of input channels for the images
+    :param image_height: The original height of the images
+    :param image_width: The original width of the images
+    :param crop_height: The height of the randomly cropped images
+    :param crop_width: The width of the randomly cropped images
+    :return:    image_data_batch: The batch of images
+                image_ground_truth_batch: The batch of ground truth masks
+                image_multiclass_gt_batch: The batch of multiclass ground truth masks
+                image_ground_truth_ds_batch: The batch of ground truth masks for deep supervision
+                image_multiclass_gt_ds_batch: The batch of multiclass ground truth masks for deep supervision
+
+    """
     with torch.no_grad():
         length = len(indices)
         use_multiclass = multiclass_labels_dict is not None
@@ -151,3 +172,71 @@ def sample_images(indices: np.ndarray, dataset_loader: model_data_manager.Datase
                 image_multiclass_gt_ds_batch.append(image_multiclass_gt_pooled)
 
     return image_data_batch, image_ground_truth_batch, image_multiclass_gt_batch, image_ground_truth_ds_batch, image_multiclass_gt_ds_batch
+
+def sample_images_mixup(indices1: np.ndarray, indices2: np.ndarray, dataset_loader: model_data_manager.DatasetDataLoader,
+                        mixup_alpha=0.2, ground_truth_mask="blood_vessel", rotation_augmentation=False,
+                        multiclass_labels_dict=None, num_classes=0, deep_supervision_downsamples=0,
+                        in_channels=3, image_height=512, image_width=512, crop_height=512, crop_width=512):
+    """
+    Samples images from the dataset and applies mixup augmentation. Mixup augmentation is described in the paper
+    "mixup: Beyond Empirical Risk Minimization" by Hongyi Zhang et al. (https://arxiv.org/abs/1710.09412).
+    The rest of the params and the return values are the same as sample_images.
+    :param indices1: Indices to use as mixup samples 1.
+    :param indices2: Indices to use as mixup samples 2.
+    :param mixup_alpha: Alpha parameter for mixup augmentation.
+    """
+    assert len(indices1) == len(indices2), "indices1 and indices2 must have the same length"
+    assert multiclass_labels_dict is None or num_classes > 0, "num_classes must be provided if multiclass_labels_dict is not None"
+    use_multiclass = multiclass_labels_dict is not None
+
+    with torch.no_grad():
+        image_data_batch1, image_ground_truth_batch1, image_multiclass_gt_batch1, image_ground_truth_ds_batch1,\
+            image_multiclass_gt_ds_batch1 = sample_images(indices1, dataset_loader, ground_truth_mask, rotation_augmentation,
+                                                          multiclass_labels_dict, deep_supervision_downsamples,
+                                                            in_channels, image_height, image_width, crop_height, crop_width)
+
+        image_data_batch2, image_ground_truth_batch2, image_multiclass_gt_batch2, image_ground_truth_ds_batch2, \
+            image_multiclass_gt_ds_batch2 = sample_images(indices2, dataset_loader, ground_truth_mask,
+                                                          rotation_augmentation,
+                                                          multiclass_labels_dict, deep_supervision_downsamples,
+                                                          in_channels, image_height, image_width, crop_height, crop_width)
+
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        # apply mixup augmentation
+        lambda_interp = np.random.beta(mixup_alpha, mixup_alpha)
+        image_data_batch = lambda_interp * image_data_batch1 + (1 - lambda_interp) * image_data_batch2
+        image_ground_truth_batch = lambda_interp * image_ground_truth_batch1 + (1 - lambda_interp) * image_ground_truth_batch2
+        if use_multiclass:
+            image_multiclass_gt_batch = lambda_interp * torch.nn.functional.one_hot(image_multiclass_gt_batch1, num_classes=num_classes+1).to(dtype=torch.float32).permute(0, 3, 1, 2)\
+                                            + (1 - lambda_interp) * torch.nn.functional.one_hot(image_multiclass_gt_batch2, num_classes=num_classes+1).to(dtype=torch.float32).permute(0, 3, 1, 2)
+
+        del image_data_batch1, image_data_batch2, image_ground_truth_batch1, image_ground_truth_batch2
+        if use_multiclass:
+            del image_multiclass_gt_batch1, image_multiclass_gt_batch2
+
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        image_ground_truth_ds_batch = []
+        if use_multiclass:
+            image_multiclass_gt_ds_batch = []
+        else:
+            image_multiclass_gt_ds_batch = None
+        for k in range(deep_supervision_downsamples):
+            image_ground_truth_ds_batch.append(lambda_interp * image_ground_truth_ds_batch1[k] + (1 - lambda_interp) * image_ground_truth_ds_batch2[k])
+            if use_multiclass:
+                image_multiclass_gt_ds_batch.append(lambda_interp * torch.nn.functional.one_hot(image_multiclass_gt_ds_batch1[k], num_classes=num_classes+1).to(dtype=torch.float32).permute(0, 3, 1, 2)
+                                                    + (1 - lambda_interp) * torch.nn.functional.one_hot(image_multiclass_gt_ds_batch2[k], num_classes=num_classes+1).to(dtype=torch.float32).permute(0, 3, 1, 2))
+
+        del image_ground_truth_ds_batch1[:], image_ground_truth_ds_batch2[:]
+        del image_ground_truth_ds_batch1, image_ground_truth_ds_batch2
+        if use_multiclass:
+            del image_multiclass_gt_ds_batch1[:], image_multiclass_gt_ds_batch2[:]
+            del image_multiclass_gt_ds_batch1, image_multiclass_gt_ds_batch2
+
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        return image_data_batch, image_ground_truth_batch, image_multiclass_gt_batch, image_ground_truth_ds_batch, image_multiclass_gt_ds_batch

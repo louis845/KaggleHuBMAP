@@ -38,6 +38,7 @@ if __name__ == "__main__":
     parser.add_argument("--pyramid_height", type=int, default=4, help="Number of pyramid levels to use. Default 4.")
     parser.add_argument("--unet_attention", action="store_true", help="Whether to use attention in the U-Net. Default False. Cannot be used with unet_plus.")
     parser.add_argument("--in_channels", type=int, default=3, help="Number of input channels to use. Default 3.")
+    parser.add_argument("--mixup", type=float, default=0.0, help="The alpha value of mixup. Default 0, meaning no mixup.")
 
     image_width = 512
     image_height = 512
@@ -101,6 +102,7 @@ if __name__ == "__main__":
     epochs_per_save = args.epochs_per_save
     image_pixels_round = 2 ** args.pyramid_height
     in_channels = args.in_channels
+    mixup = args.mixup
 
     model_config = {
         "model": "model_multiclass_unet",
@@ -117,6 +119,7 @@ if __name__ == "__main__":
         "pyramid_height": args.pyramid_height,
         "unet_attention": args.unet_attention,
         "in_channels": args.in_channels,
+        "mixup": mixup,
         "training_script": "model_multiclass_unet.py",
     }
     for key, value in extra_info.items():
@@ -165,6 +168,8 @@ if __name__ == "__main__":
 
         # Shuffle
         training_entries_shuffle = rng.permutation(training_entries)
+        if mixup > 0.0:
+            training_entries_shuffle2 = rng.permutation(training_entries)
 
         steps = 0
         while trained < len(training_entries):
@@ -173,12 +178,21 @@ if __name__ == "__main__":
             batch_end = min(trained + batch_size, len(training_entries))
             batch_indices = training_entries_shuffle[trained:batch_end]
 
-            train_image_data_batch, train_image_ground_truth_batch, train_image_multiclass_gt_batch, train_image_ground_truth_ds_batch, \
-                train_image_multiclass_gt_ds_batch = image_sampling.sample_images(batch_indices, dataset_loader,
-                                                                                  rotation_augmentation=rotation_augmentation,
-                                                                                  multiclass_labels_dict=class_labels_dict,
-                                                                                  deep_supervision_downsamples=0,
-                                                                                  crop_height=512, crop_width=512)
+            if mixup > 0.0:
+                batch_indices2 = training_entries_shuffle2[trained:batch_end]
+                train_image_data_batch, train_image_ground_truth_batch, train_image_multiclass_gt_batch, train_image_ground_truth_ds_batch, \
+                    train_image_multiclass_gt_ds_batch = image_sampling.sample_images_mixup(batch_indices, batch_indices2, dataset_loader, mixup_alpha=mixup,
+                                                                                      rotation_augmentation=rotation_augmentation,
+                                                                                      multiclass_labels_dict=class_labels_dict,
+                                                                                      deep_supervision_downsamples=0,
+                                                                                      crop_height=512, crop_width=512)
+            else:
+                train_image_data_batch, train_image_ground_truth_batch, train_image_multiclass_gt_batch, train_image_ground_truth_ds_batch, \
+                    train_image_multiclass_gt_ds_batch = image_sampling.sample_images(batch_indices, dataset_loader,
+                                                                                      rotation_augmentation=rotation_augmentation,
+                                                                                      multiclass_labels_dict=class_labels_dict,
+                                                                                      deep_supervision_downsamples=0,
+                                                                                      crop_height=512, crop_width=512)
 
             y_pred = model(train_image_data_batch)
 
