@@ -183,7 +183,7 @@ if __name__ == "__main__":
                 train_image_data_batch, train_image_ground_truth_batch, train_image_multiclass_gt_batch, train_image_ground_truth_ds_batch, \
                     train_image_multiclass_gt_ds_batch = image_sampling.sample_images_mixup(batch_indices, batch_indices2, dataset_loader, mixup_alpha=mixup,
                                                                                       rotation_augmentation=rotation_augmentation,
-                                                                                      multiclass_labels_dict=class_labels_dict,
+                                                                                      multiclass_labels_dict=class_labels_dict, num_classes=num_classes,
                                                                                       deep_supervision_downsamples=0,
                                                                                       crop_height=512, crop_width=512)
             else:
