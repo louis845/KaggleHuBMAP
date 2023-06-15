@@ -135,34 +135,33 @@ class ResConvBlock(torch.nn.Module):
         return result
 
 class ResConv(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, use_batch_norm=False, downsample=False):
+    def __init__(self, in_channels, out_channels, use_batch_norm=False, downsample=False, blocks=3):
         super(ResConv, self).__init__()
         assert in_channels <= out_channels
 
-        self.conv_res1 = ResConvBlock(in_channels, out_channels, use_batch_norm=use_batch_norm, downsample=downsample)
-        self.conv_res2 = ResConvBlock(out_channels, out_channels, use_batch_norm=use_batch_norm)
-        self.conv_res3 = ResConvBlock(out_channels, out_channels, use_batch_norm=use_batch_norm)
-        self.conv_res4 = ResConvBlock(out_channels, out_channels, use_batch_norm=use_batch_norm)
+        self.conv_res = torch.nn.ModuleList()
+        self.conv_res.append(ResConvBlock(in_channels, out_channels, use_batch_norm=use_batch_norm, downsample=downsample))
+        for k in range(1, blocks):
+            self.conv_res.append(ResConvBlock(out_channels, out_channels, use_batch_norm=use_batch_norm))
 
-        self.use_batch_norm = use_batch_norm
+        self.blocks = blocks
     def forward(self, x):
-        x = self.conv_res1(x)
-        x = self.conv_res2(x)
-        x = self.conv_res3(x)
-        x = self.conv_res4(x)
+        for k in range(self.blocks):
+            x = self.conv_res[k](x)
 
         return x
 
 
+res_conv_blocks = [2, 3, 4, 6, 15, 20, 20]
 class UNetBackbone(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, use_batch_norm=False, use_res_conv=False, use_atrous_conv=False, pyr_height=4):
         super(UNetBackbone, self).__init__()
         self.pyr_height = pyr_height
         self.conv_down = torch.nn.ModuleList()
         if use_res_conv:
-            self.conv0 = ResConv(in_channels, hidden_channels, use_batch_norm=use_batch_norm)
+            self.conv0 = ResConv(in_channels, hidden_channels, use_batch_norm=use_batch_norm, blocks=res_conv_blocks[0])
             for i in range(pyr_height - 1):
-                self.conv_down.append(ResConv(hidden_channels * 2 ** i, hidden_channels * 2 ** (i + 1), use_batch_norm=use_batch_norm, downsample=True))
+                self.conv_down.append(ResConv(hidden_channels * 2 ** i, hidden_channels * 2 ** (i + 1), use_batch_norm=use_batch_norm, downsample=True, blocks=res_conv_blocks[i + 1]))
         else:
             self.conv0 = Conv(in_channels, hidden_channels, use_batch_norm=use_batch_norm)
             for i in range(pyr_height - 1):
@@ -170,7 +169,7 @@ class UNetBackbone(torch.nn.Module):
         if use_atrous_conv:
             self.conv_down.append(AtrousConv(hidden_channels * 2 ** (pyr_height - 1), hidden_channels * 2 ** pyr_height, use_batch_norm=use_batch_norm))
         elif use_res_conv:
-            self.conv_down.append(ResConv(hidden_channels * 2 ** (pyr_height - 1), hidden_channels * 2 ** pyr_height, use_batch_norm=use_batch_norm, downsample=True))
+            self.conv_down.append(ResConv(hidden_channels * 2 ** (pyr_height - 1), hidden_channels * 2 ** pyr_height, use_batch_norm=use_batch_norm, downsample=True, blocks=res_conv_blocks[pyr_height]))
         else:
             self.conv_down.append(Conv(hidden_channels * 2 ** (pyr_height - 1), hidden_channels * 2 ** pyr_height, use_batch_norm=use_batch_norm))
         self.maxpool = torch.nn.MaxPool2d(2)
