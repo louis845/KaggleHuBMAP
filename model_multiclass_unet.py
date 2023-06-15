@@ -97,6 +97,7 @@ if __name__ == "__main__":
     loss_function = torch.nn.CrossEntropyLoss(reduction="none")
 
     batch_size = args.batch_size
+    val_batch_size = args.val_batch_size if args.val_batch_size is not None else batch_size
     num_epochs = args.epochs
     rotation_augmentation = args.rotation_augmentation
     epochs_per_save = args.epochs_per_save
@@ -109,6 +110,7 @@ if __name__ == "__main__":
         "epochs": num_epochs,
         "rotation_augmentation": rotation_augmentation,
         "batch_size": batch_size,
+        "val_batch_size": val_batch_size,
         "learning_rate": args.learning_rate,
         "optimizer": args.optimizer,
         "epochs_per_save": epochs_per_save,
@@ -256,7 +258,7 @@ if __name__ == "__main__":
             for seg_class in classes:
                 true_negative_class[seg_class], true_positive_class[seg_class], false_negative_class[seg_class], false_positive_class[seg_class] = 0, 0, 0, 0
             while tested < len(validation_entries):
-                batch_end = min(tested + batch_size, len(validation_entries))
+                batch_end = min(tested + val_batch_size, len(validation_entries))
                 batch_indices = validation_entries[tested:batch_end]
                 test_image_data_batch, test_image_ground_truth_batch, test_image_multiclass_gt_batch, test_image_ground_truth_ds_batch, \
                     test_image_multiclass_gt_ds_batch = image_sampling.sample_images(batch_indices, dataset_loader,
@@ -284,7 +286,7 @@ if __name__ == "__main__":
                     false_positive_class[seg_class] += int(torch.sum((y_pred == seg_ps) & (test_image_multiclass_gt_batch != seg_ps)).item())
                     false_negative_class[seg_class] += int(torch.sum((y_pred != seg_ps) & (test_image_multiclass_gt_batch == seg_ps)).item())
 
-                tested += batch_size
+                tested += len(batch_indices)
 
             total_loss /= len(validation_entries)
             train_history["val_loss"].append(total_loss)

@@ -134,6 +134,7 @@ if __name__ == "__main__":
     loss_function = torch.nn.BCELoss(reduction="none")
 
     batch_size = args.batch_size
+    val_batch_size = args.val_batch_size if args.val_batch_size is not None else batch_size
     num_epochs = args.epochs
     rotation_augmentation = args.rotation_augmentation
     epochs_per_save = args.epochs_per_save
@@ -148,6 +149,7 @@ if __name__ == "__main__":
         "epochs": num_epochs,
         "rotation_augmentation": rotation_augmentation,
         "batch_size": batch_size,
+        "val_batch_size": val_batch_size,
         "learning_rate": args.learning_rate,
         "optimizer": args.optimizer,
         "epochs_per_save": epochs_per_save,
@@ -326,7 +328,7 @@ if __name__ == "__main__":
             else:
                 true_negative, true_positive, false_negative, false_positive = 0, 0, 0, 0
             while tested < len(validation_entries):
-                batch_end = min(tested + batch_size, len(validation_entries))
+                batch_end = min(tested + val_batch_size, len(validation_entries))
                 batch_indices = validation_entries[tested:batch_end]
 
                 test_image_data_batch, test_image_ground_truth_batch, test_image_multiclass_gt_batch, test_image_ground_truth_ds_batch, \

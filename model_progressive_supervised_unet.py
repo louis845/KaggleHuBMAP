@@ -27,6 +27,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs to train for. Default 100.")
     parser.add_argument("--rotation_augmentation", action="store_true", help="Whether to use rotation augmentation. Default False.")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size to use. Default 2.")
+    parser.add_argument("--val_batch_size", type=int, default=None, help="Batch size to use for validation. Default None, meaning equal to batch size.")
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate to use. Default 1e-5.")
     parser.add_argument("--optimizer", type=str, default="adam", help="Which optimizer to use. Available options: adam, sgd. Default adam.")
     parser.add_argument("--epochs_per_save", type=int, default=2, help="Number of epochs between saves. Default 2.")
@@ -119,6 +120,7 @@ if __name__ == "__main__":
             g['lr'] = args.learning_rate
 
     batch_size = args.batch_size
+    val_batch_size = args.val_batch_size if args.val_batch_size is not None else batch_size
     num_epochs = args.epochs
     rotation_augmentation = args.rotation_augmentation
     epochs_per_save = args.epochs_per_save
@@ -132,6 +134,7 @@ if __name__ == "__main__":
         "epochs": num_epochs,
         "rotation_augmentation": rotation_augmentation,
         "batch_size": batch_size,
+        "val_batch_size": val_batch_size,
         "learning_rate": args.learning_rate,
         "optimizer": args.optimizer,
         "epochs_per_save": epochs_per_save,
@@ -343,7 +346,7 @@ if __name__ == "__main__":
                     false_positive_class[seg_class] = 0, 0, 0, 0
 
             while tested < len(validation_entries):
-                batch_end = min(tested + batch_size, len(validation_entries))
+                batch_end = min(tested + val_batch_size, len(validation_entries))
                 batch_indices = validation_entries[tested:batch_end]
 
                 multiclass_labels_dict = class_labels_dict if use_multiclass else None
