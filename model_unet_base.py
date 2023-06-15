@@ -152,7 +152,7 @@ class ResConv(torch.nn.Module):
         return x
 
 
-res_conv_blocks = [2, 3, 4, 6, 15, 20, 20]
+res_conv_blocks = [2, 3, 4, 6, 10, 15, 15]
 class UNetBackbone(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, use_batch_norm=False, use_res_conv=False, use_atrous_conv=False, pyr_height=4):
         super(UNetBackbone, self).__init__()
