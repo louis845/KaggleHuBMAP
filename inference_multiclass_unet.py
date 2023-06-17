@@ -250,38 +250,96 @@ if __name__ == "__main__":
             ctime = time.time()
 
     accuracy = (true_positive + true_negative) / (true_positive + true_negative + false_positive + false_negative)
+    accuracy_train = (true_positive_train + true_negative_train) / (true_positive_train + true_negative_train + false_positive_train + false_negative_train)
+    accuracy_val = (true_positive_val + true_negative_val) / (true_positive_val + true_negative_val + false_positive_val + false_negative_val)
+
     if true_positive + false_positive == 0:
         precision = 0
     else:
         precision = true_positive / (true_positive + false_positive)
+    if true_positive_train + false_positive_train == 0:
+        precision_train = 0
+    else:
+        precision_train = true_positive_train / (true_positive_train + false_positive_train)
+    if true_positive_val + false_positive_val == 0:
+        precision_val = 0
+    else:
+        precision_val = true_positive_val / (true_positive_val + false_positive_val)
+
     if true_positive + false_negative == 0:
         recall = 0
     else:
         recall = true_positive / (true_positive + false_negative)
+    if true_positive_train + false_negative_train == 0:
+        recall_train = 0
+    else:
+        recall_train = true_positive_train / (true_positive_train + false_negative_train)
+    if true_positive_val + false_negative_val == 0:
+        recall_val = 0
+    else:
+        recall_val = true_positive_val / (true_positive_val + false_negative_val)
 
     accuracy_classes = {}
     precision_classes = {}
     recall_classes = {}
+    accuracy_classes_train = {}
+    precision_classes_train = {}
+    recall_classes_train = {}
+    accuracy_classes_val = {}
+    precision_classes_val = {}
+    recall_classes_val = {}
 
     for seg_class in classes:
         accuracy_classes[seg_class] = (true_positive_classes[seg_class] + true_negative_classes[seg_class]) / (true_positive_classes[seg_class] + true_negative_classes[seg_class] + false_positive_classes[seg_class] + false_negative_classes[seg_class])
+        accuracy_classes_train[seg_class] = (true_positive_classes_train[seg_class] + true_negative_classes_train[seg_class]) / (true_positive_classes_train[seg_class] + true_negative_classes_train[seg_class] + false_positive_classes_train[seg_class] + false_negative_classes_train[seg_class])
+        accuracy_classes_val[seg_class] = (true_positive_classes_val[seg_class] + true_negative_classes_val[seg_class]) / (true_positive_classes_val[seg_class] + true_negative_classes_val[seg_class] + false_positive_classes_val[seg_class] + false_negative_classes_val[seg_class])
+
         if true_positive_classes[seg_class] + false_positive_classes[seg_class] == 0:
             precision_classes[seg_class] = 0
         else:
             precision_classes[seg_class] = true_positive_classes[seg_class] / (true_positive_classes[seg_class] + false_positive_classes[seg_class])
+        if true_positive_classes_train[seg_class] + false_positive_classes_train[seg_class] == 0:
+            precision_classes_train[seg_class] = 0
+        else:
+            precision_classes_train[seg_class] = true_positive_classes_train[seg_class] / (true_positive_classes_train[seg_class] + false_positive_classes_train[seg_class])
+        if true_positive_classes_val[seg_class] + false_positive_classes_val[seg_class] == 0:
+            precision_classes_val[seg_class] = 0
+        else:
+            precision_classes_val[seg_class] = true_positive_classes_val[seg_class] / (true_positive_classes_val[seg_class] + false_positive_classes_val[seg_class])
+
         if true_positive_classes[seg_class] + false_negative_classes[seg_class] == 0:
             recall_classes[seg_class] = 0
         else:
             recall_classes[seg_class] = true_positive_classes[seg_class] / (true_positive_classes[seg_class] + false_negative_classes[seg_class])
+        if true_positive_classes_train[seg_class] + false_negative_classes_train[seg_class] == 0:
+            recall_classes_train[seg_class] = 0
+        else:
+            recall_classes_train[seg_class] = true_positive_classes_train[seg_class] / (true_positive_classes_train[seg_class] + false_negative_classes_train[seg_class])
+        if true_positive_classes_val[seg_class] + false_negative_classes_val[seg_class] == 0:
+            recall_classes_val[seg_class] = 0
+        else:
+            recall_classes_val[seg_class] = true_positive_classes_val[seg_class] / (true_positive_classes_val[seg_class] + false_negative_classes_val[seg_class])
 
     print("{:.4f} (Accuracy)".format(accuracy))
     print("{:.4f} (Precision)".format(precision))
     print("{:.4f} (Recall)".format(recall))
+    print("{:.4f} (Accuracy Train)".format(accuracy_train))
+    print("{:.4f} (Precision Train)".format(precision_train))
+    print("{:.4f} (Recall Train)".format(recall_train))
+    print("{:.4f} (Accuracy Val)".format(accuracy_val))
+    print("{:.4f} (Precision Val)".format(precision_val))
+    print("{:.4f} (Recall Val)".format(recall_val))
     for seg_class in classes:
+        print("--------------- {} ---------------".format(seg_class))
         print("{:.4f} (Accuracy {})".format(accuracy_classes[seg_class], seg_class))
         print("{:.4f} (Precision {})".format(precision_classes[seg_class], seg_class))
         print("{:.4f} (Recall {})".format(recall_classes[seg_class], seg_class))
-
+        print("{:.4f} (Accuracy {} Train)".format(accuracy_classes_train[seg_class], seg_class))
+        print("{:.4f} (Precision {} Train)".format(precision_classes_train[seg_class], seg_class))
+        print("{:.4f} (Recall {} Train)".format(recall_classes_train[seg_class], seg_class))
+        print("{:.4f} (Accuracy {} Val)".format(accuracy_classes_val[seg_class], seg_class))
+        print("{:.4f} (Precision {} Val)".format(precision_classes_val[seg_class], seg_class))
+        print("{:.4f} (Recall {} Val)".format(recall_classes_val[seg_class], seg_class))
 
 
     input_data_loader.close()
