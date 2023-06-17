@@ -45,7 +45,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    input_data_loader, output_data_writer, model_path, subdata_entries = model_data_manager.transform_get_argparse_arguments(args)
+    input_data_loader, output_data_writer, model_path, subdata_entries, train_subdata_entries, val_subdata_entries = model_data_manager.transform_get_argparse_arguments(args)
 
     deep_supervision = args.deep_supervision
     deep_supervision_levels = args.deep_supervision_levels
@@ -98,12 +98,26 @@ if __name__ == "__main__":
 
     true_positive, true_negative, false_positive, false_negative = 0, 0, 0, 0
     true_positive_classes, true_negative_classes, false_positive_classes, false_negative_classes = {}, {}, {}, {}
+    true_positive_train, true_negative_train, false_positive_train, false_negative_train = 0, 0, 0, 0
+    true_positive_classes_train, true_negative_classes_train, false_positive_classes_train, false_negative_classes_train = {}, {}, {}, {}
+    true_positive_val, true_negative_val, false_positive_val, false_negative_val = 0, 0, 0, 0
+    true_positive_classes_val, true_negative_classes_val, false_positive_classes_val, false_negative_classes_val = {}, {}, {}, {}
 
     for seg_class in classes:
         true_positive_classes[seg_class] = 0.0
         true_negative_classes[seg_class] = 0.0
         false_positive_classes[seg_class] = 0.0
         false_negative_classes[seg_class] = 0.0
+
+        true_positive_classes_train[seg_class] = 0.0
+        true_negative_classes_train[seg_class] = 0.0
+        false_positive_classes_train[seg_class] = 0.0
+        false_negative_classes_train[seg_class] = 0.0
+
+        true_positive_classes_val[seg_class] = 0.0
+        true_negative_classes_val[seg_class] = 0.0
+        false_positive_classes_val[seg_class] = 0.0
+        false_negative_classes_val[seg_class] = 0.0
 
     while computed < len(subdata_entries):
         # Test the model
@@ -172,7 +186,8 @@ if __name__ == "__main__":
                 output_data_writer.write_image_data(subdata_entries[k],
                                                     cv2.cvtColor(pred_mask_image[k - computed, :, :, :], cv2.COLOR_HSV2RGB))
 
-            # now we load the ground truth masks from the input data loader and compute the metrics
+            # Now we load the ground truth masks from the input data loader and compute the metrics
+            # Obtain the ground truth labels
             ground_truth_batch = torch.zeros((compute_end - computed, image_height, image_width), dtype=torch.bool, device=config.device)
             ground_truth_class_labels_batch = torch.zeros((compute_end - computed, image_height, image_width), dtype=torch.long, device=config.device)
             for k in range(computed, compute_end):
@@ -180,6 +195,7 @@ if __name__ == "__main__":
                 ground_truth_batch[k - computed, :, :] = torch.tensor(seg_mask, dtype=torch.bool, device=config.device)
                 ground_truth_class_labels_batch[k - computed, :, :] = torch.tensor(entries_masks[subdata_entries[k]], dtype=torch.long, device=config.device)
 
+            # Compute global metrics
             true_positive += torch.sum((pred_type > 0) & ground_truth_batch).item()
             true_negative += torch.sum((pred_type == 0) & ~ground_truth_batch).item()
             false_positive += torch.sum((pred_type > 0) & ~ground_truth_batch).item()
@@ -191,6 +207,37 @@ if __name__ == "__main__":
                 true_negative_classes[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch != (k + 1))).item()
                 false_positive_classes[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch != (k + 1))).item()
                 false_negative_classes[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch == (k + 1))).item()
+
+            # Compute the train and test metrics
+            training_batch_mask = torch.zeros((compute_end - computed, 1, 1), dtype=torch.bool, device=config.device)
+            validation_batch_mask = torch.zeros((compute_end - computed, 1, 1), dtype=torch.bool, device=config.device)
+            for k in range(computed, compute_end):
+                if subdata_entries[k] in train_subdata_entries:
+                    training_batch_mask[k - computed, 0, 0] = True
+                elif subdata_entries[k] in val_subdata_entries:
+                    validation_batch_mask[k - computed, 0, 0] = True
+
+            true_positive_train += torch.sum((pred_type > 0) & ground_truth_batch & training_batch_mask).item()
+            true_negative_train += torch.sum((pred_type == 0) & ~ground_truth_batch & training_batch_mask).item()
+            false_positive_train += torch.sum((pred_type > 0) & ~ground_truth_batch & training_batch_mask).item()
+            false_negative_train += torch.sum((pred_type == 0) & ground_truth_batch & training_batch_mask).item()
+
+            true_positive_val += torch.sum((pred_type > 0) & ground_truth_batch & validation_batch_mask).item()
+            true_negative_val += torch.sum((pred_type == 0) & ~ground_truth_batch & validation_batch_mask).item()
+            false_positive_val += torch.sum((pred_type > 0) & ~ground_truth_batch & validation_batch_mask).item()
+            false_negative_val += torch.sum((pred_type == 0) & ground_truth_batch & validation_batch_mask).item()
+
+            for k in range(len(classes)):
+                seg_class = classes[k]
+                true_positive_classes_train[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & training_batch_mask).item()
+                true_negative_classes_train[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & training_batch_mask).item()
+                false_positive_classes_train[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & training_batch_mask).item()
+                false_negative_classes_train[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & training_batch_mask).item()
+
+                true_positive_classes_val[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & validation_batch_mask).item()
+                true_negative_classes_val[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & validation_batch_mask).item()
+                false_positive_classes_val[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & validation_batch_mask).item()
+                false_negative_classes_val[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & validation_batch_mask).item()
 
         gc.collect()
         torch.cuda.empty_cache()

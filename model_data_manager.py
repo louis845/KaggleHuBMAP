@@ -255,6 +255,8 @@ def transform_add_argparse_arguments(parser, requires_model=True):
     parser.add_argument("--original_data_name", type=str, help="The name of the original data. Don't type anything to use the original data.")
     parser.add_argument("--transformed_data_name", type=str, required=True, help="The name of the transformed data.")
     parser.add_argument("--subdata", type=str, help="The subdata to transform the data on. If not specified, the whole data will be used.")
+    parser.add_argument("--train_subdata", type=str, help="The subdata corresponding to the model that is trained on. If not specified, the whole data will be used.")
+    parser.add_argument("--val_subdata", type=str, help="The subdata corresponding to the model that is tested on. If not specified, the whole data will be used.")
 
     if requires_model:
         parser.add_argument("--model_name", type=str, required=True, help="The name of the model.")
@@ -286,7 +288,15 @@ def transform_get_argparse_arguments(args, requires_model=True) -> (DatasetDataL
             quit()
 
     subdata = args.subdata
+    train_subdata = args.train_subdata
+    val_subdata = args.val_subdata
+
+    if (train_subdata is not None or val_subdata is not None) and subdata is None:
+        print("You need to specify a subdata if you specify a training or validation subdata!")
+        quit()
+
     subdata_entries = None
+    train_subdata_entries, val_subdata_entries = None, None
     if subdata is not None:
         if not subdata_exists(subdata):
             print("Subdata does not exist! Pick another subdata. Available subdata:", os.listdir(subdata_dir))
@@ -296,15 +306,43 @@ def transform_get_argparse_arguments(args, requires_model=True) -> (DatasetDataL
             subdata_json = json.load(json_file)
 
         subdata_entries = subdata_json["entry_list"]
+        if train_subdata is None:
+            train_subdata_entries = subdata_entries
+        else:
+            if not subdata_exists(train_subdata):
+                print("Train subdata does not exist! Pick another subdata. Available subdata:", os.listdir(subdata_dir))
+                quit()
+            print("Using train subdata {}".format(train_subdata))
+            with open(os.path.join(subdata_dir, train_subdata + ".json")) as json_file:
+                train_subdata_json = json.load(json_file)
+
+            train_subdata_entries = train_subdata_json["entry_list"]
+        if val_subdata is None:
+            val_subdata_entries = subdata_entries
+        else:
+            if not subdata_exists(val_subdata):
+                print("Validation subdata does not exist! Pick another subdata. Available subdata:", os.listdir(subdata_dir))
+                quit()
+            print("Using validation subdata {}".format(val_subdata))
+            with open(os.path.join(subdata_dir, val_subdata + ".json")) as json_file:
+                val_subdata_json = json.load(json_file)
+
+            val_subdata_entries = val_subdata_json["entry_list"]
+    else:
+        print("Using whole data.")
+        subdata_entries = list(data_information.index)
+        train_subdata_entries = subdata_entries
+        val_subdata_entries = subdata_entries
+
 
     input_data_loader = get_dataset_dataloader(input_data)
     output_data_writer = get_dataset_datawriter(output_data)
 
     if requires_model:
         model_path = os.path.join(model_dir, model_name)
-        return input_data_loader, output_data_writer, model_path, subdata_entries
+        return input_data_loader, output_data_writer, model_path, subdata_entries, train_subdata_entries, val_subdata_entries
     else:
-        return input_data_loader, output_data_writer, None, subdata_entries
+        return input_data_loader, output_data_writer, None, subdata_entries, train_subdata_entries, val_subdata_entries
 
 
 def subdata_exists(subdata_name):

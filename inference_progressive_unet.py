@@ -43,7 +43,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    input_data_loader, output_data_writer, model_path, subdata_entries = model_data_manager.transform_get_argparse_arguments(args)
+    input_data_loader, output_data_writer, model_path, subdata_entries, train_subdata_entries, val_subdata_entries = model_data_manager.transform_get_argparse_arguments(args)
 
     specific_inference = subdata_entries is not None
 
