@@ -69,7 +69,7 @@ if __name__ == "__main__":
         if not os.path.isfile(multiclass_config_file + ".json"):
             print("Multiclass config file {}.json does not exist.".format(multiclass_config_file))
             exit(-1)
-        class_config, classes, num_classes = model_multiclass_base.load_multiclass_config(multiclass_config_file + ".json")
+        class_config, classes, num_classes, class_weights = model_multiclass_base.load_multiclass_config(multiclass_config_file + ".json")
         model_multiclass_base.save_multiclass_config(os.path.join(model_dir, "multiclass_config.json"), class_config)
 
         for seg_class in classes:
@@ -177,13 +177,18 @@ if __name__ == "__main__":
         train_history["val_recall{}".format(k)] = []
 
     if use_multiclass:
-        for seg_class in classes:
+        print("Using class weights:")
+        for k in range(len(classes)):
+            seg_class = classes[k]
             train_history["accuracy_{}".format(seg_class)] = []
             train_history["val_accuracy_{}".format(seg_class)] = []
             train_history["precision_{}".format(seg_class)] = []
             train_history["val_precision_{}".format(seg_class)] = []
             train_history["recall_{}".format(seg_class)] = []
             train_history["val_recall_{}".format(seg_class)] = []
+            print("Class {}: {}".format(seg_class, class_weights[k]))
+
+        class_weights = torch.tensor([1.0] + class_weights, dtype=torch.float32, device=config.device)
 
     # Training loop
     for epoch in range(num_epochs):
@@ -259,7 +264,7 @@ if __name__ == "__main__":
                         false_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (train_image_ground_truth_ds_batch[pyr_height - 2 - k] < 0.5)).sum().item()
 
             if use_multiclass:
-                result_loss = torch.nn.functional.cross_entropy(result, train_image_multiclass_gt_batch, reduction="sum")
+                result_loss = torch.nn.functional.cross_entropy(result, train_image_multiclass_gt_batch, reduction="sum", weight=class_weights)
             else:
                 result_loss = torch.nn.functional.binary_cross_entropy(result, train_image_ground_truth_batch, reduction="sum")
             loss += result_loss
@@ -384,7 +389,7 @@ if __name__ == "__main__":
                         false_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (test_image_ground_truth_ds_batch[pyr_height - 2 - k] < 0.5)).sum().item()
 
                 if use_multiclass:
-                    result_loss = torch.nn.functional.cross_entropy(result, test_image_multiclass_gt_batch, reduction="sum")
+                    result_loss = torch.nn.functional.cross_entropy(result, test_image_multiclass_gt_batch, reduction="sum", weight=class_weights)
                 else:
                     result_loss = torch.nn.functional.binary_cross_entropy(result, test_image_ground_truth_batch, reduction="sum")
                 loss += result_loss

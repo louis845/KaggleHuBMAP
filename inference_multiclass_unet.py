@@ -23,6 +23,108 @@ import model_unet_base
 import model_unet_attention
 import model_multiclass_base
 
+def refined_max(tensor: torch.Tensor):
+    # compute the value of the maximum occurence along axis 1. First, compute whether positive values happen more often than zero values.
+    binary = (tensor > 0).to(torch.long)
+    binary = torch.mode(binary, dim=1)[0] # 0 if more zeros, 1 if more positive values
+
+    # now compute the final mask.
+
+def augmentation_rotation_flipping(model: torch.nn.Module, inference_batch: torch.Tensor, length: int, image_height: int, image_width: int, deep_supervision: bool):
+    pred_types = torch.zeros((length, 8, image_height, image_width), dtype=torch.long,
+                             device=config.device)
+    for k in range(0, 360, 90):
+        # rotate image by k degrees with torch functional
+        inference_batch_rotate = torchvision.transforms.functional.rotate(inference_batch, k)
+        if deep_supervision:
+            result, deep_outputs = model(inference_batch_rotate)
+            pred_type = torch.argmax(torchvision.transforms.functional.rotate(result, -k), dim=1)
+            pred_types[:, k // 90, :, :] = pred_type
+        else:
+            result = model(inference_batch_rotate)
+            pred_type = torch.argmax(torchvision.transforms.functional.rotate(result, -k), dim=1)
+            pred_types[:, k // 90, :, :] = pred_type
+
+    # flip image horizontally
+    inference_batch = inference_batch.flip(3)
+    for k in range(0, 360, 90):
+        # rotate image by k degrees with torch functional
+        inference_batch_rotate = torchvision.transforms.functional.rotate(inference_batch, k)
+        if deep_supervision:
+            result, deep_outputs = model(inference_batch_rotate)
+            pred_type = torch.argmax(torchvision.transforms.functional.rotate(result, -k).flip(3), dim=1)
+            pred_types[:, 4 + k // 90, :, :] = pred_type
+        else:
+            result = model(inference_batch_rotate)
+            pred_type = torch.argmax(torchvision.transforms.functional.rotate(result, -k).flip(3), dim=1)
+            pred_types[:, 4 + k // 90, :, :] = pred_type
+
+    return pred_types
+
+def augmentation_crop_rotation_flipping(model: torch.nn.Module, inference_batch: torch.Tensor, length: int, image_height: int, image_width: int,
+                                   subimage_height: int, subimage_width: int, deep_supervision: bool):
+    pred_type = torch.zeros((length, image_height, image_width), dtype=torch.long, device=config.device)
+
+    top_left = torch.zeros((length, 8, image_height - subimage_height, image_width - subimage_width), dtype=torch.long, device=config.device)
+    top_right = torch.zeros((length, 8, image_height - subimage_height, image_width - subimage_width), dtype=torch.long, device=config.device)
+    bottom_left = torch.zeros((length, 8, image_height - subimage_height, image_width - subimage_width), dtype=torch.long, device=config.device)
+    bottom_right = torch.zeros((length, 8, image_height - subimage_height, image_width - subimage_width), dtype=torch.long, device=config.device)
+
+    top = torch.zeros((length, 16, image_height - subimage_height, 2 * subimage_width - image_width), dtype=torch.long, device=config.device)
+    bottom = torch.zeros((length, 16, image_height - subimage_height, 2 * subimage_width - image_width), dtype=torch.long, device=config.device)
+    left = torch.zeros((length, 16, 2 * subimage_height - image_height, image_width - subimage_width), dtype=torch.long, device=config.device)
+    right = torch.zeros((length, 16, 2 * subimage_height - image_height, image_width - subimage_width), dtype=torch.long, device=config.device)
+
+    center = torch.zeros((length, 32, 2 * subimage_height - image_height, 2 * subimage_width - image_width), dtype=torch.long, device=config.device)
+
+
+    top_left_pred_types = augmentation_rotation_flipping(model, inference_batch[:, :, :subimage_height, :subimage_width], length, subimage_height, subimage_width, deep_supervision)
+    bottom_left_pred_types = augmentation_rotation_flipping(model, inference_batch[:, :, -subimage_height:, :subimage_width], length, subimage_height, subimage_width, deep_supervision)
+    top_right_pred_types = augmentation_rotation_flipping(model, inference_batch[:, :, :subimage_height, -subimage_width:], length, subimage_height, subimage_width, deep_supervision)
+    bottom_right_pred_types = augmentation_rotation_flipping(model, inference_batch[:, :, -subimage_height:, -subimage_width:], length, subimage_height, subimage_width, deep_supervision)
+
+    # Fill in the predictions
+    top_left[:, :, :, :] = top_left_pred_types[:, :, :image_height - subimage_height, :image_width - subimage_width]
+    bottom_left[:, :, :, :] = bottom_left_pred_types[:, :, subimage_height - image_height:, :image_width - subimage_width]
+    top_right[:, :, :, :] = top_right_pred_types[:, :, :image_height - subimage_height, subimage_width - image_width:]
+    bottom_right[:, :, :, :] = bottom_right_pred_types[:, :, subimage_height - image_height:, subimage_width - image_width:]
+
+    top[:, :8, :, :] = top_left_pred_types[:, :, :image_height - subimage_height, image_width - subimage_width:]
+    top[:, 8:, :, :] = top_right_pred_types[:, :, :image_height - subimage_height, :subimage_width - image_width]
+    bottom[:, :8, :, :] = bottom_left_pred_types[:, :, subimage_height - image_height:, image_width - subimage_width:]
+    bottom[:, 8:, :, :] = bottom_right_pred_types[:, :, subimage_height - image_height:, :subimage_width - image_width]
+
+    left[:, :8, :, :] = top_left_pred_types[:, :, image_height - subimage_height:, :image_width - subimage_width]
+    left[:, 8:, :, :] = bottom_left_pred_types[:, :, :subimage_height - image_height, :image_width - subimage_width]
+    right[:, :8, :, :] = top_right_pred_types[:, :, image_height - subimage_height:, subimage_width - image_width:]
+    right[:, 8:, :, :] = bottom_right_pred_types[:, :, :subimage_height - image_height, subimage_width - image_width:]
+
+    center[:, :8, :, :] = top_left_pred_types[:, :, image_height - subimage_height:, image_width - subimage_width:]
+    center[:, 8:16, :, :] = top_right_pred_types[:, :, image_height - subimage_height:, :subimage_width - image_width]
+    center[:, 16:24, :, :] = bottom_left_pred_types[:, :, :subimage_height - image_height, image_width - subimage_width:]
+    center[:, 24:, :, :] = bottom_right_pred_types[:, :, :subimage_height - image_height, :subimage_width - image_width]
+
+    pred_type[:, :-subimage_height, :-subimage_width] = torch.mode(top_left, dim=1)[0]
+    pred_type[:, :-subimage_height, subimage_width:] = torch.mode(top_right, dim=1)[0]
+    pred_type[:, subimage_height:, :-subimage_width] = torch.mode(bottom_left, dim=1)[0]
+    pred_type[:, subimage_height:, subimage_width:] = torch.mode(bottom_right, dim=1)[0]
+
+    pred_type[:, :-subimage_height, -subimage_width:subimage_width] = torch.mode(top, dim=1)[0]
+    pred_type[:, subimage_height:, -subimage_width:subimage_width] = torch.mode(bottom, dim=1)[0]
+    pred_type[:, -subimage_height:subimage_height, :-subimage_width] = torch.mode(left, dim=1)[0]
+    pred_type[:, -subimage_height:subimage_height, subimage_width:] = torch.mode(right, dim=1)[0]
+
+    pred_type[:, -subimage_height:subimage_height, -subimage_width:subimage_width] = torch.mode(center, dim=1)[0]
+
+    return pred_type
+
+
+def augmentation_rotation_flipping_result(model: torch.nn.Module, inference_batch: torch.Tensor, length: int, image_height: int, image_width: int, deep_supervision: bool):
+    pred_types = augmentation_rotation_flipping(model, inference_batch, length, image_height, image_width, deep_supervision)
+
+    pred_type, _ = torch.max(pred_types, dim=1)
+    return pred_type
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Inference of a multiclass U-Net model")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size to use. Default 2.")
@@ -129,34 +231,8 @@ if __name__ == "__main__":
                 inference_batch[k - computed, :, :, :] = torch.tensor(input_data_loader.get_image_data(subdata_entries[k]), dtype=torch.float32, device=config.device).permute(2, 0, 1)
 
             if use_augmentation:
-                pred_types = torch.zeros((compute_end - computed, 8, image_height, image_width), dtype=torch.long, device=config.device)
-                for k in range(0, 360, 90):
-                    # rotate image by k degrees with torch functional
-                    inference_batch_rotate = torchvision.transforms.functional.rotate(inference_batch, k)
-                    if deep_supervision:
-                        result, deep_outputs = model(inference_batch_rotate)
-                        pred_type = torch.argmax(torchvision.transforms.functional.rotate(result, -k), dim=1)
-                        pred_types[:, k // 90, :, :] = pred_type
-                    else:
-                        result = model(inference_batch_rotate)
-                        pred_type = torch.argmax(torchvision.transforms.functional.rotate(result, -k), dim=1)
-                        pred_types[:, k // 90, :, :] = pred_type
-
-                # flip image horizontally
-                inference_batch = inference_batch.flip(3)
-                for k in range(0, 360, 90):
-                    # rotate image by k degrees with torch functional
-                    inference_batch_rotate = torchvision.transforms.functional.rotate(inference_batch, k)
-                    if deep_supervision:
-                        result, deep_outputs = model(inference_batch_rotate)
-                        pred_type = torch.argmax(torchvision.transforms.functional.rotate(result, -k).flip(3), dim=1)
-                        pred_types[:, 4 + k // 90, :, :] = pred_type
-                    else:
-                        result = model(inference_batch_rotate)
-                        pred_type = torch.argmax(torchvision.transforms.functional.rotate(result, -k).flip(3), dim=1)
-                        pred_types[:, 4 + k // 90, :, :] = pred_type
-
-                pred_type, _ = torch.mode(pred_types, dim=1)
+                #pred_type = augmentation_rotation_flipping_result(model, inference_batch, compute_end - computed, image_height, image_width, deep_supervision)
+                pred_type = augmentation_crop_rotation_flipping(model, inference_batch, compute_end - computed, image_height, image_width, 448, 448, deep_supervision)
             else:
                 if deep_supervision:
                     result, deep_outputs = model(inference_batch)

@@ -7,7 +7,8 @@ import numpy as np
 
 def generate_multiclass_config(output_file):
     class_file = {
-        "classes": ["blood_vessel"]
+        "classes": ["blood_vessel"],
+        "class_weights": [1.0]
     }
     with open(output_file, "w") as f:
         json.dump(class_file, f, indent=4)
@@ -16,7 +17,11 @@ def load_multiclass_config(config_file):
     with open(config_file, "r") as f:
         config = json.load(f)
     classes = config["classes"]
-    return config, classes, len(classes)
+    if "class_weights" in config:
+        class_weights = config["class_weights"]
+    else:
+        class_weights = [1.0] * len(classes)
+    return config, classes, len(classes), class_weights
 
 def save_multiclass_config(config_file, config):
     with open(config_file, "w") as f:

@@ -57,7 +57,7 @@ if __name__ == "__main__":
         print("You need to create a multiclass config file \"multiclass_config.json\". A template file is generated for you.")
         model_multiclass_base.generate_multiclass_config("multiclass_config.json")
         exit(-1)
-    class_config, classes, num_classes = model_multiclass_base.load_multiclass_config("multiclass_config.json")
+    class_config, classes, num_classes, class_weights = model_multiclass_base.load_multiclass_config("multiclass_config.json")
     model_multiclass_base.save_multiclass_config(os.path.join(model_dir, "multiclass_config.json"), class_config)
 
     if args.unet_attention:
@@ -93,8 +93,6 @@ if __name__ == "__main__":
         train_history["val_precision_{}".format(seg_class)] = []
         train_history["recall_{}".format(seg_class)] = []
         train_history["val_recall_{}".format(seg_class)] = []
-
-    loss_function = torch.nn.CrossEntropyLoss(reduction="none")
 
     batch_size = args.batch_size
     val_batch_size = args.val_batch_size if args.val_batch_size is not None else batch_size
@@ -156,6 +154,13 @@ if __name__ == "__main__":
     class_labels_dict = model_multiclass_base.precompute_classes(dataset_loader, list(training_entries) + list(validation_entries), classes)
     print("Finished precomputing. Training the model now......")
 
+    print("Class weights:")
+    for k in range(len(classes)):
+        print("{}: {}".format(classes[k], class_weights[k]))
+
+    class_weights = torch.tensor([1.0] + class_weights, dtype=torch.float32, device=config.device)
+    loss_function = torch.nn.CrossEntropyLoss(reduction="sum", weight=class_weights)
+
     rng = np.random.default_rng()
     for epoch in range(num_epochs):
         ctime = time.time()
@@ -199,8 +204,6 @@ if __name__ == "__main__":
             y_pred = model(train_image_data_batch)
 
             loss = loss_function(y_pred, train_image_multiclass_gt_batch)
-            # Weighted loss, with precomputed weights
-            loss = torch.sum(loss)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
@@ -268,8 +271,6 @@ if __name__ == "__main__":
 
                 y_pred = model(test_image_data_batch)
                 loss = loss_function(y_pred, test_image_multiclass_gt_batch)
-                # Weighted loss, with precomputed weights
-                loss = torch.sum(loss)
                 total_loss += loss.item()
 
                 y_pred = torch.argmax(y_pred, dim=1)
