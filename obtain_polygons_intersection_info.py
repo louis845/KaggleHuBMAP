@@ -36,18 +36,29 @@ def construct_wsi_with_polygons_intersection(wsi_id, use_whole_intersection=Fals
         y = wsi_information.loc[wsi_tile, "j"]
         wsi_tile_img = image_loader.get_image_data(wsi_tile)
 
-        all_history = np.zeros_like(wsi_tile_img)
+        all_history_unknown = np.zeros_like(wsi_tile_img)
+        all_history_blood_vessel = np.zeros_like(wsi_tile_img)
+        all_history_glomerulus = np.zeros_like(wsi_tile_img)
+
         overlaps = np.zeros_like(wsi_tile_img)
 
         if wsi_tile in all_polygon_masks:
-            for polygon_mask in all_polygon_masks[wsi_tile]:
+            for polygon_mask_info in all_polygon_masks[wsi_tile]:
                 # Draw the polygon
-                polygon_coordinate_list = polygon_mask["coordinates"][0]  # This is a list of integer 2-tuples, representing the coordinates.
+                polygon_coordinate_list = polygon_mask_info["coordinates"][0]  # This is a list of integer 2-tuples, representing the coordinates.
 
                 polygon_mask = np.zeros_like(wsi_tile_img)
                 cv2.fillPoly(polygon_mask, [np.array(polygon_coordinate_list)], (1, 1, 1))
 
-                overlap = np.bitwise_and(polygon_mask, all_history)
+                if polygon_mask_info["type"] == "unsure":
+                    overlap = np.bitwise_and(polygon_mask, all_history_unknown)
+                elif polygon_mask_info["type"] == "blood_vessel":
+                    overlap = np.bitwise_and(polygon_mask, all_history_blood_vessel)
+                elif polygon_mask_info["type"] == "glomerulus":
+                    overlap = np.bitwise_and(polygon_mask, all_history_glomerulus)
+                else:
+                    print("Unknown type: {}".format(polygon_mask_info["type"]))
+                    quit(-1)
 
                 if use_whole_intersection:
                     if np.any(overlap) and np.all(overlap == polygon_mask):
@@ -55,8 +66,16 @@ def construct_wsi_with_polygons_intersection(wsi_id, use_whole_intersection=Fals
                 else:
                     if np.any(overlap):
                         overlaps = np.bitwise_or(overlaps, overlap)
+                        print("Overlap detected! Wsi tile: {}   Dataset: {}   WSI: {}".format(wsi_tile, model_data_manager.data_information.loc[wsi_tile, "dataset"],
+                                                                                               model_data_manager.data_information.loc[wsi_tile, "source_wsi"]))
+                        print("Equality: {}".format(np.all(overlap == polygon_mask)))
 
-                all_history = np.bitwise_or(all_history, polygon_mask)
+                if polygon_mask_info["type"] == "unsure":
+                    all_history_unknown = np.bitwise_or(all_history_unknown, polygon_mask)
+                elif polygon_mask_info["type"] == "blood_vessel":
+                    all_history_blood_vessel = np.bitwise_or(all_history_blood_vessel, polygon_mask)
+                elif polygon_mask_info["type"] == "glomerulus":
+                    all_history_glomerulus = np.bitwise_or(all_history_glomerulus, polygon_mask)
 
         image_np[y:y + 512, x:x + 512, :] = overlaps * 255
 

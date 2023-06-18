@@ -100,6 +100,10 @@ def construct_wsi_with_polygons(wsi_id):
         y = wsi_information.loc[wsi_tile, "j"]
         wsi_tile_img = image_loader.get_image_data(wsi_tile)
 
+        if wsi_information.loc[wsi_tile, "dataset"] != 1:
+            wsi_tile_img //= 2
+
+
         if wsi_tile in all_polygon_masks:
             for polygon_mask in all_polygon_masks[wsi_tile]:
                 # The color depends on the type, default unknown color = blue
