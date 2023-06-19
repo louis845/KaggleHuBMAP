@@ -136,27 +136,28 @@ def draw_grids(image_np):
 
     return image_np
 
-if not os.path.exists("reconstructed_wsi_images"):
-    os.mkdir("reconstructed_wsi_images")
+if __name__ == "__main__":
+    if not os.path.exists("reconstructed_wsi_images"):
+        os.mkdir("reconstructed_wsi_images")
 
-# reconstruct WSI images.
-for wsi_id in range(1, 15):
-    if wsi_id != 5:
-        image_np = construct_wsi(wsi_id)
-        cv2.imwrite("reconstructed_wsi_images/wsi_{}.png".format(wsi_id), cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR))
+    # reconstruct WSI images.
+    for wsi_id in range(1, 15):
+        if wsi_id != 5:
+            image_np = construct_wsi(wsi_id)
+            cv2.imwrite("reconstructed_wsi_images/wsi_{}.png".format(wsi_id), cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR))
 
-        draw_grids(image_np)
-        cv2.imwrite("reconstructed_wsi_images/wsi_{}_grids.png".format(wsi_id), cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR))
+            draw_grids(image_np)
+            cv2.imwrite("reconstructed_wsi_images/wsi_{}_grids.png".format(wsi_id), cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR))
 
-        image_np_with_polygons = construct_wsi_with_polygons(wsi_id)
-        cv2.putText(image_np_with_polygons, "Unknown", (512, 512), cv2.FONT_HERSHEY_SIMPLEX, 10, (0, 0, 255), 2)
-        cv2.putText(image_np_with_polygons, "Glomerulus", (512, 1024), cv2.FONT_HERSHEY_SIMPLEX, 10, (0, 255, 0), 2)
-        cv2.putText(image_np_with_polygons, "Blood vessel", (512, 1536), cv2.FONT_HERSHEY_SIMPLEX, 10, (255, 0, 0), 2)
+            image_np_with_polygons = construct_wsi_with_polygons(wsi_id)
+            cv2.putText(image_np_with_polygons, "Unknown", (512, 512), cv2.FONT_HERSHEY_SIMPLEX, 10, (0, 0, 255), 2)
+            cv2.putText(image_np_with_polygons, "Glomerulus", (512, 1024), cv2.FONT_HERSHEY_SIMPLEX, 10, (0, 255, 0), 2)
+            cv2.putText(image_np_with_polygons, "Blood vessel", (512, 1536), cv2.FONT_HERSHEY_SIMPLEX, 10, (255, 0, 0), 2)
 
-        cv2.imwrite("reconstructed_wsi_images/wsi_{}_with_polygons.png".format(wsi_id), cv2.cvtColor(image_np_with_polygons, cv2.COLOR_RGB2BGR))
+            cv2.imwrite("reconstructed_wsi_images/wsi_{}_with_polygons.png".format(wsi_id), cv2.cvtColor(image_np_with_polygons, cv2.COLOR_RGB2BGR))
 
-        draw_grids(image_np_with_polygons)
-        cv2.imwrite("reconstructed_wsi_images/wsi_{}_with_polygons_grids.png".format(wsi_id), cv2.cvtColor(image_np_with_polygons, cv2.COLOR_RGB2BGR))
+            draw_grids(image_np_with_polygons)
+            cv2.imwrite("reconstructed_wsi_images/wsi_{}_with_polygons_grids.png".format(wsi_id), cv2.cvtColor(image_np_with_polygons, cv2.COLOR_RGB2BGR))
 
-        print("WSI {} done".format(wsi_id))
+            print("WSI {} done".format(wsi_id))
 

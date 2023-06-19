@@ -81,6 +81,41 @@ def construct_wsi_with_polygons_intersection(wsi_id, use_whole_intersection=Fals
 
     return image_np
 
+def check_polygon_overlap(wsi_id):
+    wsi_information = model_data_manager.data_information
+    wsi_information = wsi_information.loc[wsi_information["source_wsi"] == wsi_id]
+
+    for wsi_tile in wsi_information.index:
+        x = wsi_information.loc[wsi_tile, "i"]
+        y = wsi_information.loc[wsi_tile, "j"]
+
+        if wsi_tile in all_polygon_masks:
+            for index in range(len(all_polygon_masks[wsi_tile])):
+                for index2 in range(len(all_polygon_masks[wsi_tile])):
+                    if index >= index2:
+                        continue
+
+                    polygon_mask_info = all_polygon_masks[wsi_tile][index]
+                    polygon_mask_info2 = all_polygon_masks[wsi_tile][index2]
+
+                    if polygon_mask_info["type"] != polygon_mask_info2["type"]:
+                        continue
+
+                    polygon_coordinate_list = polygon_mask_info["coordinates"][0]
+                    polygon_coordinate_list2 = polygon_mask_info2["coordinates"][0]
+
+                    polygon_mask = np.zeros(shape=(512, 512, 1), dtype=np.uint8)
+                    polygon_mask2 = np.zeros(shape=(512, 512, 1), dtype=np.uint8)
+                    cv2.fillPoly(polygon_mask, [np.array(polygon_coordinate_list)], (1,))
+                    cv2.fillPoly(polygon_mask2, [np.array(polygon_coordinate_list2)], (1,))
+
+                    overlap = np.bitwise_and(polygon_mask, polygon_mask2)
+
+                    if np.any(overlap):
+                        if not np.all(overlap == polygon_mask) and not np.all(overlap == polygon_mask2):
+                            print("Disjoint overlap detected! Wsi tile: {}   Dataset: {}   WSI: {}   Polygon indices: ({}, {})".format(wsi_tile, model_data_manager.data_information.loc[wsi_tile, "dataset"],
+                                                                                                           wsi_id, index, index2))
+
 def draw_grids(image_np):
     for i in range(0, image_np.shape[1], 512):
         cv2.line(image_np, (i, 0), (i, image_np.shape[0]), (0, 255, 255), 3)
@@ -95,6 +130,7 @@ if not os.path.exists("reconstructed_wsi_images"):
 # reconstruct WSI images.
 for wsi_id in range(1, 15):
     if wsi_id != 5:
+        print("------------------------------- Computing crude intersection for wsi {} -------------------------------".format(wsi_id))
         image_np_with_polygons = construct_wsi_with_polygons_intersection(wsi_id)
         cv2.putText(image_np_with_polygons, "Unknown", (512, 512), cv2.FONT_HERSHEY_SIMPLEX, 10, (0, 0, 255), 2)
         cv2.putText(image_np_with_polygons, "Glomerulus", (512, 1024), cv2.FONT_HERSHEY_SIMPLEX, 10, (0, 255, 0), 2)
@@ -104,6 +140,9 @@ for wsi_id in range(1, 15):
 
         draw_grids(image_np_with_polygons)
         cv2.imwrite("reconstructed_wsi_images/wsi_{}_intersection_refined_grids.png".format(wsi_id), cv2.cvtColor(image_np_with_polygons, cv2.COLOR_RGB2BGR))
+
+        print("------------------------------- Checking polygon overlap for wsi {} -------------------------------".format(wsi_id))
+        check_polygon_overlap(wsi_id)
 
         print("WSI {} done".format(wsi_id))
 

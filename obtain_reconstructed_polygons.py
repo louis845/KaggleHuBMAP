@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import collections
 
 import numpy as np
 import cv2
@@ -8,7 +9,176 @@ import cv2
 import model_data_manager
 import config
 
-import shapely.geometry
+import h5py
+
+class Polygon:
+    def __init__(self, polygon_type: str, bounds_x1: int, bounds_y1: int, bounding_box_mask: np.ndarray):
+        self.polygon_type = polygon_type
+        self.bounds_x1 = bounds_x1
+        self.bounds_y1 = bounds_y1
+        self.bounding_box_mask = bounding_box_mask
+        self.wsi_tile_contains = {}
+
+    def add_wsi(self, wsi_tile: str, wsi_mask: np.ndarray):
+        self.wsi_tile_contains[wsi_tile] = wsi_mask
+
+    def touches_top(self, wsi_tile: str):
+        assert wsi_tile in self.wsi_tile_contains
+        return self.wsi_tile_contains[wsi_tile][0, :].any()
+
+    def touches_bottom(self, wsi_tile: str):
+        assert wsi_tile in self.wsi_tile_contains
+        return self.wsi_tile_contains[wsi_tile][-1, :].any()
+
+    def touches_left(self, wsi_tile: str):
+        assert wsi_tile in self.wsi_tile_contains
+        return self.wsi_tile_contains[wsi_tile][:, 0].any()
+
+    def touches_right(self, wsi_tile: str):
+        assert wsi_tile in self.wsi_tile_contains
+        return self.wsi_tile_contains[wsi_tile][:, -1].any()
+
+    def touches(self, other: "Polygon", wsi_tile: str, other_wsi_tile: str, side:str="top"):
+        """Returns True if the two polygons intersect, False otherwise."""
+        assert self.polygon_type == other.polygon_type, "Polygon types do not match"
+        assert wsi_tile in self.wsi_tile_contains
+        assert other_wsi_tile in other.wsi_tile_contains
+
+        combined_bounds_x1 = min(self.bounds_x1, other.bounds_x1)
+        combined_bounds_y1 = min(self.bounds_y1, other.bounds_y1)
+        combined_bounds_x2 = max(self.bounds_x1 + self.bounding_box_mask.shape[1],
+                            other.bounds_x1 + other.bounding_box_mask.shape[1])
+        combined_bounds_y2 = max(self.bounds_y1 + self.bounding_box_mask.shape[0],
+                            other.bounds_y1 + other.bounding_box_mask.shape[0])
+
+        combined_bounding_box_mask = np.zeros((combined_bounds_y2 - combined_bounds_y1, combined_bounds_x2 - combined_bounds_x1), dtype=bool)
+
+        combined_bounding_box_mask[self.bounds_y1 - combined_bounds_y1:self.bounds_y1 - combined_bounds_y1 + self.bounding_box_mask.shape[0],
+            self.bounds_x1 - combined_bounds_x1:self.bounds_x1 - combined_bounds_x1 + self.bounding_box_mask.shape[1]] = self.bounding_box_mask
+
+        intersection = np.logical_and(combined_bounding_box_mask[
+            other.bounds_y1 - combined_bounds_y1:other.bounds_y1 - combined_bounds_y1 + other.bounding_box_mask.shape[0],
+            other.bounds_x1 - combined_bounds_x1:other.bounds_x1 - combined_bounds_x1 + other.bounding_box_mask.shape[1]],
+                          other.bounding_box_mask)
+        union = np.logical_or(combined_bounding_box_mask[
+            other.bounds_y1 - combined_bounds_y1:other.bounds_y1 - combined_bounds_y1 + other.bounding_box_mask.shape[0],
+            other.bounds_x1 - combined_bounds_x1:other.bounds_x1 - combined_bounds_x1 + other.bounding_box_mask.shape[1]],
+                          other.bounding_box_mask)
+
+        if np.count_nonzero(intersection) / np.count_nonzero(union) > 0.5:
+            return True
+
+        if side == "top":
+            if not self.touches_top(wsi_tile) or not other.touches_bottom(other_wsi_tile):
+                return False
+
+            self_touching_pixels = self.wsi_tile_contains[wsi_tile][0, :]
+            other_touching_pixels = other.wsi_tile_contains[other_wsi_tile][-1, :]
+
+            intersection = np.logical_and(self_touching_pixels, other_touching_pixels)
+            union = np.logical_or(self_touching_pixels, other_touching_pixels)
+
+            if np.count_nonzero(intersection) / np.count_nonzero(union) <= 0.5:
+                return False
+
+            return True
+        elif side == "bottom":
+            if not self.touches_bottom(wsi_tile) or not other.touches_top(other_wsi_tile):
+                return False
+
+            self_touching_pixels = self.wsi_tile_contains[wsi_tile][-1, :]
+            other_touching_pixels = other.wsi_tile_contains[other_wsi_tile][0, :]
+
+            intersection = np.logical_and(self_touching_pixels, other_touching_pixels)
+            union = np.logical_or(self_touching_pixels, other_touching_pixels)
+
+            if np.count_nonzero(intersection) / np.count_nonzero(union) <= 0.5:
+                return False
+
+            return True
+        elif side == "left":
+            if not self.touches_left(wsi_tile) or not other.touches_right(other_wsi_tile):
+                return False
+
+            self_touching_pixels = self.wsi_tile_contains[wsi_tile][:, 0]
+            other_touching_pixels = other.wsi_tile_contains[other_wsi_tile][:, -1]
+
+            intersection = np.logical_and(self_touching_pixels, other_touching_pixels)
+            union = np.logical_or(self_touching_pixels, other_touching_pixels)
+
+            if np.count_nonzero(intersection) / np.count_nonzero(union) <= 0.5:
+                return False
+
+            return True
+        elif side == "right":
+            if not self.touches_right(wsi_tile) or not other.touches_left(other_wsi_tile):
+                return False
+
+            self_touching_pixels = self.wsi_tile_contains[wsi_tile][:, -1]
+            other_touching_pixels = other.wsi_tile_contains[other_wsi_tile][:, 0]
+
+            intersection = np.logical_and(self_touching_pixels, other_touching_pixels)
+            union = np.logical_or(self_touching_pixels, other_touching_pixels)
+
+            if np.count_nonzero(intersection) / np.count_nonzero(union) <= 0.5:
+                return False
+
+            return True
+        else:
+            raise ValueError("Invalid side argument")
+
+    def merge_into(self, other: "Polygon"):
+        """Merges the other polygon into self. The other polygon is not changed, while self is modified."""
+        assert self.polygon_type == other.polygon_type, "Polygon types do not match"
+
+        for wsi_tile in other.wsi_tile_contains:
+            if wsi_tile in self.wsi_tile_contains:
+                self.wsi_tile_contains[wsi_tile] = np.logical_or(self.wsi_tile_contains[wsi_tile], other.wsi_tile_contains[wsi_tile])
+            else:
+                self.wsi_tile_contains[wsi_tile] = other.wsi_tile_contains[wsi_tile]
+
+        new_bounds_x1 = min(self.bounds_x1, other.bounds_x1)
+        new_bounds_y1 = min(self.bounds_y1, other.bounds_y1)
+        new_bounds_x2 = max(self.bounds_x1 + self.bounding_box_mask.shape[1], other.bounds_x1 + other.bounding_box_mask.shape[1])
+        new_bounds_y2 = max(self.bounds_y1 + self.bounding_box_mask.shape[0], other.bounds_y1 + other.bounding_box_mask.shape[0])
+
+
+        new_bounding_box_mask = np.zeros((new_bounds_y2 - new_bounds_y1, new_bounds_x2 - new_bounds_x1), dtype=bool)
+
+        new_bounding_box_mask[self.bounds_y1 - new_bounds_y1:self.bounds_y1 - new_bounds_y1 + self.bounding_box_mask.shape[0],
+            self.bounds_x1 - new_bounds_x1:self.bounds_x1 - new_bounds_x1 + self.bounding_box_mask.shape[1]] = self.bounding_box_mask
+
+        new_bounding_box_mask[other.bounds_y1 - new_bounds_y1:other.bounds_y1 - new_bounds_y1 + other.bounding_box_mask.shape[0],
+            other.bounds_x1 - new_bounds_x1:other.bounds_x1 - new_bounds_x1 + other.bounding_box_mask.shape[1]] = np.logical_or(
+                new_bounding_box_mask[other.bounds_y1 - new_bounds_y1:other.bounds_y1 - new_bounds_y1 + other.bounding_box_mask.shape[0],
+                    other.bounds_x1 - new_bounds_x1:other.bounds_x1 - new_bounds_x1 + other.bounding_box_mask.shape[1]], other.bounding_box_mask)
+
+        self.bounds_x1 = new_bounds_x1
+        self.bounds_y1 = new_bounds_y1
+        self.bounding_box_mask = new_bounding_box_mask
+
+    def save_to_hdf5(self, hdf5_group: h5py.Group, index: int):
+        """Saves the polygon to the hdf5 file."""
+        # remove holes
+        num_labels, labels_im = cv2.connectedComponents(np.logical_not(self.bounding_box_mask).astype(np.uint8) * 255, connectivity=8)
+
+        for k in range(1, num_labels):
+            component_mask = (labels_im == k)
+            exists_x = np.argwhere(np.any(component_mask, axis=0)).squeeze(-1)
+            exists_y = np.argwhere(np.any(component_mask, axis=1)).squeeze(-1)
+
+            bounds_x1, bounds_x2 = np.min(exists_x), np.max(exists_x)
+            bounds_y1, bounds_y2 = np.min(exists_y), np.max(exists_y)
+
+            if bounds_x1 > 0 and bounds_x2 < self.bounding_box_mask.shape[1] - 1 and bounds_y1 > 0 and bounds_y2 < self.bounding_box_mask.shape[0] - 1:
+                self.bounding_box_mask[component_mask] = True
+
+        # save data now
+        polygon_group = hdf5_group.create_group(str(index))
+        polygon_group.create_dataset("type", data=self.polygon_type, dtype=h5py.string_dtype())
+        polygon_group.create_dataset("top_left_x", data=int(self.bounds_x1), dtype=np.int32)
+        polygon_group.create_dataset("top_left_y", data=int(self.bounds_y1), dtype=np.int32)
+        polygon_group.create_dataset("mask", data=self.bounding_box_mask, dtype=bool, compression="gzip", compression_opts=9, shape=self.bounding_box_mask.shape)
 
 if not os.path.isfile(os.path.join(config.input_data_path, "polygons_refined.jsonl")):
     print("polygons_refined.jsonl does not exist in the data folder. Please run obtain_refined_polygons.py to remove the repeated polygons first.")
@@ -22,43 +192,12 @@ for json_str in json_list:
     polygon_masks = json.loads(json_str)
     all_polygon_masks[polygon_masks["id"]] = polygon_masks["annotations"]
 
-
-def shift_polygon(polygon_coordinates, x, y):
-    for k in range(len(polygon_coordinates)):
-        polygon_coordinates[k][0] += x
-        polygon_coordinates[k][1] += y
-
-def obtain_bounding_box(polygon_coordinates):
-    x_min = polygon_coordinates[0][0]
-    x_max = polygon_coordinates[0][0]
-    y_min = polygon_coordinates[0][1]
-    y_max = polygon_coordinates[0][1]
-    for k in range(1, len(polygon_coordinates)):
-        x_min = min(x_min, polygon_coordinates[k][0])
-        x_max = max(x_max, polygon_coordinates[k][0])
-        y_min = min(y_min, polygon_coordinates[k][1])
-        y_max = max(y_max, polygon_coordinates[k][1])
-    return x_min, x_max, y_min, y_max
-
-def polygons_intersect(polygon_coordinates1, polygon_coordinates2):
-    x_min1, x_max1, y_min1, y_max1 = obtain_bounding_box(polygon_coordinates1)
-    x_min2, x_max2, y_min2, y_max2 = obtain_bounding_box(polygon_coordinates2)
-    if x_min1 > x_max2 or x_max1 < x_min2 or y_min1 > y_max2 or y_max1 < y_min2:
-        return False
-
-    # Use shapely to check if the polygons intersect
-    polygon1 = shapely.geometry.Polygon(polygon_coordinates1)
-    polygon2 = shapely.geometry.Polygon(polygon_coordinates2)
-
-    return polygon1.intersects(polygon2)
-
 def obtain_reconstructed_polygons(wsi_id):
     polygons = []
+    polygons_per_tile = collections.defaultdict(list)
 
     wsi_information = model_data_manager.data_information
     wsi_information = wsi_information.loc[wsi_information["source_wsi"] == wsi_id]
-    width = int(wsi_information["i"].max() + 512)
-    height = int(wsi_information["j"].max() + 512)
 
     for wsi_tile in wsi_information.index:
         x = wsi_information.loc[wsi_tile, "i"]
@@ -68,66 +207,128 @@ def obtain_reconstructed_polygons(wsi_id):
             for polygon_mask in all_polygon_masks[wsi_tile]:
                 polygon_type = polygon_mask["type"]
                 polygon_coordinate_list = polygon_mask["coordinates"][0]  # This is a list of integer 2-tuples, representing the coordinates.
-                shift_polygon(polygon_coordinate_list, x, y)
 
-                # check if this polygon intersects with any of the existing polygons
-                intersecting_polygons = []
-                for idx in range(len(polygons)):
-                    polygon = polygons[idx]["coordinates"]
-                    if polygons_intersect(polygon, polygon_coordinate_list):
-                        intersecting_polygons.append({"polygon":polygon, "idx":idx})
+                polygon_tile_mask = np.zeros((512, 512, 1), dtype=np.uint8)
+                cv2.fillPoly(polygon_tile_mask, [np.array(polygon_coordinate_list)], (1,))
 
-                # if there is no intersecting polygon, add this polygon to the list
-                if len(intersecting_polygons) == 0:
-                    polygons.append({"type": polygon_type, "coordinates":polygon_coordinate_list})
+                polygon_tile_mask = polygon_tile_mask.astype(bool).squeeze(-1)
 
-                    # if there are intersecting polygons, merge them into one polygon
-                elif len(intersecting_polygons) > 1:
-                    print(wsi_tile)
+                exists_x = np.argwhere(np.any(polygon_tile_mask, axis=0)).squeeze(-1)
+                exists_y = np.argwhere(np.any(polygon_tile_mask, axis=1)).squeeze(-1)
 
-                    new_polygon_shapely = shapely.geometry.Polygon(polygon_coordinate_list)
-                    for polygon_info in intersecting_polygons:
-                        polygon = polygon_info["polygon"]
-                        new_polygon_shapely = new_polygon_shapely.union(shapely.geometry.Polygon(polygon))
+                bounds_x1, bounds_x2 = np.min(exists_x), np.max(exists_x)
+                bounds_y1, bounds_y2 = np.min(exists_y), np.max(exists_y)
 
-                        if type(new_polygon_shapely) == shapely.geometry.Polygon:
-                            # Loop through all the holes in the polygon
-                            for hole in new_polygon_shapely.interiors:
-                                hole_area = shapely.geometry.Polygon(hole).area  # Get the area of the hole
-                                print(f"Hole detected (will be removed)! Area: {hole_area:.2f}")
+                bounding_box_mask = polygon_tile_mask[bounds_y1:bounds_y2+1, bounds_x1:bounds_x2+1]
 
-                            # Remove all holes in the polygon
-                            new_polygon_shapely = shapely.geometry.Polygon(new_polygon_shapely.exterior)
-                        elif type(new_polygon_shapely) == shapely.geometry.GeometryCollection:
-                            assert len(new_polygon_shapely.geoms) == 2, "The union of two polygons should be either a Polygon or a GeometryCollection with two elements."
-                            for polygon in new_polygon_shapely.geoms:
-                                if type(polygon) == shapely.geometry.Polygon:
-                                    new_polygon_shapely = shapely.geometry.Polygon(polygon.exterior)
+                top_left_x = x + bounds_x1
+                top_left_y = y + bounds_y1
 
-                        polygons.pop(polygon_info["idx"])
+                polygon = Polygon(polygon_type, top_left_x, top_left_y, bounding_box_mask)
+                polygon.add_wsi(wsi_tile, polygon_tile_mask)
 
-                        print("Hole removed:", new_polygon_shapely)
+                # check touching with existing polygons. first check if it touches boundary
+                if polygon.touches_top(wsi_tile):
+                    touching_tiles = wsi_information.loc[(y - 512 <= wsi_information["j"]) & (wsi_information["j"] <= y) &
+                                                         (wsi_information["i"] == x)].index
+                    for touching_tile in touching_tiles:
+                        if (touching_tile != wsi_tile) and (touching_tile in polygons_per_tile):
+                            idx = 0
+                            while idx < len(polygons_per_tile[touching_tile]):
+                                other_polygon = polygons_per_tile[touching_tile][idx]
+                                if polygon.polygon_type == other_polygon.polygon_type and\
+                                    other_polygon.touches_bottom(touching_tile) and\
+                                    polygon.touches(other_polygon, wsi_tile, touching_tile, side="top"):
 
-                        assert not type(new_polygon_shapely) is shapely.geometry.MultiPolygon, "The union of two polygons should not be a MultiPolygon."
-                        assert not type(new_polygon_shapely) is shapely.geometry.GeometryCollection, "The union of two polygons should not be a GeometryCollection."
+                                    polygon.merge_into(other_polygon)
+                                    polygons.remove(other_polygon)
+                                    for other_wsi_tile in other_polygon.wsi_tile_contains:
+                                        polygons_per_tile[other_wsi_tile].remove(other_polygon)
+                                else:
+                                    idx += 1
 
-                    new_polygon = list(new_polygon_shapely.exterior.coords)
+                if polygon.touches_bottom(wsi_tile):
+                    touching_tiles = wsi_information.loc[(y <= wsi_information["j"]) & (wsi_information["j"] <= y + 512) &
+                                                         (wsi_information["i"] == x)].index
+                    for touching_tile in touching_tiles:
+                        if (touching_tile != wsi_tile) and (touching_tile in polygons_per_tile):
+                            idx = 0
+                            while idx < len(polygons_per_tile[touching_tile]):
+                                other_polygon = polygons_per_tile[touching_tile][idx]
+                                if polygon.polygon_type == other_polygon.polygon_type and\
+                                    other_polygon.touches_top(touching_tile) and\
+                                    polygon.touches(other_polygon, wsi_tile, touching_tile, side="bottom"):
 
-                    polygons.append({"type": polygon_type, "coordinates":new_polygon})
+                                    polygon.merge_into(other_polygon)
+                                    polygons.remove(other_polygon)
+                                    for other_wsi_tile in other_polygon.wsi_tile_contains:
+                                        polygons_per_tile[other_wsi_tile].remove(other_polygon)
+                                else:
+                                    idx += 1
+
+                if polygon.touches_left(wsi_tile):
+                    touching_tiles = wsi_information.loc[(x - 512 <= wsi_information["i"]) & (wsi_information["i"] <= x) &
+                                                         (wsi_information["j"] == y)].index
+                    for touching_tile in touching_tiles:
+                        if (touching_tile != wsi_tile) and (touching_tile in polygons_per_tile):
+                            idx = 0
+                            while idx < len(polygons_per_tile[touching_tile]):
+                                other_polygon = polygons_per_tile[touching_tile][idx]
+                                if polygon.polygon_type == other_polygon.polygon_type and\
+                                    other_polygon.touches_right(touching_tile) and\
+                                    polygon.touches(other_polygon, wsi_tile, touching_tile, side="left"):
+
+                                    polygon.merge_into(other_polygon)
+                                    polygons.remove(other_polygon)
+                                    for other_wsi_tile in other_polygon.wsi_tile_contains:
+                                        polygons_per_tile[other_wsi_tile].remove(other_polygon)
+                                else:
+                                    idx += 1
+
+                if polygon.touches_right(wsi_tile):
+                    touching_tiles = wsi_information.loc[(x <= wsi_information["i"]) & (wsi_information["i"] <= x + 512) &
+                                                         (wsi_information["j"] == y)].index
+                    for touching_tile in touching_tiles:
+                        if (touching_tile != wsi_tile) and (touching_tile in polygons_per_tile):
+                            idx = 0
+                            while idx < len(polygons_per_tile[touching_tile]):
+                                other_polygon = polygons_per_tile[touching_tile][idx]
+                                if polygon.polygon_type == other_polygon.polygon_type and\
+                                    other_polygon.touches_left(touching_tile) and\
+                                    polygon.touches(other_polygon, wsi_tile, touching_tile, side="right"):
+
+                                    polygon.merge_into(other_polygon)
+                                    polygons.remove(other_polygon)
+                                    for other_wsi_tile in other_polygon.wsi_tile_contains:
+                                        polygons_per_tile[other_wsi_tile].remove(other_polygon)
+                                else:
+                                    idx += 1
+
+                polygons.append(polygon)
+                for tile in polygon.wsi_tile_contains:
+                    polygons_per_tile[tile].append(polygon)
 
     return polygons
 
-ctime = time.time()
+if not os.path.isdir("segmentation_reconstructed_data"):
+    os.mkdir("segmentation_reconstructed_data")
+if os.path.isfile(os.path.join("segmentation_reconstructed_data", "polygons_reconstructed.hdf5")):
+    os.remove(os.path.join("segmentation_reconstructed_data", "polygons_reconstructed.hdf5"))
+
+hdf_file = h5py.File(os.path.join("segmentation_reconstructed_data", "polygons_reconstructed.hdf5"), "w")
 
 # reconstruct polygons now
-reconstructed_polygons = {}  # key: wsi_id, value: list of polygons
 for wsi_id in range(1, 15):
     if wsi_id != 5:
-        print("Starting to reconstruct polygons for wsi {}.".format(wsi_id))
-        reconstructed_polygons[wsi_id] = obtain_reconstructed_polygons(wsi_id)
-        print("Finished reconstructing polygons for wsi {} in {} seconds.".format(wsi_id, time.time() - ctime))
-        ctime = time.time()
+        group = hdf_file.create_group("wsi_{}".format(wsi_id))
 
-# save the reconstructed polygons
-with open(os.path.join(config.input_data_path, "polygons_reconstructed.jsonl"), "w") as json_file:
-    json.dump(reconstructed_polygons, json_file, separators=(",", ":"))
+        print("Starting to reconstruct polygons for wsi {}.".format(wsi_id))
+        ctime = time.time()
+        polygons = obtain_reconstructed_polygons(wsi_id)
+
+        group.create_dataset("num_polygons", data=len(polygons), dtype=np.int32)
+        for index in range(len(polygons)):
+            polygon = polygons[index]
+            polygon.save_to_hdf5(group, index)
+
+        print("Finished reconstructing polygons for wsi {} in {} seconds.".format(wsi_id, time.time() - ctime))
