@@ -42,6 +42,22 @@ def get_modified_mask(mask: np.ndarray, top_left_x: int, top_left_y: int):
 
     return mask, inner_mask, boundary_mask, top_left_x, top_left_y
 
+class WSIMask:
+    def __init__(self, combined_masks: h5py.File, wsi_id: int):
+        key = "wsi_{}".format(wsi_id)
+        assert key in combined_masks, "wsi_{} does not exist in the combined_masks.hdf5 file".format(wsi_id)
+        self.wsi_whole_masks = combined_masks[key]
+
+    def obtain_unknown_mask(self, x1: int, x2: int, y1: int, y2: int):
+        return np.array(self.wsi_whole_masks["unknown"][y1:y2, x1:x2], dtype=np.uint8)
+
+    def obtain_blood_vessel_mask(self, x1: int, x2: int, y1: int, y2: int):
+        return np.array(self.wsi_whole_masks["blood_vessel"][y1:y2, x1:x2], dtype=np.uint8)
+
+    def obtain_glomerulus_mask(self, x1: int, x2: int, y1: int, y2: int):
+        return np.array(self.wsi_whole_masks["glomerulus"][y1:y2, x1:x2], dtype=np.uint8)
+
+
 if __name__ == '__main__':
     if not os.path.isfile(os.path.join("segmentation_reconstructed_data", "polygons_reconstructed.hdf5")):
         print("polygons_reconstructed.hdf5 does not exist in the segmentation_reconstructed_data folder. Please run obtain_reconstructed_polygons.py to obtain the reconstructed polygons first.")
