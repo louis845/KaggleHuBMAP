@@ -1,5 +1,6 @@
 import gc
 import os
+import time
 
 import numpy as np
 import pandas as pd
@@ -7,6 +8,7 @@ import h5py
 import cv2
 import tqdm
 import torch
+import torchvision.transforms.functional
 
 import model_data_manager
 import obtain_reconstructed_wsi_images
@@ -49,6 +51,76 @@ def obtain_bottom_clearance(mask: np.ndarray, x: int, y: int):
         return mask.shape[0] - y
     else:
         return bottom_values.min()
+
+def argmax_value2d(tensor: torch.Tensor):
+    max_index = torch.argmax(tensor)
+
+    i = max_index // tensor.shape[1]
+    j = max_index % tensor.shape[1]
+
+    return i, j
+
+def obtain_mask_clearance_optimal_shape(radius: int, clearance_values: torch.Tensor):
+    top_clearance_values = torch.cummin(torch.flip(clearance_values[:radius], dims=[0]), dim=0)[0]
+    bottom_clearance_values = torch.cummin(clearance_values[radius:], dim=0)[0]
+
+    joint_clearance = torch.min(top_clearance_values.unsqueeze(-1), bottom_clearance_values)
+    joint_height = torch.arange(1, radius + 1, device=config.device, dtype=torch.int32).unsqueeze(-1) + \
+                   torch.arange(1, radius + 1, device=config.device, dtype=torch.int32)
+
+    joint_area_clearance = joint_height * joint_clearance
+    joint_area_height = torch.clone(joint_area_clearance)
+
+    joint_area_clearance[joint_height > joint_clearance] = -1
+    joint_area_height[joint_height < joint_clearance] = -1
+
+    top1, bottom1 = argmax_value2d(joint_area_clearance)
+    top2, bottom2 = argmax_value2d(joint_area_height)
+
+    width1 = joint_clearance[top1, bottom1]
+    width2 = joint_clearance[top2, bottom2]
+
+    return top1, bottom1, width1, top2, bottom2, width2
+
+def obtain_mask_clearance(mask: torch.Tensor):
+    assert mask.dtype == torch.bool, "Mask must be boolean"
+    assert mask.shape[0] == mask.shape[1], "Mask must be square"
+    assert mask.shape[0] % 2 == 0, "Mask must have even size"
+
+    """Obtain a 'maximum' cross bounding box for the mask tensor. This means that the bounding box is the smallest
+       'cross shape' that contains all the True values in the mask tensor, which contains the center of the image."""
+    radius = mask.shape[0] // 2
+
+    # first compute left clearance values and right clearance values.
+    # they are of shape (height,), storing how many pixels on the left/right are such that the mask is True.
+    left_clearance = torch.argwhere(torch.logical_not(mask[:, :radius]))
+    right_clearance = torch.argwhere(torch.logical_not(mask[:, radius:]))
+
+    left_clearance_row = left_clearance[:, 0]
+    right_clearance_row = right_clearance[:, 0]
+
+    dummy_true = torch.tensor([True], dtype=torch.bool, device=config.device)
+
+    left_clearance_values = torch.full(size=(mask.shape[0],), dtype=torch.long, device=config.device, fill_value=radius)
+    if left_clearance_row.shape[0] > 0:
+        left_clearance = left_clearance[torch.concat([left_clearance_row[1:] > left_clearance_row[:-1], dummy_true]), :]
+        left_clearance_values[left_clearance[:, 0]] = radius - left_clearance[:, 1] - 1
+
+    right_clearance_values = torch.full(size=(mask.shape[0],), dtype=torch.long, device=config.device, fill_value=radius)
+    if right_clearance_row.shape[0] > 0:
+        right_clearance = right_clearance[torch.concat([dummy_true, right_clearance_row[1:] > right_clearance_row[:-1]]), :]
+        right_clearance_values[right_clearance[:, 0]] = right_clearance[:, 1]
+
+    # now compute the cross mask
+    cross_mask = torch.zeros(size=(mask.shape[0], mask.shape[1]), dtype=torch.bool, device=config.device)
+    top1, bottom1, width1, top2, bottom2, width2 = obtain_mask_clearance_optimal_shape(radius, left_clearance_values)
+    cross_mask[radius - 1 - top1:radius + 1 + bottom1, radius - width1:radius] = True
+    cross_mask[radius - 1 - top2:radius + 1 + bottom2, radius - width2:radius] = True
+    top1, bottom1, width1, top2, bottom2, width2 = obtain_mask_clearance_optimal_shape(radius, right_clearance_values)
+    cross_mask[radius - 1 - top1:radius + 1 + bottom1, radius:radius + width1] = True
+    cross_mask[radius - 1 - top2:radius + 1 + bottom2, radius:radius + width2] = True
+
+    return cross_mask
 
 rng = np.random.default_rng()
 
@@ -183,7 +255,7 @@ class Region:
         del rotated_interior_pixels, rotated_interior_pixels_list
         gc.collect()
 
-    def save_interior_pixels_image(self, image_name, overlay=None):
+    def save_interior_pixels_image(self, image_path, overlay=None):
         assert self.interior_pixels is not None, "The interior pixels must be generated first, either by generate_interior_pixels or load_from_hdf5"
 
         interior_pixels = np.repeat(np.expand_dims(np.array(self.interior_pixels, dtype=np.uint8) * 255, axis=-1), axis=-1, repeats=3)
@@ -195,9 +267,9 @@ class Region:
 
 
         # Save image as PNG grayscale
-        cv2.imwrite(os.path.join(folder, "{}.png".format(image_name)), interior_pixels)
+        cv2.imwrite(image_path, interior_pixels)
 
-    def save_rotated_interior_pixels_image(self, image_name, overlay=None):
+    def save_rotated_interior_pixels_image(self, image_path, overlay=None):
         assert self.rotated_interior_pixels is not None, "The interior pixels must be generated first, either by generate_interior_pixels or load_from_hdf5"
 
         r_interior_pixels = np.repeat(np.expand_dims(np.array(self.rotated_interior_pixels, dtype=np.uint8) * 255, axis=-1), axis=-1, repeats=3)
@@ -209,19 +281,22 @@ class Region:
 
 
         # Save image as PNG grayscale
-        cv2.imwrite(os.path.join(folder, "{}.png".format(image_name)), r_interior_pixels)
+        cv2.imwrite(image_path, r_interior_pixels)
 
-    def save_region_image(self, image_name):
+    def save_region_image(self, image_path, overlay=None):
         assert self.region is not None, "The region mask must be generated first, either by generate_region or load_from_hdf5"
 
         region = np.repeat(np.expand_dims(np.array(self.region, dtype=np.uint8) * 255, axis=-1), axis=-1, repeats=3)
 
+        if overlay is not None:
+            region = cv2.addWeighted(region, 0.5, overlay, 0.5, 0)
+
         obtain_reconstructed_wsi_images.draw_grids(region)
 
         # Save image as PNG grayscale
-        cv2.imwrite(os.path.join(folder, "{}.png".format(image_name)), region)
+        cv2.imwrite(image_path, region)
 
-    def save_horizontal_clearance_image(self, image_name):
+    def save_horizontal_clearance_image(self, image_path):
         assert self.horizontal_clearance is not None, "The horizontal clearance must be generated first, either by generate_region or load_from_hdf5"
 
         horizontal_clearance = np.array(self.horizontal_clearance, dtype=np.float32)
@@ -232,8 +307,8 @@ class Region:
         obtain_reconstructed_wsi_images.draw_grids(horizontal_clearance_bottom)
 
         # Save image as PNG grayscale
-        cv2.imwrite(os.path.join(folder, "{}_top.png".format(image_name)), horizontal_clearance_top)
-        cv2.imwrite(os.path.join(folder, "{}_bottom.png".format(image_name)), horizontal_clearance_bottom)
+        cv2.imwrite(image_path, horizontal_clearance_top)
+        cv2.imwrite(image_path, horizontal_clearance_bottom)
 
     def load_from_hdf5(self):
         assert self.wsi_id == int(self.hdf5_group["wsi_id"][()])
@@ -245,6 +320,10 @@ class Region:
             self.interior_pixels_list = self.hdf5_group["interior_pixels_list"]
             self.interior_box_width = self.hdf5_group["interior_box_width"][()]
 
+            self.rotated_interior_pixels = self.hdf5_group["rotated_interior_pixels"]
+            self.rotated_interior_pixels_list = self.hdf5_group["rotated_interior_pixels_list"]
+            self.rotated_interior_box_width = self.hdf5_group["rotated_interior_box_width"][()]
+
     def sample_interior_pixels(self, num_samples):
         indices = np.unique(np.random.choice(self.interior_pixels_list.shape[0], num_samples, replace=False))
 
@@ -252,6 +331,15 @@ class Region:
 
     def get_region_mask(self, x1, x2, y1, y2):
         return np.array(self.region[y1:y2, x1:x2])
+
+    def get_interior_pixels_mask(self, x1, x2, y1, y2):
+        return np.array(self.interior_pixels[y1:y2, x1:x2])
+
+    def pixel_in_interior(self, x, y) -> bool:
+        return self.interior_pixels[y, x]
+
+    def pixel_in_rotated_interior(self, x, y) -> bool:
+        return self.rotated_interior_pixels[y, x]
 
 class WSIImage:
     """Wrapper class for storing all WSI images."""
@@ -282,40 +370,130 @@ class WSIImage:
 
 images = WSIImage()
 class ImageSampler:
-    def __init__(self, wsi_region: Region, sampling_region: Region, polygon_masks: obtain_reconstructed_binary_segmentation.WSIMask, wsi_id: int):
+    def __init__(self, wsi_region: Region, sampling_region: Region, polygon_masks: obtain_reconstructed_binary_segmentation.WSIMask):
+        """
+        :param wsi_region: The region representing the available image pixels in the WSI.
+        :param sampling_region: The region representing the available ground truth mask pixels in the WSI. To enable train/test split.
+        :param polygon_masks: The WSIMask object (from obtain_reconstructed_binary_segmentation) containing the polygon masks.
+        """
         assert sampling_region.interior_pixels_list is not None, "The interior pixels of the sampling region must be generated first! Use generate_interior_pixels()"
         assert wsi_region.region is not None, "The region mask of the WSI region must be generated first! Use generate_region()"
+        assert wsi_region.wsi_id == sampling_region.wsi_id, "The WSI IDs of the WSI region and sampling region must be the same!"
 
         self.wsi_region = wsi_region
         self.sampling_region = sampling_region
         self.polygons = polygon_masks
+        self.wsi_id = wsi_region.wsi_id
 
     def sample_interior_pixels(self, num_samples):
         return self.sampling_region.sample_interior_pixels(num_samples)
 
     def obtain_image(self, x, y, image_width: int):
         """Obtains the image at the specified location. The x, y coordinates are the top left corner of the bottom right
-            quadrant of the subimage."""
+            quadrant of the subimage.
+
+            Returns:
+                image: The rgb image of shape (3, image_width, image_width)
+                region_mask: The region mask of shape (image_width, image_width), representing the pixels in the WSI that are available.
+                ground_truth: The ground truth mask of shape (image_width, image_width), representing the semantic classes.
+                ground_truth_mask: The ground truth mask of shape (image_width, image_width), representing the pixels that are available for the semantic classes.
+                """
         assert image_width % 2 == 0, "The image width must be an even number!"
 
         x1, x2 = x - image_width // 2, x + image_width // 2
         y1, y2 = y - image_width // 2, y + image_width // 2
 
-        x1 = max(0, x1)
-        x2 = min(self.wsi_region.region.shape[1], x2)
-        y1 = max(0, y1)
-        y2 = min(self.wsi_region.region.shape[0], y2)
+        x1_int = max(0, x1)
+        x2_int = min(self.wsi_region.region.shape[1], x2)
+        y1_int = max(0, y1)
+        y2_int = min(self.wsi_region.region.shape[0], y2)
 
-        image = torch.tensor(images.get_image(self.wsi_region.wsi_id, x1, x2, y1, y2), dtype=torch.float32, device=config.device)
-        ground_truth = torch.tensor(self.polygons.obtain_blood_vessel_mask(x1, x2, y1, y2), dtype=torch.long, device=config.device)
-        region_mask = torch.tensor(self.wsi_region.get_region_mask(x1, x2, y1, y2), dtype=torch.bool, device=config.device)
+        with torch.no_grad():
+            image = torch.tensor(images.get_image(self.wsi_region.wsi_id, x1_int, x2_int, y1_int, y2_int), dtype=torch.float32, device=config.device).permute(2, 0, 1) # float32
+            region_mask = torch.tensor(self.wsi_region.get_region_mask(x1_int, x2_int, y1_int, y2_int), dtype=torch.float32, device=config.device) # bool
+            ground_truth = torch.tensor(self.polygons.obtain_blood_vessel_mask(x1_int, x2_int, y1_int, y2_int), dtype=torch.float32, device=config.device) # long
+            ground_truth_mask = torch.tensor(self.sampling_region.get_region_mask(x1_int, x2_int, y1_int, y2_int), dtype=torch.float32, device=config.device) # bool
 
-        return image, ground_truth, region_mask
+            ground_truth = ground_truth * ground_truth_mask.to(torch.long)
+
+            image = torch.nn.functional.pad(image, (x1_int - x1, x2 - x2_int, y1_int - y1, y2 - y2_int))
+            region_mask = torch.nn.functional.pad(region_mask, (x1_int - x1, x2 - x2_int, y1_int - y1, y2 - y2_int))
+            ground_truth = torch.nn.functional.pad(ground_truth, (x1_int - x1, x2 - x2_int, y1_int - y1, y2 - y2_int))
+            ground_truth_mask = torch.nn.functional.pad(ground_truth_mask, (x1_int - x1, x2 - x2_int, y1_int - y1, y2 - y2_int))
+
+        return image, region_mask, ground_truth, ground_truth_mask
 
     def obtain_image_with_augmentation(self, x, y, image_width: int):
-        rotation = rng.uniform(0, 360)
+        assert image_width % 2 == 0, "The image width must be an even number!"
+        with torch.no_grad():
+            image_radius = image_width // 2
+            if self.sampling_region.pixel_in_rotated_interior(x, y):
+                rotation = rng.uniform(0, 360)
+                sample_image_radius = int(image_radius * (np.sin(np.deg2rad(rotation % 90)) + np.cos(np.deg2rad(rotation % 90))))
 
-        image, ground_truth, region_mask = self.obtain_image(x, y, image_width)
+                image, region_mask, ground_truth, ground_truth_mask = self.obtain_image(x, y, sample_image_radius * 2)
+
+                image = torchvision.transforms.functional.rotate(image, angle=rotation, fill=0.0) \
+                    [:, sample_image_radius - image_radius:sample_image_radius + image_radius, sample_image_radius - image_radius:sample_image_radius + image_radius]
+                region_mask = torchvision.transforms.functional.rotate(region_mask.unsqueeze(0), angle=rotation, fill=0.0) \
+                    [:, sample_image_radius - image_radius:sample_image_radius + image_radius, sample_image_radius - image_radius:sample_image_radius + image_radius]
+                ground_truth = torchvision.transforms.functional.rotate(ground_truth.unsqueeze(0), angle=rotation, fill=0.0) \
+                    [:, sample_image_radius - image_radius:sample_image_radius + image_radius, sample_image_radius - image_radius:sample_image_radius + image_radius]
+                ground_truth_mask = torchvision.transforms.functional.rotate(ground_truth_mask.unsqueeze(0), angle=rotation, fill=0.0) \
+                    [:, sample_image_radius - image_radius:sample_image_radius + image_radius, sample_image_radius - image_radius:sample_image_radius + image_radius]
+
+                image = image * region_mask
+                region_mask = obtain_mask_clearance(region_mask.squeeze(0).to(torch.bool))
+                ground_truth = (ground_truth * region_mask).squeeze(0).to(torch.long)
+                ground_truth_mask = (ground_truth_mask * region_mask).squeeze(0).to(torch.bool)
+            else:
+                image, region_mask, ground_truth, ground_truth_mask = self.obtain_image(x, y, image_width)
+
+                rotation = np.random.randint(0, 4) * 90
+                image = torchvision.transforms.functional.rotate(image, angle=rotation)
+                region_mask = torchvision.transforms.functional.rotate(region_mask.unsqueeze(0), angle=rotation).squeeze(0).to(torch.bool)
+                ground_truth = torchvision.transforms.functional.rotate(ground_truth.unsqueeze(0), angle=rotation).squeeze(0).to(torch.long)
+                ground_truth_mask = torchvision.transforms.functional.rotate(ground_truth_mask.unsqueeze(0), angle=rotation).squeeze(0).to(torch.bool)
+
+            # flip the last dimension with a 50% chance
+            if rng.uniform(0, 1) > 0.5:
+                image = torch.flip(image, dims=[-1])
+                region_mask = torch.flip(region_mask, dims=[-1])
+                ground_truth = torch.flip(ground_truth, dims=[-1])
+                ground_truth_mask = torch.flip(ground_truth_mask, dims=[-1])
+
+            # restrict ground_truth and ground_truth_mask to the center pixels.
+            prediction_radius = self.sampling_region.interior_box_width // 2
+            center_mask = torch.zeros_like(ground_truth_mask, dtype=torch.bool, device=config.device)
+            center_mask[image_radius - prediction_radius:image_radius + prediction_radius, image_radius - prediction_radius:image_radius + prediction_radius] = True
+            ground_truth = ground_truth * center_mask
+            ground_truth_mask = ground_truth_mask * center_mask
+
+            # randomly dropout corner pixels.
+
+        return image, region_mask, ground_truth, ground_truth_mask
+
+    def obtain_random_sample_pixel_from_tile(self, tile_id: str):
+        assert model_data_manager.data_information.loc[tile_id, "source_wsi"] == self.wsi_id, "The tile_id must belong to the current wsi_id!"
+
+        x = model_data_manager.data_information.loc[tile_id, "i"]
+        y = model_data_manager.data_information.loc[tile_id, "j"]
+
+        pixels = self.sampling_region.get_interior_pixels_mask(x, x+512, y, y+512)
+        locs = np.argwhere(pixels)
+        loc = locs[np.random.randint(0, locs.shape[0])]
+
+        del pixels, locs
+        gc.collect()
+
+        return x + loc[1], y + loc[0] # x, y
+
+
+    def obtain_random_image_from_tile(self, tile_id: str, image_width: int):
+        x, y = self.obtain_random_sample_pixel_from_tile(tile_id)
+
+        with torch.no_grad():
+            return self.obtain_image_with_augmentation(x, y, image_width)
 
 
 if not os.path.isdir(folder):
@@ -332,12 +510,123 @@ if not os.path.isfile(os.path.join(folder, "data.hdf5")):
             r.generate_interior_pixels()
             del r
 
-with h5py.File(os.path.join(folder, "data.hdf5"), "r") as segmentation_masks:
-    for wsi_id in range(1, 3):
-        print("Generating images for wsi_{}".format(wsi_id))
-        group = segmentation_masks["wsi_{}".format(wsi_id)]
-        r = Region(wsi_id, group, writable=False)
-        r.load_from_hdf5()
-        background = images.get_whole_image(wsi_id)[..., ::-1]
-        r.save_interior_pixels_image("wsi512_{}".format(wsi_id), background)
-        r.save_rotated_interior_pixels_image("wsi512_{}_rotated".format(wsi_id), background)
+if not os.path.isfile(os.path.join(folder, "wsi512_1_region.png")):
+    with h5py.File(os.path.join(folder, "data.hdf5"), "r") as segmentation_masks:
+        for wsi_id in range(1, 3):
+            print("Generating images for wsi_{}".format(wsi_id))
+            group = segmentation_masks["wsi_{}".format(wsi_id)]
+            r = Region(wsi_id, group, writable=False)
+            r.load_from_hdf5()
+            background = images.get_whole_image(wsi_id)[..., ::-1]
+            r.save_region_image(os.path.join(folder, "wsi512_{}_region.png".format(wsi_id)), background)
+            r.save_interior_pixels_image(os.path.join(folder, "wsi512_{}_interior.png".format(wsi_id)), background)
+            r.save_rotated_interior_pixels_image(os.path.join(folder, "wsi512_{}_rotated.png".format(wsi_id)), background)
+
+all_wsi_masks = h5py.File(os.path.join(folder, "data.hdf5"), "r")
+def get_wsi_region_mask(wsi_id: int) -> Region:
+    group = all_wsi_masks["wsi_{}".format(wsi_id)]
+    r = Region(wsi_id, group, writable=False)
+    r.load_from_hdf5()
+    return r
+
+def generate_masks_from_subdata(subdata_name: str):
+    assert model_data_manager.subdata_exists(subdata_name), "The subdata {} does not exist!".format(subdata_name)
+    entries = model_data_manager.get_subdata_entry_list(subdata_name)
+    print("Generating masks, looping through unique WSIs......")
+
+    if not os.path.isdir(os.path.join(folder, subdata_name)):
+        os.mkdir(os.path.join(folder, subdata_name))
+    with h5py.File(os.path.join(folder, subdata_name, "data.hdf5"), "w") as file:
+        for wsi_id in tqdm.tqdm(model_data_manager.data_information["source_wsi"].loc[entries].unique()):
+            wsi_tiles = model_data_manager.data_information.loc[entries].loc[model_data_manager.data_information.loc[entries, "source_wsi"] == wsi_id].index
+            wsi_set = file.create_group("wsi_{}".format(wsi_id))
+
+            r = Region(wsi_id, wsi_set, writable=True)
+            r.generate_region(wsi_tiles)
+            r.generate_interior_pixels()
+            del r
+
+    print("Generating images...")
+    with h5py.File(os.path.join(folder, subdata_name, "data.hdf5"), "r") as file:
+        for wsi_id in tqdm.tqdm(model_data_manager.data_information["source_wsi"].loc[entries].unique()):
+            group = file["wsi_{}".format(wsi_id)]
+            r = Region(wsi_id, group, writable=False)
+            r.load_from_hdf5()
+            background = images.get_whole_image(wsi_id)[..., ::-1]
+
+            r.save_region_image(os.path.join(folder, subdata_name, "wsi512_{}_region.png".format(wsi_id)), background)
+            r.save_interior_pixels_image(os.path.join(folder, subdata_name, "wsi512_{}_interior.png".format(wsi_id)), background)
+            r.save_rotated_interior_pixels_image(os.path.join(folder, subdata_name, "wsi512_{}_rotated.png".format(wsi_id)), background)
+
+def get_subdata_mask(subdata_name: str):
+    assert model_data_manager.subdata_exists(subdata_name), "The subdata {} does not exist!".format(subdata_name)
+    assert os.path.isdir(os.path.join(folder, subdata_name)), "The subdata {} has not been created! Use generate_masks_from_subdata".format(subdata_name)
+    entries = model_data_manager.get_subdata_entry_list(subdata_name)
+    file = h5py.File(os.path.join(folder, subdata_name, "data.hdf5"), "r")
+    masks = {}
+    for wsi_id in model_data_manager.data_information["source_wsi"].loc[entries].unique():
+        masks[wsi_id] = Region(wsi_id, file["wsi_{}".format(wsi_id)], writable=False)
+        masks[wsi_id].load_from_hdf5()
+    return masks
+
+def generate_image_example(sampler: ImageSampler, tile: str, num: int) -> float:
+    ctime = time.time()
+    image, region_mask, ground_truth, ground_truth_mask = sampler.obtain_random_image_from_tile(tile, 1024)
+    ctime = time.time() - ctime
+
+    image = image.detach().cpu().numpy().transpose(1, 2, 0).astype(np.uint8)
+    region_mask = region_mask.detach().cpu().numpy().astype(np.uint8) * 255
+    region_mask = np.repeat(np.expand_dims(region_mask, axis=-1), axis=-1, repeats=3)
+
+    ground_truth = ground_truth.detach().cpu().numpy()
+    ground_truth_mask = ground_truth_mask.detach().cpu().numpy().astype(np.uint8) * 255
+    ground_truth_mask = np.repeat(np.expand_dims(ground_truth_mask, axis=-1), axis=-1, repeats=3)
+    classes_image = np.zeros_like(image, dtype=np.uint8)
+
+    # convert ground_truth to hsv
+    hue_mask = (255 * ground_truth.astype(np.float32) / 3).astype(np.uint8)
+    saturation_mask = ((ground_truth > 0).astype(np.float32) * 255).astype(np.uint8)
+    value_mask = saturation_mask
+
+    classes_image[:, :, 0] = hue_mask
+    classes_image[:, :, 1] = saturation_mask
+    classes_image[:, :, 2] = value_mask
+
+    classes_image = cv2.cvtColor(classes_image, cv2.COLOR_HSV2BGR)
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+
+    image = cv2.addWeighted(image, 0.5, region_mask, 0.5, 0)
+    classes_image = cv2.addWeighted(classes_image, 0.5, ground_truth_mask, 0.5, 0)
+
+    # save images
+    if not os.path.isdir(os.path.join(folder, "examples")):
+        os.mkdir(os.path.join(folder, "examples"))
+    cv2.imwrite(os.path.join(folder, "examples", "{}_{}_image.png".format(tile, num)), image)
+    cv2.imwrite(os.path.join(folder, "examples", "{}_{}_classes.png".format(tile, num)), classes_image)
+
+    return ctime
+
+if __name__ == "__main__":
+    #generate_masks_from_subdata("dataset1_split1")
+    #generate_masks_from_subdata("dataset1_split2")
+    #generate_masks_from_subdata("dataset1_regional_split1")
+    #generate_masks_from_subdata("dataset1_regional_split2")
+
+    mask1 = get_subdata_mask("dataset1_regional_split1")
+    sampler = ImageSampler(get_wsi_region_mask(1), mask1[1], obtain_reconstructed_binary_segmentation.get_default_WSI_mask(1))
+
+    tiles = ["5ac25a1e40dd", "39b8aafd630b", "8e90e6189c6b", "f45a29109ff5"]
+    all_time_elapsed = []
+    for tile in tiles:
+        print("Sampling from tile {}".format(tile))
+        for i in tqdm.tqdm(range(10)):
+            time_elapsed = generate_image_example(sampler, tile, i)
+            all_time_elapsed.append(time_elapsed)
+
+    all_time_elapsed = np.array(all_time_elapsed)
+    print("Average time elapsed: {} seconds".format(np.mean(all_time_elapsed)))
+    print("Median time elapsed: {} seconds".format(np.median(all_time_elapsed)))
+    print("Min time elapsed: {} seconds".format(np.min(all_time_elapsed)))
+    print("Max time elapsed: {} seconds".format(np.max(all_time_elapsed)))
+    print("First time elapsed: {} seconds".format(all_time_elapsed[0]))
+    print("Last time elapsed: {} seconds".format(all_time_elapsed[-1]))

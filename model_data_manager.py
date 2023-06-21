@@ -109,6 +109,9 @@ def get_entry_index_by_intid(intid: np.ndarray):
 def get_intid_by_entry_index(entry_index: pd.Index):
     return entries_index_to_int_map.loc[entry_index].to_numpy()
 
+def sort_index_list(index_list: list):
+    return list(get_entry_index_by_intid(np.unique(get_intid_by_entry_index(pd.Index(index_list)))))
+
 def get_intersection(x: np.ndarray, y: np.ndarray):
     assert np.all(x[:-1] <= x[1:])
     assert np.all(y[:-1] <= y[1:])
@@ -347,6 +350,19 @@ def transform_get_argparse_arguments(args, requires_model=True) -> (DatasetDataL
 
 def subdata_exists(subdata_name):
     return os.path.exists(os.path.join(subdata_dir, subdata_name + ".json"))
+
+def create_subdata(subdata_name, entry_list, message: str):
+    assert not subdata_exists(subdata_name), "Subdata already exists!"
+    subdata_information = {
+        "entry_list": entry_list,
+        "stratification": message,
+        "wsi_restriction": message,
+        "dataset_restriction": message,
+        "prior_subdata": message,
+        "number_of_subdata": message,
+    }
+    with open(os.path.join(subdata_dir, subdata_name + ".json"), "w") as json_file:
+        json.dump(subdata_information, json_file, indent=4)
 
 def generate_subdata_interactive(subdata_name):
     all_wsi = list(data_information["source_wsi"].unique())
@@ -604,6 +620,7 @@ if __name__ == "__main__":
     """Interactive command line interface to manage models / datasets.
     Commands: help, list model, list dataset, list subdata, remove model, remove dataset, remove subdata, generate subdata, quit"""
     parser = argparse.ArgumentParser(description="Interactive command line interface to manage models / datasets.")
+    print("To generate subdata with custom scripts, modify the base script model_data_subdata_custom.py")
 
     args = parser.parse_args()
 

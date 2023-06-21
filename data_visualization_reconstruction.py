@@ -51,7 +51,7 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         self.tab_widget = PyQt5.QtWidgets.QTabWidget()
         self.tab_widget.addTab(self.create_tab(1), "WSI_1")
         self.tab_widget.addTab(self.create_tab(2), "WSI_2")
-        self.tab_widget.addTab(self.create_tab(3), "WSI_3")
+        """self.tab_widget.addTab(self.create_tab(3), "WSI_3")
         self.tab_widget.addTab(self.create_tab(4), "WSI_4")
         self.tab_widget.addTab(self.create_tab(6), "WSI_6")
         self.tab_widget.addTab(self.create_tab(7), "WSI_7")
@@ -61,7 +61,7 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         self.tab_widget.addTab(self.create_tab(11), "WSI_11")
         self.tab_widget.addTab(self.create_tab(12), "WSI_12")
         self.tab_widget.addTab(self.create_tab(13), "WSI_13")
-        self.tab_widget.addTab(self.create_tab(14), "WSI_14")
+        self.tab_widget.addTab(self.create_tab(14), "WSI_14")"""
 
         # Create the layout and add the tab widget and the button
         layout = PyQt5.QtWidgets.QVBoxLayout()

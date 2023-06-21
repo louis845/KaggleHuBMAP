@@ -201,3 +201,10 @@ if __name__ == '__main__':
                 # save the image with grids
                 obtain_reconstructed_wsi_images.draw_grids(image_np)
                 cv2.imwrite(os.path.join("segmentation_reconstructed_data", "wsi_{}_grids.png".format(wsi_id)), image_np)
+else:
+    if not os.path.isfile(os.path.join("segmentation_reconstructed_data", "combined_masks.hdf5")):
+        raise ValueError("Cannot find combined_masks.hdf5 in segmentation_reconstructed_data folder. You should run obtain_reconstructed_wsi_masks.py first.")
+
+    default_masks_file = h5py.File(os.path.join("segmentation_reconstructed_data", "combined_masks.hdf5"), "r")
+    def get_default_WSI_mask(wsi_id: int) -> WSIMask:
+        return WSIMask(default_masks_file, wsi_id)
