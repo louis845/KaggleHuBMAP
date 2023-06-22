@@ -95,6 +95,7 @@ class MultipleImageSamplerAsync:
                 self.image_available_lock.release()
                 buffer_image_available = False
 
+            time.sleep(0.01)
 
             run_time += 1
             if run_time % 100 == 0:
@@ -160,6 +161,7 @@ if __name__ == "__main__":
         print("Sampling from tile {}".format(tile))
         for i in tqdm.tqdm(range(10)):
             time_elapsed = generate_image_example(sampler, tile, i)
+            time.sleep(0.4)
             all_time_elapsed.append(time_elapsed)
 
     all_time_elapsed = np.array(all_time_elapsed)

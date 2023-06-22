@@ -665,8 +665,9 @@ if __name__ == "__main__":
     all_time_elapsed = []
     for tile in tiles:
         print("Sampling from tile {}".format(tile))
-        for i in tqdm.tqdm(range(20)):
+        for i in tqdm.tqdm(range(10)):
             time_elapsed = generate_image_example(sampler, tile, i)
+            time.sleep(0.4)
             all_time_elapsed.append(time_elapsed)
 
     all_time_elapsed = np.array(all_time_elapsed)
