@@ -589,14 +589,14 @@ def get_subdata_mask(subdata_name: str):
         masks[wsi_id].load_from_hdf5()
     return masks
 
-def get_image_sampler(subdata_name: str) -> MultipleImageSampler:
+def get_image_sampler(subdata_name: str, image_width: int) -> MultipleImageSampler:
     mask = get_subdata_mask(subdata_name)
 
     entries = model_data_manager.get_subdata_entry_list(subdata_name)
     samplers = {}
     for wsi_id in model_data_manager.data_information["source_wsi"].loc[entries].unique():
         sampler = ImageSampler(get_wsi_region_mask(wsi_id), mask[wsi_id],
-                               obtain_reconstructed_binary_segmentation.get_default_WSI_mask(wsi_id), 1024)
+                               obtain_reconstructed_binary_segmentation.get_default_WSI_mask(wsi_id), image_width)
         samplers[wsi_id] = sampler
 
     return MultipleImageSampler(samplers)

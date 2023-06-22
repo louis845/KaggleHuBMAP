@@ -14,19 +14,16 @@ torch.multiprocessing.set_start_method("fork")
 
 class MultipleImageSamplerAsync:
 
-    def __init__(self, sampler: image_wsi_sampling.MultipleImageSampler):
-        self.sampler = sampler
-        self.image_width = sampler.image_samplers[next(iter(sampler.image_samplers))].image_width
-
+    def __init__(self, subdata_name:str, image_width: int):
         image_loading_pipe_recv, self.image_loading_pipe_send = torch.multiprocessing.Pipe(duplex=False)
         self.image_available_lock = torch.multiprocessing.Lock()
         self.image_required_flag = torch.multiprocessing.Value(ctypes.c_bool, True)
         self.image_access_lock = torch.multiprocessing.Lock()
 
 
-        self.shared_image_cat = torch.Tensor(4, self.image_width, self.image_width, device="cpu", dtype=torch.float32)
-        self.shared_ground_truth = torch.Tensor(self.image_width, self.image_width, device="cpu", dtype=torch.float32)
-        self.shared_ground_truth_mask = torch.Tensor(self.image_width, self.image_width, device="cpu", dtype=torch.float32)
+        self.shared_image_cat = torch.Tensor(4, image_width, image_width, device="cpu", dtype=torch.float32)
+        self.shared_ground_truth = torch.Tensor(image_width, image_width, device="cpu", dtype=torch.float32)
+        self.shared_ground_truth_mask = torch.Tensor(image_width, image_width, device="cpu", dtype=torch.float32)
 
         self.shared_image_cat.share_memory_()
         self.shared_ground_truth.share_memory_()
@@ -34,7 +31,7 @@ class MultipleImageSamplerAsync:
 
         self.running = torch.multiprocessing.Value(ctypes.c_bool, True)
 
-        self.process = torch.multiprocessing.Process(target=self.subprocess_run, args=[image_loading_pipe_recv])
+        self.process = torch.multiprocessing.Process(target=self.subprocess_run, args=[image_loading_pipe_recv, subdata_name, image_width])
         self.process.start()
 
     def terminate(self):
@@ -64,7 +61,9 @@ class MultipleImageSamplerAsync:
         return image, ground_truth, ground_truth_mask
 
 
-    def subprocess_run(self, image_loading_pipe_recv):
+    def subprocess_run(self, image_loading_pipe_recv, subdata_name: str, image_width: int):
+        sampler = image_wsi_sampling.get_image_sampler(subdata_name, image_width)
+
         buffer_image_cat = None
         buffer_ground_truth = None
         buffer_ground_truth_mask = None
@@ -80,7 +79,7 @@ class MultipleImageSamplerAsync:
 
             if (not buffer_image_available) and (len(pending_images) > 0):
                     wsi_id = pending_images.pop(0)
-                    buffer_image_cat, buffer_ground_truth, buffer_ground_truth_mask = self.sampler.obtain_random_image_from_tile(wsi_id, device="cpu")
+                    buffer_image_cat, buffer_ground_truth, buffer_ground_truth_mask = sampler.obtain_random_image_from_tile(wsi_id, device="cpu")
                     buffer_image_available = True
 
             if self.image_required_flag.value and buffer_image_available:
@@ -100,8 +99,8 @@ class MultipleImageSamplerAsync:
 
         print("Subprocess terminating...")
 
-def get_image_sampler(subdata_name: str) -> MultipleImageSamplerAsync:
-    return MultipleImageSamplerAsync(image_wsi_sampling.get_image_sampler(subdata_name))
+def get_image_sampler(subdata_name: str, image_width=1024) -> MultipleImageSamplerAsync:
+    return MultipleImageSamplerAsync(subdata_name, image_width)
 
 def generate_image_example(sampler: MultipleImageSamplerAsync, tile: str, num: int) -> float:
     ctime = time.time()
