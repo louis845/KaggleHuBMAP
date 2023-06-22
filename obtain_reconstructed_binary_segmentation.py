@@ -206,5 +206,13 @@ else:
         raise ValueError("Cannot find combined_masks.hdf5 in segmentation_reconstructed_data folder. You should run obtain_reconstructed_wsi_masks.py first.")
 
     default_masks_file = h5py.File(os.path.join("segmentation_reconstructed_data", "combined_masks.hdf5"), "r")
-    def get_default_WSI_mask(wsi_id: int) -> WSIMask:
-        return WSIMask(default_masks_file, wsi_id)
+    def get_default_WSI_mask(wsi_id: int, use_async=None) -> WSIMask:
+        if use_async is not None:
+            use_async["obtain_reconstructed_binary_segmentation"] = {}
+            async_files = use_async["obtain_reconstructed_binary_segmentation"]
+            if "default_masks_file" not in async_files:
+                async_files["default_masks_file"] = h5py.File(os.path.join("segmentation_reconstructed_data", "combined_masks.hdf5"), "r")
+            l_default_masks_file = async_files["default_masks_file"]
+        else:
+            l_default_masks_file = default_masks_file
+        return WSIMask(l_default_masks_file, wsi_id)

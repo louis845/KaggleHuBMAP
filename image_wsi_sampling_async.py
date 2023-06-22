@@ -64,7 +64,8 @@ class MultipleImageSamplerAsync:
 
 
     def subprocess_run(self, image_loading_pipe_recv, subdata_name: str, image_width: int):
-        sampler = image_wsi_sampling.get_image_sampler(subdata_name, image_width, device="cpu")
+        print("Subprocess starting...")
+        sampler = image_wsi_sampling.get_image_sampler(subdata_name, image_width, device="cpu", use_async={})
 
         buffer_image_cat = None
         buffer_ground_truth = None

@@ -543,8 +543,17 @@ if not os.path.isfile(os.path.join(folder, "wsi512_1_region.png")):
             r.save_rotated_interior_pixels_image(os.path.join(folder, "wsi512_{}_rotated.png".format(wsi_id)), background)
 
 all_wsi_masks = h5py.File(os.path.join(folder, "data.hdf5"), "r")
-def get_wsi_region_mask(wsi_id: int) -> Region:
-    group = all_wsi_masks["wsi_{}".format(wsi_id)]
+def get_wsi_region_mask(wsi_id: int, use_async=None) -> Region:
+    if use_async is not None:
+        use_async["image_wsi_sampling"] = {}
+        async_files = use_async["image_wsi_sampling"]
+        if "all_wsi_masks" not in async_files:
+            async_files["all_wsi_masks"] = h5py.File(os.path.join(folder, "data.hdf5"), "r")
+        l_all_wsi_masks = async_files["all_wsi_masks"]
+    else:
+        l_all_wsi_masks = all_wsi_masks
+
+    group = l_all_wsi_masks["wsi_{}".format(wsi_id)]
     r = Region(wsi_id, group, writable=False)
     r.load_from_hdf5()
     return r
@@ -589,14 +598,19 @@ def get_subdata_mask(subdata_name: str):
         masks[wsi_id].load_from_hdf5()
     return masks
 
-def get_image_sampler(subdata_name: str, image_width: int, device=config.device) -> MultipleImageSampler:
+def get_image_sampler(subdata_name: str, image_width: int, device=config.device, use_async=None) -> MultipleImageSampler:
+    """
+    If use_async is not None, it should be a dict to store the default h5py files.
+    """
+    if use_async is not None:
+        assert isinstance(use_async, dict), "use_async should be a dict to store the default h5py files."
     mask = get_subdata_mask(subdata_name)
 
     entries = model_data_manager.get_subdata_entry_list(subdata_name)
     samplers = {}
     for wsi_id in model_data_manager.data_information["source_wsi"].loc[entries].unique():
-        sampler = ImageSampler(get_wsi_region_mask(wsi_id), mask[wsi_id],
-                               obtain_reconstructed_binary_segmentation.get_default_WSI_mask(wsi_id), image_width, device=device)
+        sampler = ImageSampler(get_wsi_region_mask(wsi_id, use_async), mask[wsi_id],
+                               obtain_reconstructed_binary_segmentation.get_default_WSI_mask(wsi_id, use_async), image_width, device=device)
         samplers[wsi_id] = sampler
 
     return MultipleImageSampler(samplers)
