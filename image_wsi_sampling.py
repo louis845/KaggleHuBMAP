@@ -375,7 +375,7 @@ class WSIImage:
 
 images = WSIImage()
 class ImageSampler:
-    def __init__(self, wsi_region: Region, sampling_region: Region, polygon_masks: obtain_reconstructed_binary_segmentation.WSIMask, image_width: int):
+    def __init__(self, wsi_region: Region, sampling_region: Region, polygon_masks: obtain_reconstructed_binary_segmentation.WSIMask, image_width: int, device=config.device):
         """
         :param wsi_region: The region representing the available image pixels in the WSI.
         :param sampling_region: The region representing the available ground truth mask pixels in the WSI. To enable train/test split.
@@ -395,7 +395,7 @@ class ImageSampler:
 
         image_radius = image_width // 2
         self.prediction_radius = self.sampling_region.interior_box_width // 2
-        self.center_mask = torch.zeros((image_width, image_width), dtype=torch.bool, device=config.device)
+        self.center_mask = torch.zeros((image_width, image_width), dtype=torch.bool, device=device)
         self.center_mask[image_radius - self.prediction_radius:image_radius + self.prediction_radius, image_radius - self.prediction_radius:image_radius + self.prediction_radius] = True
 
     def sample_interior_pixels(self, num_samples):
@@ -589,14 +589,14 @@ def get_subdata_mask(subdata_name: str):
         masks[wsi_id].load_from_hdf5()
     return masks
 
-def get_image_sampler(subdata_name: str, image_width: int) -> MultipleImageSampler:
+def get_image_sampler(subdata_name: str, image_width: int, device=config.device) -> MultipleImageSampler:
     mask = get_subdata_mask(subdata_name)
 
     entries = model_data_manager.get_subdata_entry_list(subdata_name)
     samplers = {}
     for wsi_id in model_data_manager.data_information["source_wsi"].loc[entries].unique():
         sampler = ImageSampler(get_wsi_region_mask(wsi_id), mask[wsi_id],
-                               obtain_reconstructed_binary_segmentation.get_default_WSI_mask(wsi_id), image_width)
+                               obtain_reconstructed_binary_segmentation.get_default_WSI_mask(wsi_id), image_width, device=device)
         samplers[wsi_id] = sampler
 
     return MultipleImageSampler(samplers)
