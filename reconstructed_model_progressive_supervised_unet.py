@@ -37,7 +37,6 @@ if __name__ == "__main__":
     parser.add_argument("--hidden_channels", type=int, default=64, help="Number of hidden channels to use. Default 64.")
     parser.add_argument("--pyramid_height", type=int, default=4, help="Number of pyramid levels to use. Default 4.")
     parser.add_argument("--unet_attention", action="store_true", help="Whether to use attention in the U-Net. Default False.")
-    parser.add_argument("--multiclass_deep_losses", type=int, default=0, help="Number of multiclass losses to use in deep layers. Default 0.")
     parser.add_argument("--deep_exponent_base", type=float, default=2.0, help="The base of the exponent for the deep supervision loss. Default 2.0.")
     parser.add_argument("--mixup", type=float, default=0.0, help="The alpha value of mixup. Default 0, meaning no mixup.")
     parser.add_argument("--image_size", type=int, default=1024, help="The size of the images to use. Default 1024.")
@@ -52,18 +51,17 @@ if __name__ == "__main__":
     training_entries = np.array(training_entries, dtype=object)
     validation_entries = np.array(validation_entries, dtype=object)
     mixup = args.mixup
-    multiclass_deep_losses = args.multiclass_deep_losses
     image_size = args.image_size
 
 
     if args.unet_attention:
-        model = model_unet_attention.UNetClassifier(num_classes=2, num_deep_multiclasses=multiclass_deep_losses,
+        model = model_unet_attention.UNetClassifier(num_classes=2, num_deep_multiclasses=args.pyramid_height - 1,
                                                     hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                     use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
                                                     in_channels=4, use_atrous_conv=args.use_atrous_conv,
                                                     deep_supervision=True).to(device=config.device)
     else:
-        model = model_unet_base.UNetClassifier(num_classes=2, num_deep_multiclasses=multiclass_deep_losses,
+        model = model_unet_base.UNetClassifier(num_classes=2, num_deep_multiclasses=args.pyramid_height - 1,
                                                 hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
                                                in_channels=4, use_atrous_conv=args.use_atrous_conv, deep_supervision=True).to(device=config.device)
@@ -109,7 +107,6 @@ if __name__ == "__main__":
         "hidden_channels": args.hidden_channels,
         "pyramid_height": args.pyramid_height,
         "unet_attention": args.unet_attention,
-        "multiclass_deep_losses": multiclass_deep_losses,
         "deep_exponent_base": deep_exponent_base,
         "mixup": mixup,
         "image_size": args.image_size,
@@ -136,6 +133,7 @@ if __name__ == "__main__":
     print("Using class weights:")
     classes = ["blood_vessel", "boundary"]
     class_weights = [1.0, 1.0]
+    num_classes = 2
     for k in range(len(classes)):
         seg_class = classes[k]
         train_history["accuracy_{}".format(seg_class)] = []
@@ -197,57 +195,46 @@ if __name__ == "__main__":
             for k in range(pyr_height - 2, -1, -1):
                 multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
 
-                if use_multiclass and k >= pyr_height - 1 - multiclass_deep_losses:
-                    k_loss = torch.nn.functional.cross_entropy(deep_outputs[k], train_image_multiclass_gt_ds_batch[pyr_height - 2 - k], reduction="sum") * multiply_scale_factor
-                else:
-                    k_loss = torch.nn.functional.binary_cross_entropy(deep_outputs[k], train_image_ground_truth_ds_batch[pyr_height - 2 - k], reduction="sum") * multiply_scale_factor
+                k_loss = torch.sum(torch.nn.functional.binary_cross_entropy(deep_outputs[k], train_image_ground_truth_deep[pyr_height - 2 - k], reduction="none")
+                         * train_image_ground_truth_mask_deep[pyr_height - 2 - k]) * multiply_scale_factor
                 loss += k_loss
 
                 total_loss_per_output[k] += k_loss.item()
 
                 with torch.no_grad():
-                    if use_multiclass and k >= pyr_height - 1 - multiclass_deep_losses:
-                        deep_class_prediction = torch.argmax(deep_outputs[k], dim=1)
-                        true_negative_per_output[k] += ((deep_class_prediction == 0) & (train_image_ground_truth_ds_batch[pyr_height - 2 - k] < 0.5)).sum().item()
-                        false_negative_per_output[k] += ((deep_class_prediction == 0) & (train_image_ground_truth_ds_batch[pyr_height - 2 - k] >= 0.5)).sum().item()
-                        true_positive_per_output[k] += ((deep_class_prediction > 0) & (train_image_ground_truth_ds_batch[pyr_height - 2 - k] >= 0.5)).sum().item()
-                        false_positive_per_output[k] += ((deep_class_prediction > 0) & (train_image_ground_truth_ds_batch[pyr_height - 2 - k] < 0.5)).sum().item()
-                        del deep_class_prediction
+                    deep_class_prediction = torch.argmax(deep_outputs[k], dim=1)
+                    if mixup > 0.0:
+                        train_image_ground_truth_deep_class = torch.argmax(train_image_ground_truth_deep[pyr_height - 2 - k], dim=1)
                     else:
-                        true_negative_per_output[k] += ((deep_outputs[k] < 0.5) & (train_image_ground_truth_ds_batch[pyr_height - 2 - k] < 0.5)).sum().item()
-                        false_negative_per_output[k] += ((deep_outputs[k] < 0.5) & (train_image_ground_truth_ds_batch[pyr_height - 2 - k] >= 0.5)).sum().item()
-                        true_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (train_image_ground_truth_ds_batch[pyr_height - 2 - k] >= 0.5)).sum().item()
-                        false_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (train_image_ground_truth_ds_batch[pyr_height - 2 - k] < 0.5)).sum().item()
+                        train_image_ground_truth_deep_class = train_image_ground_truth_deep[pyr_height - 2 - k]
+                    bool_mask = train_image_ground_truth_mask_deep[k].to(torch.bool)
+                    true_negative_per_output[k] += ((deep_class_prediction == 0) & (train_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
+                    false_negative_per_output[k] += ((deep_class_prediction == 0) & (train_image_ground_truth_deep_class > 0) & bool_mask).sum().item()
+                    true_positive_per_output[k] += ((deep_class_prediction > 0) & (train_image_ground_truth_deep_class > 0) & bool_mask).sum().item()
+                    false_positive_per_output[k] += ((deep_class_prediction > 0) & (train_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
 
-            if use_multiclass:
-                result_loss = torch.nn.functional.cross_entropy(result, train_image_multiclass_gt_batch, reduction="sum", weight=class_weights)
-            else:
-                result_loss = torch.nn.functional.binary_cross_entropy(result, train_image_ground_truth_batch, reduction="sum")
+
+            result_loss = torch.sum(torch.nn.functional.cross_entropy(result, train_image_ground_truth_batch, reduction="none", weight=class_weights) * train_image_ground_truth_mask_batch)
             loss += result_loss
 
             total_loss_per_output[-1] += result_loss.item()
             with torch.no_grad():
-                if use_multiclass:
-                    pred_labels = torch.argmax(result, dim=1)
-                    if mixup > 0.0:
-                        train_image_multiclass_gt_batch = torch.argmax(train_image_multiclass_gt_batch, dim=1)
-                    true_negative_per_output[-1] += ((pred_labels == 0) & (train_image_multiclass_gt_batch == 0)).sum().item()
-                    false_negative_per_output[-1] += ((pred_labels == 0) & (train_image_multiclass_gt_batch > 0)).sum().item()
-                    true_positive_per_output[-1] += ((pred_labels > 0) & (train_image_multiclass_gt_batch > 0)).sum().item()
-                    false_positive_per_output[-1] += ((pred_labels > 0) & (train_image_multiclass_gt_batch == 0)).sum().item()
+                pred_labels = torch.argmax(result, dim=1)
+                bool_mask = train_image_ground_truth_mask_batch.to(torch.bool)
+                if mixup > 0.0:
+                    train_image_ground_truth_batch = torch.argmax(train_image_ground_truth_batch, dim=1)
+                true_negative_per_output[-1] += ((pred_labels == 0) & (train_image_ground_truth_batch == 0) & bool_mask).sum().item()
+                false_negative_per_output[-1] += ((pred_labels == 0) & (train_image_ground_truth_batch > 0) & bool_mask).sum().item()
+                true_positive_per_output[-1] += ((pred_labels > 0) & (train_image_ground_truth_batch > 0) & bool_mask).sum().item()
+                false_positive_per_output[-1] += ((pred_labels > 0) & (train_image_ground_truth_batch == 0) & bool_mask).sum().item()
 
-                    for seg_idx in range(len(classes)):
-                        seg_class = classes[seg_idx]
-                        seg_ps = seg_idx + 1
-                        true_positive_class[seg_class] += int(torch.sum((pred_labels == seg_ps) & (train_image_multiclass_gt_batch == seg_ps)).item())
-                        true_negative_class[seg_class] += int(torch.sum((pred_labels != seg_ps) & (train_image_multiclass_gt_batch != seg_ps)).item())
-                        false_positive_class[seg_class] += int(torch.sum((pred_labels == seg_ps) & (train_image_multiclass_gt_batch != seg_ps)).item())
-                        false_negative_class[seg_class] += int(torch.sum((pred_labels != seg_ps) & (train_image_multiclass_gt_batch == seg_ps)).item())
-                else:
-                    true_negative_per_output[-1] += ((result < 0.5) & (train_image_ground_truth_batch < 0.5)).sum().item()
-                    false_negative_per_output[-1] += ((result < 0.5) & (train_image_ground_truth_batch >= 0.5)).sum().item()
-                    true_positive_per_output[-1] += ((result >= 0.5) & (train_image_ground_truth_batch >= 0.5)).sum().item()
-                    false_positive_per_output[-1] += ((result >= 0.5) & (train_image_ground_truth_batch < 0.5)).sum().item()
+                for seg_idx in range(len(classes)):
+                    seg_class = classes[seg_idx]
+                    seg_ps = seg_idx + 1
+                    true_positive_class[seg_class] += int(torch.sum((pred_labels == seg_ps) & (train_image_ground_truth_batch == seg_ps) & bool_mask).item())
+                    true_negative_class[seg_class] += int(torch.sum((pred_labels != seg_ps) & (train_image_ground_truth_batch != seg_ps) & bool_mask).item())
+                    false_positive_class[seg_class] += int(torch.sum((pred_labels == seg_ps) & (train_image_ground_truth_batch != seg_ps) & bool_mask).item())
+                    false_negative_class[seg_class] += int(torch.sum((pred_labels != seg_ps) & (train_image_ground_truth_batch == seg_ps) & bool_mask).item())
 
             loss.backward()
             optimizer.step()
@@ -270,17 +257,16 @@ if __name__ == "__main__":
         precision_per_output = np.nan_to_num(precision_per_output, nan=0.0, posinf=0.0, neginf=0.0)
         recall_per_output = np.nan_to_num(recall_per_output, nan=0.0, posinf=0.0, neginf=0.0)
 
-        if use_multiclass:
-            for seg_class in classes:
-                train_history["accuracy_" + seg_class].append((true_positive_class[seg_class] + true_negative_class[seg_class]) / (true_positive_class[seg_class] + true_negative_class[seg_class] + false_positive_class[seg_class] + false_negative_class[seg_class]))
-                if true_positive_class[seg_class] + false_positive_class[seg_class] == 0:
-                    train_history["precision_" + seg_class].append(0.0)
-                else:
-                    train_history["precision_" + seg_class].append(true_positive_class[seg_class] / (true_positive_class[seg_class] + false_positive_class[seg_class]))
-                if true_positive_class[seg_class] + false_negative_class[seg_class] == 0:
-                    train_history["recall_" + seg_class].append(0.0)
-                else:
-                    train_history["recall_" + seg_class].append(true_positive_class[seg_class] / (true_positive_class[seg_class] + false_negative_class[seg_class]))
+        for seg_class in classes:
+            train_history["accuracy_" + seg_class].append((true_positive_class[seg_class] + true_negative_class[seg_class]) / (true_positive_class[seg_class] + true_negative_class[seg_class] + false_positive_class[seg_class] + false_negative_class[seg_class]))
+            if true_positive_class[seg_class] + false_positive_class[seg_class] == 0:
+                train_history["precision_" + seg_class].append(0.0)
+            else:
+                train_history["precision_" + seg_class].append(true_positive_class[seg_class] / (true_positive_class[seg_class] + false_positive_class[seg_class]))
+            if true_positive_class[seg_class] + false_negative_class[seg_class] == 0:
+                train_history["recall_" + seg_class].append(0.0)
+            else:
+                train_history["recall_" + seg_class].append(true_positive_class[seg_class] / (true_positive_class[seg_class] + false_negative_class[seg_class]))
 
         train_history["loss_cum"].append(total_cum_loss)
         for k in range(pyr_height):
@@ -300,81 +286,68 @@ if __name__ == "__main__":
             false_negative_per_output = np.zeros(pyr_height, dtype=np.int64)
             true_positive_per_output = np.zeros(pyr_height, dtype=np.int64)
             false_positive_per_output = np.zeros(pyr_height, dtype=np.int64)
-            if use_multiclass:
-                true_negative_class, true_positive_class, false_negative_class, false_positive_class = {}, {}, {}, {}
-                for seg_class in classes:
-                    true_negative_class[seg_class], true_positive_class[seg_class], false_negative_class[seg_class], \
-                    false_positive_class[seg_class] = 0, 0, 0, 0
+            true_negative_class, true_positive_class, false_negative_class, false_positive_class = {}, {}, {}, {}
+            for seg_class in classes:
+                true_negative_class[seg_class], true_positive_class[seg_class], false_negative_class[seg_class], \
+                false_positive_class[seg_class] = 0, 0, 0, 0
 
             while tested < len(validation_entries):
-                batch_end = min(tested + val_batch_size, len(validation_entries))
+                batch_end = min(tested + batch_size, len(validation_entries))
                 batch_indices = validation_entries[tested:batch_end]
 
-                multiclass_labels_dict = class_labels_dict if use_multiclass else None
-                test_image_data_batch, test_image_ground_truth_batch, test_image_multiclass_gt_batch, test_image_ground_truth_ds_batch, \
-                    test_image_multiclass_gt_ds_batch = image_sampling.sample_images(batch_indices, dataset_loader,
-                                                                                      rotation_augmentation=False,
-                                                                                      multiclass_labels_dict=multiclass_labels_dict,
-                                                                                      deep_supervision_downsamples=pyr_height - 1)
+                test_image_cat_batch, test_image_ground_truth_batch, test_image_ground_truth_mask_batch, test_image_ground_truth_deep, test_image_ground_truth_mask_deep = \
+                    val_sampler.obtain_random_sample_batch(batch_indices, augmentation=False, deep_supervision_downsamples=pyr_height - 1)
 
-                result, deep_outputs = model(test_image_data_batch)
+                result, deep_outputs = model(test_image_cat_batch)
 
                 loss = 0.0
                 for k in range(pyr_height - 2, -1, -1):
                     multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
 
-                    if use_multiclass and k >= pyr_height - 1 - multiclass_deep_losses:
-                        k_loss = torch.nn.functional.cross_entropy(deep_outputs[k], test_image_multiclass_gt_ds_batch[pyr_height - 2 - k], reduction="sum") * multiply_scale_factor
-                    else:
-                        k_loss = torch.nn.functional.binary_cross_entropy(deep_outputs[k], test_image_ground_truth_ds_batch[pyr_height - 2 - k], reduction="sum") * multiply_scale_factor
+                    k_loss = (torch.nn.functional.cross_entropy(deep_outputs[k], test_image_ground_truth_deep[pyr_height - 2 - k], reduction="none")
+                              * test_image_ground_truth_mask_deep[pyr_height - 2 - k]) * multiply_scale_factor
                     loss += k_loss
 
                     total_loss_per_output[k] += k_loss.item()
 
-                    if use_multiclass and k >= pyr_height - 1 - multiclass_deep_losses:
-                        deep_class_prediction = torch.argmax(deep_outputs[k], dim=1)
-                        true_negative_per_output[k] += ((deep_class_prediction == 0) & (test_image_ground_truth_ds_batch[pyr_height - 2 - k] < 0.5)).sum().item()
-                        false_negative_per_output[k] += ((deep_class_prediction == 0) & (test_image_ground_truth_ds_batch[pyr_height - 2 - k] >= 0.5)).sum().item()
-                        true_positive_per_output[k] += ((deep_class_prediction > 0) & (test_image_ground_truth_ds_batch[pyr_height - 2 - k] >= 0.5)).sum().item()
-                        false_positive_per_output[k] += ((deep_class_prediction > 0) & (test_image_ground_truth_ds_batch[pyr_height - 2 - k] < 0.5)).sum().item()
-                        del deep_class_prediction
+                    deep_class_prediction = torch.argmax(deep_outputs[k], dim=1)
+                    if mixup > 0.0:
+                        test_image_ground_truth_deep_class = torch.argmax(test_image_ground_truth_deep[pyr_height - 2 - k], dim=1)
                     else:
-                        true_negative_per_output[k] += ((deep_outputs[k] < 0.5) & (test_image_ground_truth_ds_batch[pyr_height - 2 - k] < 0.5)).sum().item()
-                        false_negative_per_output[k] += ((deep_outputs[k] < 0.5) & (test_image_ground_truth_ds_batch[pyr_height - 2 - k] >= 0.5)).sum().item()
-                        true_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (test_image_ground_truth_ds_batch[pyr_height - 2 - k] >= 0.5)).sum().item()
-                        false_positive_per_output[k] += ((deep_outputs[k] >= 0.5) & (test_image_ground_truth_ds_batch[pyr_height - 2 - k] < 0.5)).sum().item()
+                        test_image_ground_truth_deep_class = test_image_ground_truth_deep[pyr_height - 2 - k]
+                    bool_mask = test_image_ground_truth_mask_deep[pyr_height - 2 - k].bool()
+                    true_negative_per_output[k] += ((deep_class_prediction == 0) & (test_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
+                    false_negative_per_output[k] += ((deep_class_prediction == 0) & (test_image_ground_truth_deep_class == 1) & bool_mask).sum().item()
+                    true_positive_per_output[k] += ((deep_class_prediction == 1) & (test_image_ground_truth_deep_class == 1) & bool_mask).sum().item()
+                    false_positive_per_output[k] += ((deep_class_prediction == 1) & (test_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
 
-                if use_multiclass:
-                    result_loss = torch.nn.functional.cross_entropy(result, test_image_multiclass_gt_batch, reduction="sum", weight=class_weights)
-                else:
-                    result_loss = torch.nn.functional.binary_cross_entropy(result, test_image_ground_truth_batch, reduction="sum")
+                result_loss = (torch.nn.functional.cross_entropy(result, test_image_ground_truth_batch, reduction="none", weight=class_weights)
+                                 * test_image_ground_truth_mask_batch).sum()
                 loss += result_loss
 
                 total_loss_per_output[-1] += result_loss.item()
 
-                if use_multiclass:
-                    pred_labels = torch.argmax(result, dim=1)
-                    true_negative_per_output[-1] += ((pred_labels == 0) & (test_image_multiclass_gt_batch == 0)).sum().item()
-                    false_negative_per_output[-1] += ((pred_labels == 0) & (test_image_multiclass_gt_batch > 0)).sum().item()
-                    true_positive_per_output[-1] += ((pred_labels > 0) & (test_image_multiclass_gt_batch > 0)).sum().item()
-                    false_positive_per_output[-1] += ((pred_labels > 0) & (test_image_multiclass_gt_batch == 0)).sum().item()
+                if mixup > 0.0:
+                    test_image_ground_truth_batch = torch.argmax(test_image_ground_truth_batch, dim=1)
 
-                    for seg_idx in range(len(classes)):
-                        seg_class = classes[seg_idx]
-                        seg_ps = seg_idx + 1
-                        true_positive_class[seg_class] += int(
-                            torch.sum((pred_labels == seg_ps) & (test_image_multiclass_gt_batch == seg_ps)).item())
-                        true_negative_class[seg_class] += int(
-                            torch.sum((pred_labels != seg_ps) & (test_image_multiclass_gt_batch != seg_ps)).item())
-                        false_positive_class[seg_class] += int(
-                            torch.sum((pred_labels == seg_ps) & (test_image_multiclass_gt_batch != seg_ps)).item())
-                        false_negative_class[seg_class] += int(
-                            torch.sum((pred_labels != seg_ps) & (test_image_multiclass_gt_batch == seg_ps)).item())
-                else:
-                    true_negative_per_output[-1] += ((result < 0.5) & (test_image_ground_truth_batch < 0.5)).sum().item()
-                    false_negative_per_output[-1] += ((result < 0.5) & (test_image_ground_truth_batch >= 0.5)).sum().item()
-                    true_positive_per_output[-1] += ((result >= 0.5) & (test_image_ground_truth_batch >= 0.5)).sum().item()
-                    false_positive_per_output[-1] += ((result >= 0.5) & (test_image_ground_truth_batch < 0.5)).sum().item()
+                pred_labels = torch.argmax(result, dim=1)
+                bool_mask = test_image_ground_truth_mask_batch.to(dtype=torch.bool)
+                true_negative_per_output[-1] += ((pred_labels == 0) & (test_image_ground_truth_batch == 0) & bool_mask).sum().item()
+                false_negative_per_output[-1] += ((pred_labels == 0) & (test_image_ground_truth_batch > 0) & bool_mask).sum().item()
+                true_positive_per_output[-1] += ((pred_labels > 0) & (test_image_ground_truth_batch > 0) & bool_mask).sum().item()
+                false_positive_per_output[-1] += ((pred_labels > 0) & (test_image_ground_truth_batch == 0) & bool_mask).sum().item()
+
+                for seg_idx in range(len(classes)):
+                    seg_class = classes[seg_idx]
+                    seg_ps = seg_idx + 1
+                    true_positive_class[seg_class] += int(
+                        torch.sum((pred_labels == seg_ps) & (test_image_ground_truth_batch == seg_ps) & bool_mask).item())
+                    true_negative_class[seg_class] += int(
+                        torch.sum((pred_labels != seg_ps) & (test_image_ground_truth_batch != seg_ps) & bool_mask).item())
+                    false_positive_class[seg_class] += int(
+                        torch.sum((pred_labels == seg_ps) & (test_image_ground_truth_batch != seg_ps) & bool_mask).item())
+                    false_negative_class[seg_class] += int(
+                        torch.sum((pred_labels != seg_ps) & (test_image_ground_truth_batch == seg_ps) & bool_mask).item())
 
                 total_cum_loss += loss.item()
 
@@ -394,17 +367,16 @@ if __name__ == "__main__":
             precision_per_output = np.nan_to_num(precision_per_output, nan=0.0, posinf=0.0, neginf=0.0)
             recall_per_output = np.nan_to_num(recall_per_output, nan=0.0, posinf=0.0, neginf=0.0)
 
-            if use_multiclass:
-                for seg_class in classes:
-                    train_history["val_accuracy_" + seg_class].append((true_positive_class[seg_class] + true_negative_class[seg_class]) / (true_positive_class[seg_class] + true_negative_class[seg_class] + false_positive_class[seg_class] + false_negative_class[seg_class]))
-                    if true_positive_class[seg_class] + false_positive_class[seg_class] == 0:
-                        train_history["val_precision_" + seg_class].append(0.0)
-                    else:
-                        train_history["val_precision_" + seg_class].append(true_positive_class[seg_class] / (true_positive_class[seg_class] + false_positive_class[seg_class]))
-                    if true_positive_class[seg_class] + false_negative_class[seg_class] == 0:
-                        train_history["val_recall_" + seg_class].append(0.0)
-                    else:
-                        train_history["val_recall_" + seg_class].append(true_positive_class[seg_class] / (true_positive_class[seg_class] + false_negative_class[seg_class]))
+            for seg_class in classes:
+                train_history["val_accuracy_" + seg_class].append((true_positive_class[seg_class] + true_negative_class[seg_class]) / (true_positive_class[seg_class] + true_negative_class[seg_class] + false_positive_class[seg_class] + false_negative_class[seg_class]))
+                if true_positive_class[seg_class] + false_positive_class[seg_class] == 0:
+                    train_history["val_precision_" + seg_class].append(0.0)
+                else:
+                    train_history["val_precision_" + seg_class].append(true_positive_class[seg_class] / (true_positive_class[seg_class] + false_positive_class[seg_class]))
+                if true_positive_class[seg_class] + false_negative_class[seg_class] == 0:
+                    train_history["val_recall_" + seg_class].append(0.0)
+                else:
+                    train_history["val_recall_" + seg_class].append(true_positive_class[seg_class] / (true_positive_class[seg_class] + false_negative_class[seg_class]))
 
             train_history["val_loss_cum"].append(total_cum_loss)
             for k in range(pyr_height):
@@ -425,14 +397,13 @@ if __name__ == "__main__":
         print("{} (Val Result Precision)".format(train_history["val_precision{}".format(pyr_height - 1)][-1]))
         print("{} (Result Recall)".format(train_history["recall{}".format(pyr_height - 1)][-1]))
         print("{} (Val Result Recall)".format(train_history["val_recall{}".format(pyr_height - 1)][-1]))
-        if use_multiclass:
-            for seg_class in classes:
-                print("{} (Accuracy {})".format(train_history["accuracy_" + seg_class][-1], seg_class))
-                print("{} (Val Accuracy {})".format(train_history["val_accuracy_" + seg_class][-1], seg_class))
-                print("{} (Precision {})".format(train_history["precision_" + seg_class][-1], seg_class))
-                print("{} (Val Precision {})".format(train_history["val_precision_" + seg_class][-1], seg_class))
-                print("{} (Recall {})".format(train_history["recall_" + seg_class][-1], seg_class))
-                print("{} (Val Recall {})".format(train_history["val_recall_" + seg_class][-1], seg_class))
+        for seg_class in classes:
+            print("{} (Accuracy {})".format(train_history["accuracy_" + seg_class][-1], seg_class))
+            print("{} (Val Accuracy {})".format(train_history["val_accuracy_" + seg_class][-1], seg_class))
+            print("{} (Precision {})".format(train_history["precision_" + seg_class][-1], seg_class))
+            print("{} (Val Precision {})".format(train_history["val_precision_" + seg_class][-1], seg_class))
+            print("{} (Recall {})".format(train_history["recall_" + seg_class][-1], seg_class))
+            print("{} (Val Recall {})".format(train_history["val_recall_" + seg_class][-1], seg_class))
         print("Learning Rate: {}".format(args.learning_rate))
         print("")
 
@@ -443,7 +414,8 @@ if __name__ == "__main__":
 
         ctime = time.time()
 
-        del train_image_data_batch, train_image_ground_truth_batch, test_image_data_batch, test_image_ground_truth_batch
+        del train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep[:], train_image_ground_truth_mask_deep[:]
+        del test_image_cat_batch, test_image_ground_truth_batch, test_image_ground_truth_mask_batch, test_image_ground_truth_deep[:], test_image_ground_truth_mask_deep[:]
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -465,10 +437,7 @@ if __name__ == "__main__":
         json.dump(model_config, f, indent=4)
 
     # Plot the training history
-    if use_multiclass:
-        fig, axes = plt.subplots(1 + 2 * pyr_height + num_classes, 1, figsize=(12, 4 + 8 * pyr_height + 4 * num_classes))
-    else:
-        fig, axes = plt.subplots(1 + 2 * pyr_height, 1, figsize=(12, 4 + 8 * pyr_height))
+    fig, axes = plt.subplots(1 + 2 * pyr_height + num_classes, 1, figsize=(12, 4 + 8 * pyr_height + 4 * num_classes))
     # Plot the cum loss
     axes[0].plot(train_history["loss_cum"], label="Train")
     axes[0].plot(train_history["val_loss_cum"], label="Validation")
@@ -495,18 +464,17 @@ if __name__ == "__main__":
         axes[2 + 2 * k].set_ylabel("Metric")
         axes[2 + 2 * k].legend()
 
-    if use_multiclass:
-        for k in range(num_classes):
-            axes[1 + 2 * pyr_height + k].plot(train_history["accuracy_" + classes[k]], label="Train Accuracy")
-            axes[1 + 2 * pyr_height + k].plot(train_history["val_accuracy_" + classes[k]], label="Validation Accuracy")
-            axes[1 + 2 * pyr_height + k].plot(train_history["precision_" + classes[k]], label="Train Precision")
-            axes[1 + 2 * pyr_height + k].plot(train_history["val_precision_" + classes[k]], label="Validation Precision")
-            axes[1 + 2 * pyr_height + k].plot(train_history["recall_" + classes[k]], label="Train Recall")
-            axes[1 + 2 * pyr_height + k].plot(train_history["val_recall_" + classes[k]], label="Validation Recall")
-            axes[1 + 2 * pyr_height + k].set_title("Accuracy, Precision, and Recall ({})".format(classes[k]))
-            axes[1 + 2 * pyr_height + k].set_xlabel("Epoch")
-            axes[1 + 2 * pyr_height + k].set_ylabel("Metric")
-            axes[1 + 2 * pyr_height + k].legend()
+    for k in range(num_classes):
+        axes[1 + 2 * pyr_height + k].plot(train_history["accuracy_" + classes[k]], label="Train Accuracy")
+        axes[1 + 2 * pyr_height + k].plot(train_history["val_accuracy_" + classes[k]], label="Validation Accuracy")
+        axes[1 + 2 * pyr_height + k].plot(train_history["precision_" + classes[k]], label="Train Precision")
+        axes[1 + 2 * pyr_height + k].plot(train_history["val_precision_" + classes[k]], label="Validation Precision")
+        axes[1 + 2 * pyr_height + k].plot(train_history["recall_" + classes[k]], label="Train Recall")
+        axes[1 + 2 * pyr_height + k].plot(train_history["val_recall_" + classes[k]], label="Validation Recall")
+        axes[1 + 2 * pyr_height + k].set_title("Accuracy, Precision, and Recall ({})".format(classes[k]))
+        axes[1 + 2 * pyr_height + k].set_xlabel("Epoch")
+        axes[1 + 2 * pyr_height + k].set_ylabel("Metric")
+        axes[1 + 2 * pyr_height + k].legend()
 
     plt.tight_layout()
     plt.savefig(os.path.join(model_dir, "train_history.png"))
