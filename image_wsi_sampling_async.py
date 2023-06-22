@@ -21,9 +21,9 @@ class MultipleImageSamplerAsync:
         self.image_access_lock = torch.multiprocessing.Lock()
 
 
-        self.shared_image_cat = torch.Tensor(4, image_width, image_width, device="cpu", dtype=torch.float32)
-        self.shared_ground_truth = torch.Tensor(image_width, image_width, device="cpu", dtype=torch.float32)
-        self.shared_ground_truth_mask = torch.Tensor(image_width, image_width, device="cpu", dtype=torch.float32)
+        self.shared_image_cat = torch.zeros((4, image_width, image_width), device="cpu", dtype=torch.float32)
+        self.shared_ground_truth = torch.zeros((image_width, image_width), device="cpu", dtype=torch.float32)
+        self.shared_ground_truth_mask = torch.zeros((image_width, image_width), device="cpu", dtype=torch.float32)
 
         self.shared_image_cat.share_memory_()
         self.shared_ground_truth.share_memory_()
