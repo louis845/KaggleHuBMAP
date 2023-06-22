@@ -89,7 +89,6 @@ if __name__ == "__main__":
     augmentation = args.augmentation
     epochs_per_save = args.epochs_per_save
     image_pixels_round = 2 ** args.pyramid_height
-    in_channels = args.in_channels
     pyr_height = args.pyramid_height
     deep_exponent_base = args.deep_exponent_base
 
