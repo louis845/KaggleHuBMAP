@@ -20,6 +20,7 @@ class MultipleImageSamplerAsync:
         self.image_available_lock = torch.multiprocessing.Lock()
         self.image_required_flag = torch.multiprocessing.Value(ctypes.c_bool, True)
         self.image_access_lock = torch.multiprocessing.Lock()
+        self.image_available_lock.acquire(block=True)
 
 
         self.shared_image_cat = torch.zeros((4, image_width, image_width), device="cpu", dtype=torch.float32)
