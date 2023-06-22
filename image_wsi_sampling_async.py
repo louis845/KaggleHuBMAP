@@ -9,6 +9,7 @@ import cv2
 import tqdm
 
 import image_wsi_sampling
+import config
 
 torch.multiprocessing.set_start_method("fork")
 
@@ -104,7 +105,7 @@ def get_image_sampler(subdata_name: str, image_width=1024) -> MultipleImageSampl
 
 def generate_image_example(sampler: MultipleImageSamplerAsync, tile: str, num: int) -> float:
     ctime = time.time()
-    image_comb, ground_truth, ground_truth_mask = sampler.obtain_random_image_from_tile(tile, device="cpu")
+    image_comb, ground_truth, ground_truth_mask = sampler.get_image(device=config.device)
     ctime = time.time() - ctime
 
     image = image_comb[:3, ...].detach().cpu().numpy().transpose(1, 2, 0).astype(np.uint8)
