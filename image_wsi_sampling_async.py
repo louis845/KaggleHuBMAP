@@ -82,7 +82,7 @@ class MultipleImageSamplerAsync:
 
             if (not buffer_image_available) and (len(pending_images) > 0):
                     wsi_id = pending_images.pop(0)
-                    buffer_image_cat, buffer_ground_truth, buffer_ground_truth_mask = sampler.obtain_random_image_from_tile(wsi_id, device="cpu")
+                    buffer_image_cat, buffer_ground_truth, buffer_ground_truth_mask = sampler.obtain_random_image_from_tile(wsi_id)
                     buffer_image_available = True
 
             if self.image_required_flag.value and buffer_image_available:

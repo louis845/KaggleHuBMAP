@@ -24,9 +24,10 @@ import image_wsi_sampling
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train a simple U-Net model")
+    parser = argparse.ArgumentParser(description="Train a progressively supervised U-Net model with reconstructed WSI data.")
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs to train for. Default 100.")
-    parser.add_argument("--rotation_augmentation", action="store_true", help="Whether to use rotation augmentation. Default False.")
+    parser.add_argument("--batch_size", type=int, default=1, help="Batch size to use. Default 1.")
+    parser.add_argument("--augmentation", action="store_true", help="Whether to use data augmentation. Default False.")
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate to use. Default 1e-5.")
     parser.add_argument("--optimizer", type=str, default="adam", help="Which optimizer to use. Available options: adam, sgd. Default adam.")
     parser.add_argument("--epochs_per_save", type=int, default=2, help="Number of epochs between saves. Default 2.")
@@ -35,25 +36,24 @@ if __name__ == "__main__":
     parser.add_argument("--use_atrous_conv", action="store_true", help="Whether to use atrous convolutional networks. Default False.")
     parser.add_argument("--hidden_channels", type=int, default=64, help="Number of hidden channels to use. Default 64.")
     parser.add_argument("--pyramid_height", type=int, default=4, help="Number of pyramid levels to use. Default 4.")
-    parser.add_argument("--unet_attention", action="store_true", help="Whether to use attention in the U-Net. Default False. Cannot be used with unet_plus.")
+    parser.add_argument("--unet_attention", action="store_true", help="Whether to use attention in the U-Net. Default False.")
     parser.add_argument("--multiclass_deep_losses", type=int, default=0, help="Number of multiclass losses to use in deep layers. Default 0.")
     parser.add_argument("--deep_exponent_base", type=float, default=2.0, help="The base of the exponent for the deep supervision loss. Default 2.0.")
     parser.add_argument("--mixup", type=float, default=0.0, help="The alpha value of mixup. Default 0, meaning no mixup.")
-
-    image_width = 512
-    image_height = 512
+    parser.add_argument("--image_size", type=int, default=1024, help="The size of the images to use. Default 1024.")
 
     model_data_manager.model_add_argparse_arguments(parser)
 
     args = parser.parse_args()
 
-    model_dir, dataset_loader, training_entries, validation_entries, prev_model_checkpoint_dir, extra_info = model_data_manager.model_get_argparse_arguments(args)
+    model_dir, dataset_loader, training_entries, validation_entries, prev_model_checkpoint_dir, extra_info, train_subdata, val_subdata = model_data_manager.model_get_argparse_arguments(args, return_subdata_name=True)
     assert type(training_entries) == list
     assert type(validation_entries) == list
     training_entries = np.array(training_entries, dtype=object)
     validation_entries = np.array(validation_entries, dtype=object)
     mixup = args.mixup
     multiclass_deep_losses = args.multiclass_deep_losses
+    image_size = args.image_size
 
 
     if args.unet_attention:
@@ -87,7 +87,8 @@ if __name__ == "__main__":
             g['lr'] = args.learning_rate
 
     num_epochs = args.epochs
-    rotation_augmentation = args.rotation_augmentation
+    batch_size = args.batch_size
+    augmentation = args.augmentation
     epochs_per_save = args.epochs_per_save
     image_pixels_round = 2 ** args.pyramid_height
     in_channels = args.in_channels
@@ -95,9 +96,10 @@ if __name__ == "__main__":
     deep_exponent_base = args.deep_exponent_base
 
     model_config = {
-        "model": "model_progressive_supervised_unet",
+        "model": "reconstructed_model_progressive_supervised_unet",
         "epochs": num_epochs,
-        "rotation_augmentation": rotation_augmentation,
+        "batch_size": batch_size,
+        "augmentation": augmentation,
         "learning_rate": args.learning_rate,
         "optimizer": args.optimizer,
         "epochs_per_save": epochs_per_save,
@@ -110,7 +112,8 @@ if __name__ == "__main__":
         "multiclass_deep_losses": multiclass_deep_losses,
         "deep_exponent_base": deep_exponent_base,
         "mixup": mixup,
-        "training_script": "model_progressive_supervised_unet.py",
+        "image_size": args.image_size,
+        "training_script": "reconstructed_model_progressive_supervised_unet.py",
     }
     for key, value in extra_info.items():
         model_config[key] = value
@@ -145,6 +148,10 @@ if __name__ == "__main__":
 
     class_weights = torch.tensor([1.0] + class_weights, dtype=torch.float32, device=config.device)
 
+    # Initialize image sampler here
+    train_sampler = image_wsi_sampling.get_image_sampler(train_subdata, image_width=image_size)
+    val_sampler = image_wsi_sampling.get_image_sampler(val_subdata, image_width=image_size)
+
     # Training loop
     for epoch in range(num_epochs):
         ctime = time.time()
@@ -169,10 +176,13 @@ if __name__ == "__main__":
         while trained < len(training_entries):
             batch_end = min(trained + batch_size, len(training_entries))
             batch_indices = training_entries_shuffle[trained:batch_end]
-
-            multiclass_labels_dict = class_labels_dict if use_multiclass else None
+            length = len(batch_indices)
             if mixup > 0.0:
                 batch_indices2 = training_entries_shuffle2[trained:batch_end]
+
+                image_cat_batch, image_ground_truth_batch, image_ground_truth_mask_batch, image_ground_truth_deep, image_ground_truth_mask_deep =\
+                    train_sampler.obtain_random_sample_with_mixup_batch(batch_indices, batch_indices2, mixup_alpha=mixup, augmentation=augmentation, deep_supervision_downsamples=pyr_height - 1)
+
                 train_image_data_batch, train_image_ground_truth_batch, train_image_multiclass_gt_batch, train_image_ground_truth_ds_batch, \
                     train_image_multiclass_gt_ds_batch = image_sampling.sample_images_mixup(batch_indices, batch_indices2, dataset_loader, mixup_alpha=mixup,
                                                                                       rotation_augmentation=rotation_augmentation,

@@ -159,9 +159,9 @@ if __name__ == '__main__':
                             raise ValueError("Unknown polygon type: {}".format(polygon_type))
 
                     combined_wsi_masks = combined_masks.create_group(wsi_group)
-                    combined_wsi_masks.create_dataset("unknown", data=combined_mask_unknown, dtype=np.uint8, compression="gzip", compression_opts=9, shape=combined_mask_unknown.shape)
-                    combined_wsi_masks.create_dataset("glomerulus", data=combined_mask_glomerulus, dtype=np.uint8, compression="gzip", compression_opts=9, shape=combined_mask_glomerulus.shape)
-                    combined_wsi_masks.create_dataset("blood_vessel", data=combined_mask_blood_vessel, dtype=np.uint8, compression="gzip", compression_opts=9, shape=combined_mask_blood_vessel.shape)
+                    combined_wsi_masks.create_dataset("unknown", data=combined_mask_unknown, dtype=np.uint8, compression="gzip", compression_opts=9, shape=combined_mask_unknown.shape, chunks=(512, 512))
+                    combined_wsi_masks.create_dataset("glomerulus", data=combined_mask_glomerulus, dtype=np.uint8, compression="gzip", compression_opts=9, shape=combined_mask_glomerulus.shape, chunks=(512, 512))
+                    combined_wsi_masks.create_dataset("blood_vessel", data=combined_mask_blood_vessel, dtype=np.uint8, compression="gzip", compression_opts=9, shape=combined_mask_blood_vessel.shape, chunks=(512, 512))
 
     gc.collect()
     # finally, we render the images

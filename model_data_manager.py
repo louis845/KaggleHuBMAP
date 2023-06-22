@@ -172,7 +172,7 @@ def model_add_argparse_arguments(parser, allow_missing_validation=False):
     parser.add_argument("--prev_model_ckpt", type=str, help="The previous model to be loaded to continue training.")
     parser.add_argument("--load_in_memory", action="store_true", help="Whether to load the data in memory.")
 
-def model_get_argparse_arguments(args, allow_missing_validation=False):
+def model_get_argparse_arguments(args, allow_missing_validation=False, return_subdata_name=False):
     model_name = args.model_name
     if model_exists(model_name):
         print("Model already exists! Pick another name.")
@@ -252,6 +252,8 @@ def model_get_argparse_arguments(args, allow_missing_validation=False):
 
     extra_info = {"dataset": dataset, "train_subdata": train_subdata, "val_subdata": val_subdata, "previous_model": str(prev_model_ckpt)}
 
+    if return_subdata_name:
+        return new_model_dir, data_loader, training_entries, validation_entries, prev_model_dir, extra_info, train_subdata, val_subdata
     return new_model_dir, data_loader, training_entries, validation_entries, prev_model_dir, extra_info
 
 def transform_add_argparse_arguments(parser, requires_model=True):
