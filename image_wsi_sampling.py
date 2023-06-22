@@ -60,7 +60,7 @@ def argmax_value2d(tensor: torch.Tensor):
 
     return i, j
 
-def obtain_mask_clearance_optimal_shape(radius: int, clearance_values: torch.Tensor, device=config.device):
+def obtain_mask_clearance_optimal_shape(radius: int, min_radius: int, clearance_values: torch.Tensor, device=config.device):
     top_clearance_values = torch.cummin(torch.flip(clearance_values[:radius], dims=[0]), dim=0)[0]
     bottom_clearance_values = torch.cummin(clearance_values[radius:], dim=0)[0]
 
@@ -69,6 +69,8 @@ def obtain_mask_clearance_optimal_shape(radius: int, clearance_values: torch.Ten
                    torch.arange(1, radius + 1, device=device, dtype=torch.int32)
 
     joint_area_clearance = joint_height * joint_clearance
+    joint_area_clearance[:, :(min_radius - 1)] = -1
+    joint_area_clearance[:(min_radius - 1), :] = -1
     joint_area_height = torch.clone(joint_area_clearance)
 
     joint_area_clearance[joint_height > joint_clearance] = -1
@@ -80,9 +82,14 @@ def obtain_mask_clearance_optimal_shape(radius: int, clearance_values: torch.Ten
     width1 = joint_clearance[top1, bottom1]
     width2 = joint_clearance[top2, bottom2]
 
+    if top1.item() == bottom1.item() == 0:
+        top1 = min_radius - 1
+        bottom1 = min_radius - 1
+        width1 = min_radius
+
     return top1, bottom1, width1, top2, bottom2, width2
 
-def obtain_mask_clearance(mask: torch.Tensor, device=config.device):
+def obtain_mask_clearance(mask: torch.Tensor, min_radius: int, device=config.device):
     assert mask.dtype == torch.bool, "Mask must be boolean"
     assert mask.shape[0] == mask.shape[1], "Mask must be square"
     assert mask.shape[0] % 2 == 0, "Mask must have even size"
@@ -113,10 +120,10 @@ def obtain_mask_clearance(mask: torch.Tensor, device=config.device):
 
     # now compute the cross mask
     cross_mask = torch.zeros(size=(mask.shape[0], mask.shape[1]), dtype=torch.bool, device=device)
-    top1, bottom1, width1, top2, bottom2, width2 = obtain_mask_clearance_optimal_shape(radius, left_clearance_values, device=device)
+    top1, bottom1, width1, top2, bottom2, width2 = obtain_mask_clearance_optimal_shape(radius, min_radius, left_clearance_values, device=device)
     cross_mask[radius - 1 - top1:radius + 1 + bottom1, radius - width1:radius] = True
     cross_mask[radius - 1 - top2:radius + 1 + bottom2, radius - width2:radius] = True
-    top1, bottom1, width1, top2, bottom2, width2 = obtain_mask_clearance_optimal_shape(radius, right_clearance_values, device=device)
+    top1, bottom1, width1, top2, bottom2, width2 = obtain_mask_clearance_optimal_shape(radius, min_radius, right_clearance_values, device=device)
     cross_mask[radius - 1 - top1:radius + 1 + bottom1, radius:radius + width1] = True
     cross_mask[radius - 1 - top2:radius + 1 + bottom2, radius:radius + width2] = True
 
@@ -265,7 +272,6 @@ class Region:
 
         obtain_reconstructed_wsi_images.draw_grids(interior_pixels)
 
-
         # Save image as PNG grayscale
         cv2.imwrite(image_path, interior_pixels)
 
@@ -278,7 +284,6 @@ class Region:
             r_interior_pixels = cv2.addWeighted(r_interior_pixels, 0.5, overlay, 0.5, 0)
 
         obtain_reconstructed_wsi_images.draw_grids(r_interior_pixels)
-
 
         # Save image as PNG grayscale
         cv2.imwrite(image_path, r_interior_pixels)
@@ -389,9 +394,9 @@ class ImageSampler:
         self.image_width = image_width
 
         image_radius = image_width // 2
-        prediction_radius = self.sampling_region.interior_box_width // 2
+        self.prediction_radius = self.sampling_region.interior_box_width // 2
         self.center_mask = torch.zeros((image_width, image_width), dtype=torch.bool, device=config.device)
-        self.center_mask[image_radius - prediction_radius:image_radius + prediction_radius, image_radius - prediction_radius:image_radius + prediction_radius] = True
+        self.center_mask[image_radius - self.prediction_radius:image_radius + self.prediction_radius, image_radius - self.prediction_radius:image_radius + self.prediction_radius] = True
 
     def sample_interior_pixels(self, num_samples):
         return self.sampling_region.sample_interior_pixels(num_samples)
@@ -455,7 +460,7 @@ class ImageSampler:
                 cat = torchvision.transforms.functional.rotate(cat, angle=rotation, fill=0.0) \
                     [:, sample_image_radius - image_radius:sample_image_radius + image_radius, sample_image_radius - image_radius:sample_image_radius + image_radius]
 
-                region_mask = torch.logical_or(obtain_mask_clearance(cat[3, ...].to(torch.bool), device=device), self.center_mask)
+                region_mask = obtain_mask_clearance(cat[3, ...].to(torch.bool), min_radius=self.prediction_radius, device=device)
                 cat *= region_mask
             else:
                 cat = self.obtain_image(x, y, image_width, device=device)
@@ -478,7 +483,7 @@ class ImageSampler:
             cat[:4, -dropouts[6]:, -dropouts[7]:] = 0.0
 
 
-        return cat[:4, ...], cat[4, ...].to(torch.long), cat[5, ...]
+        return cat[:4, ...], cat[4, ...], cat[5, ...]
 
     def obtain_random_sample_pixel_from_tile(self, tile_id: str):
         assert model_data_manager.data_information.loc[tile_id, "source_wsi"] == self.wsi_id, "The tile_id must belong to the current wsi_id!"
@@ -506,9 +511,9 @@ class MultipleImageSampler:
     def __init__(self, image_samplers: dict):
         self.image_samplers = image_samplers
 
-    def obtain_random_image_from_tile(self, tile_id: str):
+    def obtain_random_image_from_tile(self, tile_id: str, device=config.device):
         wsi_id = model_data_manager.data_information.loc[tile_id, "source_wsi"]
-        return self.image_samplers[wsi_id].obtain_random_image_from_tile(tile_id)
+        return self.image_samplers[wsi_id].obtain_random_image_from_tile(tile_id, device=device)
 
 
 if not os.path.isdir(folder):
@@ -598,7 +603,7 @@ def get_image_sampler(subdata_name: str) -> MultipleImageSampler:
 
 def generate_image_example(sampler: ImageSampler, tile: str, num: int) -> float:
     ctime = time.time()
-    image_comb, ground_truth, ground_truth_mask = sampler.obtain_random_image_from_tile(tile, device="cpu")
+    image_comb, ground_truth, ground_truth_mask = sampler.obtain_random_image_from_tile(tile)
     ctime = time.time() - ctime
 
     image = image_comb[:3, ...].detach().cpu().numpy().transpose(1, 2, 0).astype(np.uint8)
@@ -646,7 +651,7 @@ if __name__ == "__main__":
     all_time_elapsed = []
     for tile in tiles:
         print("Sampling from tile {}".format(tile))
-        for i in tqdm.tqdm(range(10)):
+        for i in tqdm.tqdm(range(20)):
             time_elapsed = generate_image_example(sampler, tile, i)
             all_time_elapsed.append(time_elapsed)
 
