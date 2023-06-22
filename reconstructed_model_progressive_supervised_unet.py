@@ -180,26 +180,18 @@ if __name__ == "__main__":
             if mixup > 0.0:
                 batch_indices2 = training_entries_shuffle2[trained:batch_end]
 
-                image_cat_batch, image_ground_truth_batch, image_ground_truth_mask_batch, image_ground_truth_deep, image_ground_truth_mask_deep =\
+                train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep, train_image_ground_truth_mask_deep =\
                     train_sampler.obtain_random_sample_with_mixup_batch(batch_indices, batch_indices2, mixup_alpha=mixup, augmentation=augmentation, deep_supervision_downsamples=pyr_height - 1)
 
-                train_image_data_batch, train_image_ground_truth_batch, train_image_multiclass_gt_batch, train_image_ground_truth_ds_batch, \
-                    train_image_multiclass_gt_ds_batch = image_sampling.sample_images_mixup(batch_indices, batch_indices2, dataset_loader, mixup_alpha=mixup,
-                                                                                      rotation_augmentation=rotation_augmentation,
-                                                                                      multiclass_labels_dict=multiclass_labels_dict, num_classes=num_classes if use_multiclass else 0,
-                                                                                      deep_supervision_downsamples=pyr_height - 1,
-                                                                                      crop_height=448, crop_width=448)
             else:
-                train_image_data_batch, train_image_ground_truth_batch, train_image_multiclass_gt_batch, train_image_ground_truth_ds_batch,\
-                    train_image_multiclass_gt_ds_batch = image_sampling.sample_images(batch_indices, dataset_loader, rotation_augmentation=rotation_augmentation,
-                                                                    multiclass_labels_dict=multiclass_labels_dict, deep_supervision_downsamples=pyr_height - 1,
-                                                                    crop_height=448, crop_width=448)
+                train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep, train_image_ground_truth_mask_deep = \
+                    train_sampler.obtain_random_sample_batch(batch_indices, augmentation=augmentation, deep_supervision_downsamples=pyr_height - 1)
 
             gc.collect()
             torch.cuda.empty_cache()
 
             optimizer.zero_grad()
-            result, deep_outputs = model(train_image_data_batch)
+            result, deep_outputs = model(train_image_cat_batch)
 
             loss = 0.0
             for k in range(pyr_height - 2, -1, -1):

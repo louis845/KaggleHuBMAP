@@ -447,22 +447,20 @@ class ImageSampler:
         y2_int = min(self.wsi_region.region.shape[0], y2)
 
         with torch.no_grad():
-            ctime = time.time()
             image = images.get_image(self.wsi_region.wsi_id, x1_int, x2_int, y1_int, y2_int).astype(dtype=np.float32).transpose([2, 0, 1]) # float32, (0-2)
             region_mask = self.wsi_region.get_region_mask(x1_int, x2_int, y1_int, y2_int).astype(dtype=np.float32) # bool (3)
             ground_truth = self.polygons.obtain_blood_vessel_mask(x1_int, x2_int, y1_int, y2_int).astype(dtype=np.float32) # long (4)
             gt1 = self.sampling_region.get_region_mask(x1_int, x2_int, y1_int, y2_int)
             gt2 = self.wsi_region.get_interior_pixels_mask(x1_int, x2_int, y1_int, y2_int)
-            print("Time for loading image: {}".format(time.time() - ctime))
+
             ground_truth_mask = np.logical_and(gt1, gt2).astype(dtype=np.float32) # bool (5)
 
-            ctime = time.time()
+
             cat = np.concatenate([image, np.expand_dims(region_mask, axis=0), np.expand_dims(ground_truth, axis=0), np.expand_dims(ground_truth_mask, axis=0)], axis=0)
             cat = torch.tensor(cat, dtype=torch.float32, device=device)
             cat[4, ...] = cat[4, ...] * cat[5, ...]
 
             cat = torch.nn.functional.pad(cat, (x1_int - x1, x2 - x2_int, y1_int - y1, y2 - y2_int))
-            print("Time for catpad image: {}".format(time.time() - ctime))
 
         return cat
 
@@ -479,28 +477,19 @@ class ImageSampler:
         with torch.no_grad():
             image_radius = image_width // 2
             if self.sampling_region.pixel_in_rotated_interior(x, y) and augmentation:
-                ctime = time.time()
                 rotation = rng.uniform(0, 360)
-                print("Time for rng.uniform: {}".format(time.time() - ctime))
 
-                ctime = time.time()
                 sample_image_radius = int(image_radius * (np.sin(np.deg2rad(rotation % 90)) + np.cos(np.deg2rad(rotation % 90))))
-                print("Time for sample_image_radius: {}".format(time.time() - ctime))
 
                 cat = self.obtain_image(x, y, sample_image_radius * 2, device=device) # image (0-2), region_mask (3), ground_truth (4), ground_truth_mask (5)
 
-                ctime = time.time()
+
                 cat = torchvision.transforms.functional.rotate(cat, angle=rotation, fill=0.0) \
                     [:, sample_image_radius - image_radius:sample_image_radius + image_radius, sample_image_radius - image_radius:sample_image_radius + image_radius]
-                print("Time for torchvision.transforms.functional.rotate: {}".format(time.time() - ctime))
 
-                ctime = time.time()
                 region_mask = obtain_mask_clearance(cat[3, ...].to(torch.bool), min_radius=self.prediction_radius, device=device)
-                print("Time for obtain_mask_clearance: {}".format(time.time() - ctime))
 
-                ctime = time.time()
                 cat *= region_mask
-                print("Time for cat *= region_mask: {}".format(time.time() - ctime))
             else:
                 cat = self.obtain_image(x, y, image_width, device=device)
 
@@ -510,28 +499,20 @@ class ImageSampler:
 
             # flip the last dimension with a 50% chance
             if augmentation and (rng.uniform(0, 1) > 0.5):
-                ctime = time.time()
                 cat = torch.flip(cat, dims=[-1])
-                print("Time for torch.flip: {}".format(time.time() - ctime))
 
             # restrict ground_truth and ground_truth_mask to the center pixels.
-            ctime = time.time()
             cat[4:6, ...] = cat[4:6, ...] * self.center_mask
-            print("Time for cat[4:6, ...] = cat[4:6, ...] * self.center_mask: {}".format(time.time() - ctime))
 
             # randomly dropout corner pixels.
             if augmentation:
-                ctime = time.time()
                 dropouts = (rng.beta(0.7, 1.0, size=(8,)) * (image_radius - self.sampling_region.interior_box_width // 2)).astype(dtype=np.int32)
                 cat[:4, :dropouts[0], :dropouts[1]] = 0.0
                 cat[:4, :dropouts[2], -dropouts[3]:] = 0.0
                 cat[:4, -dropouts[4]:, :dropouts[5]] = 0.0
                 cat[:4, -dropouts[6]:, -dropouts[7]:] = 0.0
-                print("Time for dropouts: {}".format(time.time() - ctime))
 
-        ctime = time.time()
         ret = (cat[:4, ...], cat[4, ...].to(torch.long), cat[5, ...])
-        print("Time for ret: {}".format(time.time() - ctime))
         return ret
 
     def obtain_random_sample_pixel_from_tile(self, tile_id: str):
@@ -543,7 +524,6 @@ class ImageSampler:
     def obtain_random_image_from_tile(self, tile_id: str, augmentation: bool=True):
         ctime = time.time()
         x, y = self.obtain_random_sample_pixel_from_tile(tile_id)
-        print("Time for obtain_random_sample_pixel_from_tile: {}".format(time.time() - ctime))
 
         with torch.no_grad():
             return self.obtain_image_with_augmentation(x, y, augmentation=augmentation)
