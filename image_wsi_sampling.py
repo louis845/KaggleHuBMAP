@@ -60,13 +60,13 @@ def argmax_value2d(tensor: torch.Tensor):
 
     return i, j
 
-def obtain_mask_clearance_optimal_shape(radius: int, clearance_values: torch.Tensor):
+def obtain_mask_clearance_optimal_shape(radius: int, clearance_values: torch.Tensor, device=config.device):
     top_clearance_values = torch.cummin(torch.flip(clearance_values[:radius], dims=[0]), dim=0)[0]
     bottom_clearance_values = torch.cummin(clearance_values[radius:], dim=0)[0]
 
     joint_clearance = torch.min(top_clearance_values.unsqueeze(-1), bottom_clearance_values)
-    joint_height = torch.arange(1, radius + 1, device=config.device, dtype=torch.int32).unsqueeze(-1) + \
-                   torch.arange(1, radius + 1, device=config.device, dtype=torch.int32)
+    joint_height = torch.arange(1, radius + 1, device=device, dtype=torch.int32).unsqueeze(-1) + \
+                   torch.arange(1, radius + 1, device=device, dtype=torch.int32)
 
     joint_area_clearance = joint_height * joint_clearance
     joint_area_height = torch.clone(joint_area_clearance)
@@ -82,7 +82,7 @@ def obtain_mask_clearance_optimal_shape(radius: int, clearance_values: torch.Ten
 
     return top1, bottom1, width1, top2, bottom2, width2
 
-def obtain_mask_clearance(mask: torch.Tensor):
+def obtain_mask_clearance(mask: torch.Tensor, device=config.device):
     assert mask.dtype == torch.bool, "Mask must be boolean"
     assert mask.shape[0] == mask.shape[1], "Mask must be square"
     assert mask.shape[0] % 2 == 0, "Mask must have even size"
@@ -99,24 +99,24 @@ def obtain_mask_clearance(mask: torch.Tensor):
     left_clearance_row = left_clearance[:, 0]
     right_clearance_row = right_clearance[:, 0]
 
-    dummy_true = torch.tensor([True], dtype=torch.bool, device=config.device)
+    dummy_true = torch.tensor([True], dtype=torch.bool, device=device)
 
-    left_clearance_values = torch.full(size=(mask.shape[0],), dtype=torch.long, device=config.device, fill_value=radius)
+    left_clearance_values = torch.full(size=(mask.shape[0],), dtype=torch.long, device=device, fill_value=radius)
     if left_clearance_row.shape[0] > 0:
         left_clearance = left_clearance[torch.concat([left_clearance_row[1:] > left_clearance_row[:-1], dummy_true]), :]
         left_clearance_values[left_clearance[:, 0]] = radius - left_clearance[:, 1] - 1
 
-    right_clearance_values = torch.full(size=(mask.shape[0],), dtype=torch.long, device=config.device, fill_value=radius)
+    right_clearance_values = torch.full(size=(mask.shape[0],), dtype=torch.long, device=device, fill_value=radius)
     if right_clearance_row.shape[0] > 0:
         right_clearance = right_clearance[torch.concat([dummy_true, right_clearance_row[1:] > right_clearance_row[:-1]]), :]
         right_clearance_values[right_clearance[:, 0]] = right_clearance[:, 1]
 
     # now compute the cross mask
-    cross_mask = torch.zeros(size=(mask.shape[0], mask.shape[1]), dtype=torch.bool, device=config.device)
-    top1, bottom1, width1, top2, bottom2, width2 = obtain_mask_clearance_optimal_shape(radius, left_clearance_values)
+    cross_mask = torch.zeros(size=(mask.shape[0], mask.shape[1]), dtype=torch.bool, device=device)
+    top1, bottom1, width1, top2, bottom2, width2 = obtain_mask_clearance_optimal_shape(radius, left_clearance_values, device=device)
     cross_mask[radius - 1 - top1:radius + 1 + bottom1, radius - width1:radius] = True
     cross_mask[radius - 1 - top2:radius + 1 + bottom2, radius - width2:radius] = True
-    top1, bottom1, width1, top2, bottom2, width2 = obtain_mask_clearance_optimal_shape(radius, right_clearance_values)
+    top1, bottom1, width1, top2, bottom2, width2 = obtain_mask_clearance_optimal_shape(radius, right_clearance_values, device=device)
     cross_mask[radius - 1 - top1:radius + 1 + bottom1, radius:radius + width1] = True
     cross_mask[radius - 1 - top2:radius + 1 + bottom2, radius:radius + width2] = True
 
@@ -396,7 +396,7 @@ class ImageSampler:
     def sample_interior_pixels(self, num_samples):
         return self.sampling_region.sample_interior_pixels(num_samples)
 
-    def obtain_image(self, x, y, image_width: int):
+    def obtain_image(self, x, y, image_width: int, device=config.device):
         """Obtains the image at the specified location. The x, y coordinates are the top left corner of the bottom right
             quadrant of the subimage.
 
@@ -420,24 +420,27 @@ class ImageSampler:
             image = images.get_image(self.wsi_region.wsi_id, x1_int, x2_int, y1_int, y2_int).astype(dtype=np.float32).transpose([2, 0, 1]) # float32, (0-2)
             region_mask = self.wsi_region.get_region_mask(x1_int, x2_int, y1_int, y2_int).astype(dtype=np.float32) # bool (3)
             ground_truth = self.polygons.obtain_blood_vessel_mask(x1_int, x2_int, y1_int, y2_int).astype(dtype=np.float32) # long (4)
-            ground_truth_mask = np.logical_and(self.sampling_region.get_region_mask(x1_int, x2_int, y1_int, y2_int),
-                                               self.wsi_region.get_interior_pixels_mask(x1_int, x2_int, y1_int, y2_int)).astype(dtype=np.float32)# bool (5)
+            gt1 = self.sampling_region.get_region_mask(x1_int, x2_int, y1_int, y2_int)
+            gt2 = self.wsi_region.get_interior_pixels_mask(x1_int, x2_int, y1_int, y2_int)
+            ground_truth_mask = np.logical_and(gt1, gt2).astype(dtype=np.float32) # bool (5)
 
 
             cat = np.concatenate([image, np.expand_dims(region_mask, axis=0), np.expand_dims(ground_truth, axis=0), np.expand_dims(ground_truth_mask, axis=0)], axis=0)
-            cat = torch.tensor(cat, dtype=torch.float32, device=config.device)
+            cat = torch.tensor(cat, dtype=torch.float32, device=device)
             cat[4, ...] = cat[4, ...] * cat[5, ...]
 
             cat = torch.nn.functional.pad(cat, (x1_int - x1, x2 - x2_int, y1_int - y1, y2 - y2_int))
 
         return cat
 
-    def obtain_image_with_augmentation(self, x, y):
+    def obtain_image_with_augmentation(self, x, y, device=config.device):
         """Returns:
         torch.cat([image, region_mask], dim=0): The image and region mask of shape (4, image_width, image_width), where image is rgb image and region_mask is the 0-1 region mask.
         ground_truth: A long tensor representing the ground truth semantic labels.
         ground_truth_mask: A bool tensor representing the ground truth mask.
         """
+        if self.center_mask.get_device() != device:
+            self.center_mask = self.center_mask.to(device)
 
         image_width = self.image_width
         assert image_width % 2 == 0, "The image width must be an even number!"
@@ -447,15 +450,15 @@ class ImageSampler:
                 rotation = rng.uniform(0, 360)
                 sample_image_radius = int(image_radius * (np.sin(np.deg2rad(rotation % 90)) + np.cos(np.deg2rad(rotation % 90))))
 
-                cat = self.obtain_image(x, y, sample_image_radius * 2) # image (0-2), region_mask (3), ground_truth (4), ground_truth_mask (5)
+                cat = self.obtain_image(x, y, sample_image_radius * 2, device=device) # image (0-2), region_mask (3), ground_truth (4), ground_truth_mask (5)
 
                 cat = torchvision.transforms.functional.rotate(cat, angle=rotation, fill=0.0) \
                     [:, sample_image_radius - image_radius:sample_image_radius + image_radius, sample_image_radius - image_radius:sample_image_radius + image_radius]
 
-                region_mask = torch.logical_or(obtain_mask_clearance(cat[3, ...].to(torch.bool)), self.center_mask)
+                region_mask = torch.logical_or(obtain_mask_clearance(cat[3, ...].to(torch.bool), device=device), self.center_mask)
                 cat *= region_mask
             else:
-                cat = self.obtain_image(x, y, image_width)
+                cat = self.obtain_image(x, y, image_width, device=device)
 
                 rotation = np.random.randint(0, 4) * 90
                 cat = torchvision.transforms.functional.rotate(cat, angle=rotation)
@@ -493,11 +496,11 @@ class ImageSampler:
         return x + loc[1], y + loc[0] # x, y
 
 
-    def obtain_random_image_from_tile(self, tile_id: str):
+    def obtain_random_image_from_tile(self, tile_id: str, device=config.device):
         x, y = self.obtain_random_sample_pixel_from_tile(tile_id)
 
         with torch.no_grad():
-            return self.obtain_image_with_augmentation(x, y)
+            return self.obtain_image_with_augmentation(x, y, device=device)
 
 class MultipleImageSampler:
     def __init__(self, image_samplers: dict):
@@ -581,9 +584,21 @@ def get_subdata_mask(subdata_name: str):
         masks[wsi_id].load_from_hdf5()
     return masks
 
+def get_image_sampler(subdata_name: str) -> MultipleImageSampler:
+    mask = get_subdata_mask(subdata_name)
+
+    entries = model_data_manager.get_subdata_entry_list(subdata_name)
+    samplers = {}
+    for wsi_id in model_data_manager.data_information["source_wsi"].loc[entries].unique():
+        sampler = ImageSampler(get_wsi_region_mask(wsi_id), mask[wsi_id],
+                               obtain_reconstructed_binary_segmentation.get_default_WSI_mask(wsi_id), 1024)
+        samplers[wsi_id] = sampler
+
+    return MultipleImageSampler(samplers)
+
 def generate_image_example(sampler: ImageSampler, tile: str, num: int) -> float:
     ctime = time.time()
-    image_comb, ground_truth, ground_truth_mask = sampler.obtain_random_image_from_tile(tile)
+    image_comb, ground_truth, ground_truth_mask = sampler.obtain_random_image_from_tile(tile, device="cpu")
     ctime = time.time() - ctime
 
     image = image_comb[:3, ...].detach().cpu().numpy().transpose(1, 2, 0).astype(np.uint8)
