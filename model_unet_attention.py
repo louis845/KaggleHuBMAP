@@ -46,7 +46,7 @@ class UNetEndClassifier(torch.nn.Module):
         self.num_classes = num_classes
         self.num_deep_multiclasses = num_deep_multiclasses
 
-        assert num_deep_multiclasses < pyr_height - 1, "num_deep_multiclasses must be less than pyr_height - 1"
+        assert num_deep_multiclasses <= pyr_height - 1, "num_deep_multiclasses must be less than or equal to pyr_height - 1"
         assert (num_deep_multiclasses == 0) or (num_classes > 1), "num_classes must be greater than 1 if num_deep_multiclasses > 0"
 
 
