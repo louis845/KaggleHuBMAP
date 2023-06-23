@@ -313,7 +313,7 @@ if __name__ == "__main__":
                     for k in range(pyr_height - 2, -1, -1):
                         multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
 
-                        k_loss = (torch.nn.functional.cross_entropy(deep_outputs[k], test_image_ground_truth_deep[pyr_height - 2 - k], reduction="none")
+                        k_loss = torch.sum(torch.nn.functional.cross_entropy(deep_outputs[k], test_image_ground_truth_deep[pyr_height - 2 - k], reduction="none")
                                   * test_image_ground_truth_mask_deep[pyr_height - 2 - k]) * multiply_scale_factor
                         loss += k_loss
 
@@ -330,8 +330,8 @@ if __name__ == "__main__":
                         true_positive_per_output[k] += ((deep_class_prediction == 1) & (test_image_ground_truth_deep_class == 1) & bool_mask).sum().item()
                         false_positive_per_output[k] += ((deep_class_prediction == 1) & (test_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
 
-                    result_loss = (torch.nn.functional.cross_entropy(result, test_image_ground_truth_batch, reduction="none", weight=class_weights)
-                                     * test_image_ground_truth_mask_batch).sum()
+                    result_loss = torch.sum(torch.nn.functional.cross_entropy(result, test_image_ground_truth_batch, reduction="none", weight=class_weights)
+                                     * test_image_ground_truth_mask_batch)
                     loss += result_loss
 
                     total_loss_per_output[-1] += result_loss.item()
