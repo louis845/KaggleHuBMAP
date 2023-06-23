@@ -41,6 +41,7 @@ if __name__ == "__main__":
     parser.add_argument("--mixup", type=float, default=0.0, help="The alpha value of mixup. Default 0, meaning no mixup.")
     parser.add_argument("--image_size", type=int, default=1024, help="The size of the images to use. Default 1024.")
     parser.add_argument("--use_async_sampling", type=int, default=0, help="Whether to use async sampling. Default 0, meaning no async sampling. The values represent the max buffer of the processes. If -1, the max buffer is unlimited.")
+    parser.add_argument("--num_extra_steps", type=int, default=0, help="Extra steps of gradient descent before the usual step in an epoch. Default 0.")
 
     model_data_manager.model_add_argparse_arguments(parser)
 
@@ -54,6 +55,7 @@ if __name__ == "__main__":
     mixup = args.mixup
     image_size = args.image_size
     use_async_sampling = args.use_async_sampling
+    num_extra_steps = args.num_extra_steps
 
 
     if args.unet_attention:
@@ -114,6 +116,7 @@ if __name__ == "__main__":
         "mixup": mixup,
         "image_size": args.image_size,
         "use_async_sampling": use_async_sampling,
+        "num_extra_steps": num_extra_steps,
         "training_script": "reconstructed_model_progressive_supervised_unet.py",
     }
     for key, value in extra_info.items():
@@ -202,7 +205,76 @@ if __name__ == "__main__":
         for epoch in range(num_epochs):
             ctime = time.time()
             # Train the model
-            # Split the training data into batches
+            # ----------------------------------------- Run extra steps -----------------------------------------
+            print()
+            print("Training {} extra steps...".format(num_extra_steps))
+            print()
+            for extra_step in range(num_extra_steps):
+                trained = 0
+                # Shuffle if not async. if async its loaded in another process
+                if use_async_sampling == 0:
+                    training_entries_shuffle = rng.permutation(training_entries)
+                    if mixup > 0.0:
+                        training_entries_shuffle2 = rng.permutation(training_entries)
+                else:
+                    async_request_images_train()  # else we preload the validation samples in another process
+
+                with tqdm.tqdm(total=len(training_entries)) as pbar:
+                    while trained < len(training_entries):
+                        if use_async_sampling != 0:
+                            batch_end = min(trained + batch_size, len(training_entries))
+                            batch_indices = training_entries[trained:batch_end]
+                            length = len(batch_indices)
+
+                            train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep, train_image_ground_truth_mask_deep = \
+                                train_sampler.get_samples(device=config.device, length=length)
+                        else:
+                            batch_end = min(trained + batch_size, len(training_entries))
+                            batch_indices = training_entries_shuffle[trained:batch_end]
+                            length = len(batch_indices)
+                            if mixup > 0.0:
+                                batch_indices2 = training_entries_shuffle2[trained:batch_end]
+
+                                train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep, train_image_ground_truth_mask_deep = \
+                                    train_sampler.obtain_random_sample_with_mixup_batch(batch_indices, batch_indices2,
+                                                                                        mixup_alpha=mixup,
+                                                                                        augmentation=augmentation,
+                                                                                        deep_supervision_downsamples=pyr_height - 1)
+
+                            else:
+                                train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep, train_image_ground_truth_mask_deep = \
+                                    train_sampler.obtain_random_sample_batch(batch_indices, augmentation=augmentation,
+                                                                             deep_supervision_downsamples=pyr_height - 1)
+
+                        gc.collect()
+                        torch.cuda.empty_cache()
+
+                        optimizer.zero_grad()
+                        result, deep_outputs = model(train_image_cat_batch)
+
+                        loss = 0.0
+                        for k in range(pyr_height - 2, -1, -1):
+                            multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
+
+                            k_loss = torch.sum(torch.nn.functional.cross_entropy(deep_outputs[k],
+                                                train_image_ground_truth_deep[pyr_height - 2 - k], reduction="none")
+                                                    * train_image_ground_truth_mask_deep[pyr_height - 2 - k])\
+                                        * multiply_scale_factor
+                            loss += k_loss
+
+                        result_loss = torch.sum(torch.nn.functional.cross_entropy(result, train_image_ground_truth_batch, reduction="none",
+                                                              weight=class_weights) * train_image_ground_truth_mask_batch)
+                        loss += result_loss
+                        loss.backward()
+                        optimizer.step()
+                        trained += len(batch_indices)
+
+                        gc.collect()
+                        torch.cuda.empty_cache()
+
+                        pbar.update(len(batch_indices))
+
+            # ----------------------------------------- Main training step -----------------------------------------
             trained = 0
             total_cum_loss = 0.0
             total_loss_per_output = np.zeros(pyr_height, dtype=np.float64)
@@ -343,7 +415,7 @@ if __name__ == "__main__":
             if use_async_sampling != 0:
                 async_request_images_train() # request preloading training images for next epoch
 
-            # Test the model
+            # ----------------------------------------- Test the model -----------------------------------------
             with torch.no_grad():
                 tested = 0
                 total_cum_loss = 0.0
