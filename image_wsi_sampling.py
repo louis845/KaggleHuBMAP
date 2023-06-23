@@ -697,7 +697,9 @@ def get_wsi_region_mask(wsi_id: int, use_async=None) -> Region:
         use_async["image_wsi_sampling"] = {}
         async_files = use_async["image_wsi_sampling"]
         if "all_wsi_masks" not in async_files:
+            print("Loading all_wsi_masks in subprocess...")
             async_files["all_wsi_masks"] = h5py.File(os.path.join(folder, "data.hdf5"), "r")
+            print("Loaded all_wsi_masks.")
         l_all_wsi_masks = async_files["all_wsi_masks"]
     else:
         l_all_wsi_masks = all_wsi_masks
