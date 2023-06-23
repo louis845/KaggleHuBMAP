@@ -61,12 +61,14 @@ if __name__ == "__main__":
                                                     hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                     use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
                                                     in_channels=4, use_atrous_conv=args.use_atrous_conv,
-                                                    deep_supervision=True).to(device=config.device)
+                                                    deep_supervision=True,
+                                                    res_conv_blocks=[2, 3, 4, 6, 10, 10, 10]).to(device=config.device)
     else:
         model = model_unet_base.UNetClassifier(num_classes=2, num_deep_multiclasses=args.pyramid_height - 1,
                                                 hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
-                                               in_channels=4, use_atrous_conv=args.use_atrous_conv, deep_supervision=True).to(device=config.device)
+                                               in_channels=4, use_atrous_conv=args.use_atrous_conv, deep_supervision=True,
+                                               res_conv_blocks=[2, 3, 4, 6, 10, 10, 10]).to(device=config.device)
 
     if args.optimizer.lower() == "adam":
         optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.999))

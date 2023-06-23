@@ -151,10 +151,8 @@ class ResConv(torch.nn.Module):
 
         return x
 
-
-res_conv_blocks = [2, 3, 4, 6, 10, 15, 15]
 class UNetBackbone(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, use_batch_norm=False, use_res_conv=False, use_atrous_conv=False, pyr_height=4):
+    def __init__(self, in_channels, hidden_channels, use_batch_norm=False, use_res_conv=False, use_atrous_conv=False, pyr_height=4, res_conv_blocks=[2, 3, 4, 6, 10, 15, 15]):
         super(UNetBackbone, self).__init__()
         self.pyr_height = pyr_height
         self.conv_down = torch.nn.ModuleList()
@@ -255,9 +253,9 @@ class UNetEndClassifier(torch.nn.Module):
 
 class UNetClassifier(torch.nn.Module):
 
-    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, in_channels=3, use_atrous_conv=False, deep_supervision=False, num_classes=1, num_deep_multiclasses=0):
+    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, in_channels=3, use_atrous_conv=False, deep_supervision=False, num_classes=1, num_deep_multiclasses=0, res_conv_blocks=[2, 3, 4, 6, 10, 15, 15]):
         super(UNetClassifier, self).__init__()
-        self.backbone = UNetBackbone(in_channels, hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height, use_atrous_conv=use_atrous_conv)
+        self.backbone = UNetBackbone(in_channels, hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height, use_atrous_conv=use_atrous_conv, res_conv_blocks=res_conv_blocks)
         self.classifier = UNetEndClassifier(hidden_channels, use_batch_norm=use_batch_norm, pyr_height=pyr_height, deep_supervision=deep_supervision, num_classes=num_classes, num_deep_multiclasses=num_deep_multiclasses)
         self.pyr_height = pyr_height
 
