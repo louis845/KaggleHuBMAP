@@ -206,7 +206,7 @@ if __name__ == "__main__":
                         train_image_ground_truth_deep_class = torch.argmax(train_image_ground_truth_deep[pyr_height - 2 - k], dim=1)
                     else:
                         train_image_ground_truth_deep_class = train_image_ground_truth_deep[pyr_height - 2 - k]
-                    bool_mask = train_image_ground_truth_mask_deep[k].to(torch.bool)
+                    bool_mask = train_image_ground_truth_mask_deep[pyr_height - 2 - k].to(torch.bool)
                     true_negative_per_output[k] += ((deep_class_prediction == 0) & (train_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
                     false_negative_per_output[k] += ((deep_class_prediction == 0) & (train_image_ground_truth_deep_class > 0) & bool_mask).sum().item()
                     true_positive_per_output[k] += ((deep_class_prediction > 0) & (train_image_ground_truth_deep_class > 0) & bool_mask).sum().item()

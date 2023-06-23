@@ -559,26 +559,26 @@ class MultipleImageSampler:
         batch_size = len(tile_id)
         image_size = self.image_size
         image_cat_batch = torch.zeros((batch_size, 4, image_size, image_size), dtype=torch.float32, device=config.device)
-        image_ground_truth_batch = torch.zeros((batch_size, 1, image_size, image_size), dtype=torch.long, device=config.device)
-        image_ground_truth_mask_batch = torch.zeros((batch_size, 1, image_size, image_size), dtype=torch.float32, device=config.device)
+        image_ground_truth_batch = torch.zeros((batch_size, image_size, image_size), dtype=torch.long, device=config.device)
+        image_ground_truth_mask_batch = torch.zeros((batch_size, image_size, image_size), dtype=torch.float32, device=config.device)
         if deep_supervision_downsamples > 0:
             image_ground_truth_deep = []
             image_ground_truth_mask_deep = []
             for k in range(deep_supervision_downsamples):
                 scale_factor = 2 ** (k + 1)
-                image_ground_truth_deep.append(torch.zeros((batch_size, 1, image_size // scale_factor, image_size // scale_factor), dtype=torch.long, device=config.device))
-                image_ground_truth_mask_deep.append(torch.zeros((batch_size, 1, image_size // scale_factor, image_size // scale_factor), dtype=torch.float32, device=config.device))
+                image_ground_truth_deep.append(torch.zeros((batch_size, image_size // scale_factor, image_size // scale_factor), dtype=torch.long, device=config.device))
+                image_ground_truth_mask_deep.append(torch.zeros((batch_size, image_size // scale_factor, image_size // scale_factor), dtype=torch.float32, device=config.device))
 
             for k in range(batch_size):
-                image_cat_batch[k, ...], image_ground_truth_batch[k, 0, ...], image_ground_truth_mask_batch[k, 0, ...], image_ground_truth_deep_batch, image_ground_truth_mask_deep_batch =\
+                image_cat_batch[k, ...], image_ground_truth_batch[k, ...], image_ground_truth_mask_batch[k, ...], image_ground_truth_deep_batch, image_ground_truth_mask_deep_batch =\
                     self.obtain_random_image_from_tile(tile_id[k], augmentation=augmentation, deep_supervision_downsamples=deep_supervision_downsamples)
                 for l in range(deep_supervision_downsamples):
-                    image_ground_truth_deep[l][k, 0, ...] = image_ground_truth_deep_batch[l]
-                    image_ground_truth_mask_deep[l][k, 0, ...] = image_ground_truth_mask_deep_batch[l]
+                    image_ground_truth_deep[l][k, ...] = image_ground_truth_deep_batch[l]
+                    image_ground_truth_mask_deep[l][k, ...] = image_ground_truth_mask_deep_batch[l]
             return image_cat_batch, image_ground_truth_batch, image_ground_truth_mask_batch, image_ground_truth_deep, image_ground_truth_mask_deep
         else:
             for k in range(batch_size):
-                image_cat_batch[k, ...], image_ground_truth_batch[k, 0, ...], image_ground_truth_mask_batch[k, 0, ...]=\
+                image_cat_batch[k, ...], image_ground_truth_batch[k, ...], image_ground_truth_mask_batch[k, ...]=\
                     self.obtain_random_image_from_tile(tile_id[k], augmentation=augmentation, deep_supervision_downsamples=deep_supervision_downsamples)
 
             return image_cat_batch, image_ground_truth_batch, image_ground_truth_mask_batch
@@ -630,7 +630,7 @@ class MultipleImageSampler:
         image_size = self.image_size
         image_cat_batch = torch.zeros((batch_size, 4, image_size, image_size), dtype=torch.float32, device=config.device)
         image_ground_truth_batch = torch.zeros((batch_size, 3, image_size, image_size), dtype=torch.float32, device=config.device)
-        image_ground_truth_mask_batch = torch.zeros((batch_size, 1, image_size, image_size), dtype=torch.float32, device=config.device)
+        image_ground_truth_mask_batch = torch.zeros((batch_size, image_size, image_size), dtype=torch.float32, device=config.device)
 
         if deep_supervision_downsamples > 0:
             image_ground_truth_deep = []
@@ -641,21 +641,21 @@ class MultipleImageSampler:
                     torch.zeros((batch_size, 3, image_size // scale_factor, image_size // scale_factor),
                                 dtype=torch.float32, device=config.device))
                 image_ground_truth_mask_deep.append(
-                    torch.zeros((batch_size, 1, image_size // scale_factor, image_size // scale_factor),
+                    torch.zeros((batch_size, image_size // scale_factor, image_size // scale_factor),
                                 dtype=torch.float32, device=config.device))
 
             for k in range(batch_size):
-                image_cat_batch[k, ...], image_ground_truth_batch[k, ...], image_ground_truth_mask_batch[k, 0, ...],\
+                image_cat_batch[k, ...], image_ground_truth_batch[k, ...], image_ground_truth_mask_batch[k, ...],\
                     image_ground_truth_deep_batch, image_ground_truth_mask_deep_batch = self.obtain_random_sample_with_mixup(
                         tile_id1[k], tile_id2[k], mixup_alpha, augmentation=augmentation, deep_supervision_downsamples=deep_supervision_downsamples)
                 for l in range(deep_supervision_downsamples):
                     image_ground_truth_deep[l][k, ...] = image_ground_truth_deep_batch[l]
-                    image_ground_truth_mask_deep[l][k, 0, ...] = image_ground_truth_mask_deep_batch[l]
+                    image_ground_truth_mask_deep[l][k, ...] = image_ground_truth_mask_deep_batch[l]
 
             return image_cat_batch, image_ground_truth_batch, image_ground_truth_mask_batch, image_ground_truth_deep, image_ground_truth_mask_deep
         else:
             for k in range(batch_size):
-                image_cat_batch[k, ...], image_ground_truth_batch[k, ...], image_ground_truth_mask_batch[k, 0, ...]=\
+                image_cat_batch[k, ...], image_ground_truth_batch[k, ...], image_ground_truth_mask_batch[k, ...]=\
                     self.obtain_random_sample_with_mixup(tile_id1[k], tile_id2[k], mixup_alpha, augmentation=augmentation, deep_supervision_downsamples=deep_supervision_downsamples)
             return image_cat_batch, image_ground_truth_batch, image_ground_truth_mask_batch
 
