@@ -549,9 +549,10 @@ class ImageSampler:
         return ground_truth_deep, ground_truth_mask_deep
 
 class MultipleImageSampler:
-    def __init__(self, image_samplers: dict):
+    def __init__(self, image_samplers: dict, device=config.device):
         self.image_size = image_samplers[next(iter(image_samplers.keys()))].image_width
         self.image_samplers = image_samplers
+        self.device = device
 
     def obtain_random_image_from_tile(self, tile_id: str, augmentation: bool=True, deep_supervision_downsamples=0, random_location=True):
         wsi_id = model_data_manager.data_information.loc[tile_id, "source_wsi"]
@@ -564,16 +565,16 @@ class MultipleImageSampler:
     def obtain_random_sample_batch(self, tile_id: list[str], augmentation: bool=True, deep_supervision_downsamples=0, random_location=True):
         batch_size = len(tile_id)
         image_size = self.image_size
-        image_cat_batch = torch.zeros((batch_size, 4, image_size, image_size), dtype=torch.float32, device=config.device)
-        image_ground_truth_batch = torch.zeros((batch_size, image_size, image_size), dtype=torch.long, device=config.device)
-        image_ground_truth_mask_batch = torch.zeros((batch_size, image_size, image_size), dtype=torch.float32, device=config.device)
+        image_cat_batch = torch.zeros((batch_size, 4, image_size, image_size), dtype=torch.float32, device=self.device)
+        image_ground_truth_batch = torch.zeros((batch_size, image_size, image_size), dtype=torch.long, device=self.device)
+        image_ground_truth_mask_batch = torch.zeros((batch_size, image_size, image_size), dtype=torch.float32, device=self.device)
         if deep_supervision_downsamples > 0:
             image_ground_truth_deep = []
             image_ground_truth_mask_deep = []
             for k in range(deep_supervision_downsamples):
                 scale_factor = 2 ** (k + 1)
-                image_ground_truth_deep.append(torch.zeros((batch_size, image_size // scale_factor, image_size // scale_factor), dtype=torch.long, device=config.device))
-                image_ground_truth_mask_deep.append(torch.zeros((batch_size, image_size // scale_factor, image_size // scale_factor), dtype=torch.float32, device=config.device))
+                image_ground_truth_deep.append(torch.zeros((batch_size, image_size // scale_factor, image_size // scale_factor), dtype=torch.long, device=self.device))
+                image_ground_truth_mask_deep.append(torch.zeros((batch_size, image_size // scale_factor, image_size // scale_factor), dtype=torch.float32, device=self.device))
 
             for k in range(batch_size):
                 image_cat_batch[k, ...], image_ground_truth_batch[k, ...], image_ground_truth_mask_batch[k, ...], image_ground_truth_deep_batch, image_ground_truth_mask_deep_batch =\
@@ -634,9 +635,9 @@ class MultipleImageSampler:
     def obtain_random_sample_with_mixup_batch(self, tile_id1: list[str], tile_id2: list[str], mixup_alpha=0.2, augmentation: bool=True, deep_supervision_downsamples=0):
         batch_size = len(tile_id1)
         image_size = self.image_size
-        image_cat_batch = torch.zeros((batch_size, 4, image_size, image_size), dtype=torch.float32, device=config.device)
-        image_ground_truth_batch = torch.zeros((batch_size, 3, image_size, image_size), dtype=torch.float32, device=config.device)
-        image_ground_truth_mask_batch = torch.zeros((batch_size, image_size, image_size), dtype=torch.float32, device=config.device)
+        image_cat_batch = torch.zeros((batch_size, 4, image_size, image_size), dtype=torch.float32, device=self.device)
+        image_ground_truth_batch = torch.zeros((batch_size, 3, image_size, image_size), dtype=torch.float32, device=self.device)
+        image_ground_truth_mask_batch = torch.zeros((batch_size, image_size, image_size), dtype=torch.float32, device=self.device)
 
         if deep_supervision_downsamples > 0:
             image_ground_truth_deep = []
@@ -645,10 +646,10 @@ class MultipleImageSampler:
                 scale_factor = 2 ** (k + 1)
                 image_ground_truth_deep.append(
                     torch.zeros((batch_size, 3, image_size // scale_factor, image_size // scale_factor),
-                                dtype=torch.float32, device=config.device))
+                                dtype=torch.float32, device=self.device))
                 image_ground_truth_mask_deep.append(
                     torch.zeros((batch_size, image_size // scale_factor, image_size // scale_factor),
-                                dtype=torch.float32, device=config.device))
+                                dtype=torch.float32, device=self.device))
 
             for k in range(batch_size):
                 image_cat_batch[k, ...], image_ground_truth_batch[k, ...], image_ground_truth_mask_batch[k, ...],\
@@ -764,7 +765,7 @@ def get_image_sampler(subdata_name: str, image_width: int, device=config.device,
                                obtain_reconstructed_binary_segmentation.get_default_WSI_mask(wsi_id, use_async), image_width, device=device)
         samplers[wsi_id] = sampler
 
-    return MultipleImageSampler(samplers)
+    return MultipleImageSampler(samplers, device=device)
 
 def generate_image_example(sampler: ImageSampler, tile: str, num: int) -> float:
     ctime = time.time()
@@ -809,7 +810,7 @@ if __name__ == "__main__":
     #generate_masks_from_subdata("dataset1_regional_split1")
     #generate_masks_from_subdata("dataset1_regional_split2")
 
-    """mask1 = get_subdata_mask("dataset1_regional_split1")
+    mask1 = get_subdata_mask("dataset1_regional_split1")
     sampler = ImageSampler(get_wsi_region_mask(1), mask1[1], obtain_reconstructed_binary_segmentation.get_default_WSI_mask(1), 1024)
 
     tiles = ["5ac25a1e40dd", "39b8aafd630b", "8e90e6189c6b", "f45a29109ff5"]
@@ -827,4 +828,4 @@ if __name__ == "__main__":
     print("Min time elapsed: {} seconds".format(np.min(all_time_elapsed)))
     print("Max time elapsed: {} seconds".format(np.max(all_time_elapsed)))
     print("First time elapsed: {} seconds".format(all_time_elapsed[0]))
-    print("Last time elapsed: {} seconds".format(all_time_elapsed[-1]))"""
+    print("Last time elapsed: {} seconds".format(all_time_elapsed[-1]))

@@ -211,9 +211,7 @@ else:
             use_async["obtain_reconstructed_binary_segmentation"] = {}
             async_files = use_async["obtain_reconstructed_binary_segmentation"]
             if "default_masks_file" not in async_files:
-                print("Loading default masks file in subprocess...")
                 async_files["default_masks_file"] = h5py.File(os.path.join("segmentation_reconstructed_data", "combined_masks.hdf5"), "r")
-                print("Loaded default masks file in subprocess.")
             l_default_masks_file = async_files["default_masks_file"]
         else:
             l_default_masks_file = default_masks_file
