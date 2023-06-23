@@ -424,8 +424,6 @@ class ImageSampler:
 
         image_radius = image_width // 2
         self.prediction_radius = self.sampling_region.interior_box_width // 2
-        self.center_mask = torch.zeros((image_width, image_width), dtype=torch.bool, device=device)
-        self.center_mask[image_radius - self.prediction_radius:image_radius + self.prediction_radius, image_radius - self.prediction_radius:image_radius + self.prediction_radius] = True
         self.device = device
 
     def sample_interior_pixels(self, num_samples):
@@ -507,15 +505,18 @@ class ImageSampler:
                 cat = torch.flip(cat, dims=[-1])
 
             # restrict ground_truth and ground_truth_mask to the center pixels.
-            cat[4:6, ...] = cat[4:6, ...] * self.center_mask
+            cat[4:6, :image_radius - self.prediction_radius, :] = 0.0
+            cat[4:6, image_radius + self.prediction_radius:, :] = 0.0
+            cat[4:6, :, :image_radius - self.prediction_radius] = 0.0
+            cat[4:6, :, image_radius + self.prediction_radius:] = 0.0
 
-            # randomly dropout corner pixels.
+            """# randomly dropout corner pixels.
             if augmentation:
                 dropouts = (rng.beta(0.7, 1.0, size=(8,)) * (image_radius - self.sampling_region.interior_box_width // 2)).astype(dtype=np.int32)
                 cat[:4, :dropouts[0], :dropouts[1]] = 0.0
                 cat[:4, :dropouts[2], -dropouts[3]:] = 0.0
                 cat[:4, -dropouts[4]:, :dropouts[5]] = 0.0
-                cat[:4, -dropouts[6]:, -dropouts[7]:] = 0.0
+                cat[:4, -dropouts[6]:, -dropouts[7]:] = 0.0"""
 
         ret = (cat[:4, ...], cat[4, ...].to(torch.long), cat[5, ...])
         return ret
@@ -697,9 +698,7 @@ def get_wsi_region_mask(wsi_id: int, use_async=None) -> Region:
         use_async["image_wsi_sampling"] = {}
         async_files = use_async["image_wsi_sampling"]
         if "all_wsi_masks" not in async_files:
-            print("Loading all_wsi_masks in subprocess...")
             async_files["all_wsi_masks"] = h5py.File(os.path.join(folder, "data.hdf5"), "r")
-            print("Loaded all_wsi_masks.")
         l_all_wsi_masks = async_files["all_wsi_masks"]
     else:
         l_all_wsi_masks = all_wsi_masks
@@ -755,23 +754,15 @@ def get_image_sampler(subdata_name: str, image_width: int, device=config.device,
     """
     if use_async is not None:
         assert isinstance(use_async, dict), "use_async should be a dict to store the default h5py files."
-        print("Preloading subdata mask in subprocess...")
     mask = get_subdata_mask(subdata_name)
 
-    if use_async is not None:
-        print("Getting entry list in subprocess...")
     entries = model_data_manager.get_subdata_entry_list(subdata_name)
     samplers = {}
 
-    if use_async is not None:
-        print("Getting image samplers in subprocess...")
     for wsi_id in model_data_manager.data_information["source_wsi"].loc[entries].unique():
         sampler = ImageSampler(get_wsi_region_mask(wsi_id, use_async), mask[wsi_id],
                                obtain_reconstructed_binary_segmentation.get_default_WSI_mask(wsi_id, use_async), image_width, device=device)
         samplers[wsi_id] = sampler
-
-    if use_async is not None:
-        print("Constructing multiple image sampler in subprocess...")
 
     return MultipleImageSampler(samplers)
 
