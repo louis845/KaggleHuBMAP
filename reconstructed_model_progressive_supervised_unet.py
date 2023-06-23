@@ -320,10 +320,7 @@ if __name__ == "__main__":
                         total_loss_per_output[k] += k_loss.item()
 
                         deep_class_prediction = torch.argmax(deep_outputs[k], dim=1)
-                        if mixup > 0.0:
-                            test_image_ground_truth_deep_class = torch.argmax(test_image_ground_truth_deep[pyr_height - 2 - k], dim=1)
-                        else:
-                            test_image_ground_truth_deep_class = test_image_ground_truth_deep[pyr_height - 2 - k]
+                        test_image_ground_truth_deep_class = test_image_ground_truth_deep[pyr_height - 2 - k]
                         bool_mask = test_image_ground_truth_mask_deep[pyr_height - 2 - k].bool()
                         true_negative_per_output[k] += ((deep_class_prediction == 0) & (test_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
                         false_negative_per_output[k] += ((deep_class_prediction == 0) & (test_image_ground_truth_deep_class == 1) & bool_mask).sum().item()
@@ -335,9 +332,6 @@ if __name__ == "__main__":
                     loss += result_loss
 
                     total_loss_per_output[-1] += result_loss.item()
-
-                    if mixup > 0.0:
-                        test_image_ground_truth_batch = torch.argmax(test_image_ground_truth_batch, dim=1)
 
                     pred_labels = torch.argmax(result, dim=1)
                     bool_mask = test_image_ground_truth_mask_batch.to(dtype=torch.bool)
