@@ -223,7 +223,7 @@ class Region:
         for y in tqdm.tqdm(available_row_indices):
             x_indices = np.unique(np.squeeze(np.argwhere(region[y, :]), -1))
             for x in x_indices:
-                if y >= interior_radius and y < horizontal_clearance.shape[0] - interior_radius and x >= interior_radius and x < horizontal_clearance.shape[1] - interior_radius:
+                if y >= interior_radius and y <= horizontal_clearance.shape[0] - interior_radius and x >= interior_radius and x <= horizontal_clearance.shape[1] - interior_radius:
                     if interior_pixels[y - 1, x]:
                         interior_pixels[y, x] = np.all(region[y + interior_radius - 1, x - interior_radius:x + interior_radius])
                     elif interior_pixels[y, x - 1]:
@@ -353,10 +353,15 @@ class Region:
 
         return np.array(self.interior_pixels_list[indices, :], dtype=np.int32)[..., ::-1]
 
-    def sample_interior_pixels_wsi(self, tile_id):
-        locations = self.hdf5_group["{}_table".format(tile_id)]
-        pixel = locations[np.random.randint(0, locations.shape[0]), :]
-        return pixel[1], pixel[0]
+    def sample_interior_pixels_wsi(self, tile_id, random_location: bool):
+        if random_location:
+            locations = self.hdf5_group["{}_table".format(tile_id)]
+            pixel = locations[np.random.randint(0, locations.shape[0]), :]
+            return pixel[1], pixel[0]
+        else:
+            x = model_data_manager.data_information.loc[tile_id, "i"]
+            y = model_data_manager.data_information.loc[tile_id, "j"]
+            return x, y
 
     def get_region_mask(self, x1, x2, y1, y2):
         return np.array(self.region[y1:y2, x1:x2])
@@ -515,14 +520,14 @@ class ImageSampler:
         ret = (cat[:4, ...], cat[4, ...].to(torch.long), cat[5, ...])
         return ret
 
-    def obtain_random_sample_pixel_from_tile(self, tile_id: str):
+    def obtain_random_sample_pixel_from_tile(self, tile_id: str, random_location: bool):
         assert model_data_manager.data_information.loc[tile_id, "source_wsi"] == self.wsi_id, "The tile_id must belong to the current wsi_id!"
 
-        return self.sampling_region.sample_interior_pixels_wsi(tile_id)
+        return self.sampling_region.sample_interior_pixels_wsi(tile_id, random_location=random_location)
 
 
-    def obtain_random_image_from_tile(self, tile_id: str, augmentation: bool=True):
-        x, y = self.obtain_random_sample_pixel_from_tile(tile_id)
+    def obtain_random_image_from_tile(self, tile_id: str, augmentation: bool=True, random_location=True):
+        x, y = self.obtain_random_sample_pixel_from_tile(tile_id, random_location=random_location)
 
         with torch.no_grad():
             return self.obtain_image_with_augmentation(x, y, augmentation=augmentation)
@@ -547,15 +552,15 @@ class MultipleImageSampler:
         self.image_size = image_samplers[next(iter(image_samplers.keys()))].image_width
         self.image_samplers = image_samplers
 
-    def obtain_random_image_from_tile(self, tile_id: str, augmentation: bool=True, deep_supervision_downsamples=0):
+    def obtain_random_image_from_tile(self, tile_id: str, augmentation: bool=True, deep_supervision_downsamples=0, random_location=True):
         wsi_id = model_data_manager.data_information.loc[tile_id, "source_wsi"]
-        image_cat, ground_truth, ground_truth_mask = self.image_samplers[wsi_id].obtain_random_image_from_tile(tile_id, augmentation=augmentation)
+        image_cat, ground_truth, ground_truth_mask = self.image_samplers[wsi_id].obtain_random_image_from_tile(tile_id, augmentation=augmentation, random_location=random_location)
         if deep_supervision_downsamples > 0:
             ground_truth_deep, ground_truth_mask_deep = self.image_samplers[wsi_id].obtain_deep_supervision_outputs(ground_truth, ground_truth_mask, deep_supervision_downsamples=deep_supervision_downsamples)
             return image_cat, ground_truth, ground_truth_mask, ground_truth_deep, ground_truth_mask_deep
         return image_cat, ground_truth, ground_truth_mask
 
-    def obtain_random_sample_batch(self, tile_id: list[str], augmentation: bool=True, deep_supervision_downsamples=0):
+    def obtain_random_sample_batch(self, tile_id: list[str], augmentation: bool=True, deep_supervision_downsamples=0, random_location=True):
         batch_size = len(tile_id)
         image_size = self.image_size
         image_cat_batch = torch.zeros((batch_size, 4, image_size, image_size), dtype=torch.float32, device=config.device)
@@ -571,7 +576,7 @@ class MultipleImageSampler:
 
             for k in range(batch_size):
                 image_cat_batch[k, ...], image_ground_truth_batch[k, ...], image_ground_truth_mask_batch[k, ...], image_ground_truth_deep_batch, image_ground_truth_mask_deep_batch =\
-                    self.obtain_random_image_from_tile(tile_id[k], augmentation=augmentation, deep_supervision_downsamples=deep_supervision_downsamples)
+                    self.obtain_random_image_from_tile(tile_id[k], augmentation=augmentation, deep_supervision_downsamples=deep_supervision_downsamples, random_location=random_location)
                 for l in range(deep_supervision_downsamples):
                     image_ground_truth_deep[l][k, ...] = image_ground_truth_deep_batch[l]
                     image_ground_truth_mask_deep[l][k, ...] = image_ground_truth_mask_deep_batch[l]
@@ -579,7 +584,7 @@ class MultipleImageSampler:
         else:
             for k in range(batch_size):
                 image_cat_batch[k, ...], image_ground_truth_batch[k, ...], image_ground_truth_mask_batch[k, ...]=\
-                    self.obtain_random_image_from_tile(tile_id[k], augmentation=augmentation, deep_supervision_downsamples=deep_supervision_downsamples)
+                    self.obtain_random_image_from_tile(tile_id[k], augmentation=augmentation, deep_supervision_downsamples=deep_supervision_downsamples, random_location=random_location)
 
             return image_cat_batch, image_ground_truth_batch, image_ground_truth_mask_batch
 
@@ -802,7 +807,7 @@ if __name__ == "__main__":
     #generate_masks_from_subdata("dataset1_regional_split1")
     #generate_masks_from_subdata("dataset1_regional_split2")
 
-    mask1 = get_subdata_mask("dataset1_regional_split1")
+    """mask1 = get_subdata_mask("dataset1_regional_split1")
     sampler = ImageSampler(get_wsi_region_mask(1), mask1[1], obtain_reconstructed_binary_segmentation.get_default_WSI_mask(1), 1024)
 
     tiles = ["5ac25a1e40dd", "39b8aafd630b", "8e90e6189c6b", "f45a29109ff5"]
@@ -820,4 +825,4 @@ if __name__ == "__main__":
     print("Min time elapsed: {} seconds".format(np.min(all_time_elapsed)))
     print("Max time elapsed: {} seconds".format(np.max(all_time_elapsed)))
     print("First time elapsed: {} seconds".format(all_time_elapsed[0]))
-    print("Last time elapsed: {} seconds".format(all_time_elapsed[-1]))
+    print("Last time elapsed: {} seconds".format(all_time_elapsed[-1]))"""
