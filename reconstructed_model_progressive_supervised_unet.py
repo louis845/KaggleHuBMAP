@@ -194,7 +194,7 @@ if __name__ == "__main__":
             for k in range(pyr_height - 2, -1, -1):
                 multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
 
-                k_loss = torch.sum(torch.nn.functional.binary_cross_entropy(deep_outputs[k], train_image_ground_truth_deep[pyr_height - 2 - k], reduction="none")
+                k_loss = torch.sum(torch.nn.functional.cross_entropy(deep_outputs[k], train_image_ground_truth_deep[pyr_height - 2 - k], reduction="none")
                          * train_image_ground_truth_mask_deep[pyr_height - 2 - k]) * multiply_scale_factor
                 loss += k_loss
 
