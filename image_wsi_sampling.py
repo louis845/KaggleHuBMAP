@@ -753,14 +753,23 @@ def get_image_sampler(subdata_name: str, image_width: int, device=config.device,
     """
     if use_async is not None:
         assert isinstance(use_async, dict), "use_async should be a dict to store the default h5py files."
+        print("Preloading subdata mask in subprocess...")
     mask = get_subdata_mask(subdata_name)
 
+    if use_async is not None:
+        print("Getting entry list in subprocess...")
     entries = model_data_manager.get_subdata_entry_list(subdata_name)
     samplers = {}
+
+    if use_async is not None:
+        print("Getting image samplers in subprocess...")
     for wsi_id in model_data_manager.data_information["source_wsi"].loc[entries].unique():
         sampler = ImageSampler(get_wsi_region_mask(wsi_id, use_async), mask[wsi_id],
                                obtain_reconstructed_binary_segmentation.get_default_WSI_mask(wsi_id, use_async), image_width, device=device)
         samplers[wsi_id] = sampler
+
+    if use_async is not None:
+        print("Constructing multiple image sampler in subprocess...")
 
     return MultipleImageSampler(samplers)
 
