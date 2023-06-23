@@ -522,7 +522,6 @@ class ImageSampler:
 
 
     def obtain_random_image_from_tile(self, tile_id: str, augmentation: bool=True):
-        ctime = time.time()
         x, y = self.obtain_random_sample_pixel_from_tile(tile_id)
 
         with torch.no_grad():
@@ -616,9 +615,9 @@ class MultipleImageSampler:
                 ground_truth_mask_deep = []
                 for k in range(deep_supervision_downsamples):
                     ground_truth_deep.append(
-                        lambda_interp * torch.nn.functional.one_hot(ground_truth1_deep[k]).permute(2, 0, 1).to(
+                        lambda_interp * torch.nn.functional.one_hot(ground_truth1_deep[k], num_classes=3).permute(2, 0, 1).to(
                             torch.float32)
-                        + (1 - lambda_interp) * torch.nn.functional.one_hot(ground_truth2_deep[k]).permute(2, 0, 1).to(
+                        + (1 - lambda_interp) * torch.nn.functional.one_hot(ground_truth2_deep[k], num_classes=3).permute(2, 0, 1).to(
                             torch.float32))
                     ground_truth_mask_deep.append(ground_truth_mask1_deep[k] * ground_truth_mask2_deep[k])
 
