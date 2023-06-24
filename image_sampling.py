@@ -34,7 +34,7 @@ def apply_random_shear(displacement_field, xory="x", image_size=512, image_pad=1
                 ksize=width * 2 + 1, sigma=sigma) * magnitude)[width - expand_left:width + expand_right,
             width - expand_top:width + expand_bottom, :]
 
-def generate_displacement_field(image_size=512, image_pad=1534, dtype=torch.float32, device=config.device):
+def generate_displacement_field(image_size=512, image_pad=1534, dtype=torch.float32, device=config.device, num_kernels=4):
     displacement_field = np.zeros(shape=(1, image_pad, image_pad, 2), dtype=np.float32)
 
     type = np.random.choice(5)
@@ -54,7 +54,7 @@ def generate_displacement_field(image_size=512, image_pad=1534, dtype=torch.floa
         magnitude_low = 10000.0
         magnitude_high = 16000.0
 
-    for k in range(4):
+    for k in range(num_kernels):
         apply_random_shear(displacement_field, xory="x", image_size=image_size, image_pad=image_pad, magnitude_low=magnitude_low, magnitude_high=magnitude_high)
         apply_random_shear(displacement_field, xory="y", image_size=image_size, image_pad=image_pad, magnitude_low=magnitude_low, magnitude_high=magnitude_high)
 

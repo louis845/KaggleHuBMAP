@@ -10,6 +10,7 @@ import tqdm
 import torch
 import torchvision.transforms.functional
 
+import image_sampling
 import model_data_manager
 import obtain_reconstructed_wsi_images
 import obtain_reconstructed_binary_segmentation
@@ -452,14 +453,18 @@ class ImageSampler:
         with torch.no_grad():
             image = images.get_image(self.wsi_region.wsi_id, x1_int, x2_int, y1_int, y2_int).astype(dtype=np.float32).transpose([2, 0, 1]) # float32, (0-2)
             region_mask = self.wsi_region.get_region_mask(x1_int, x2_int, y1_int, y2_int).astype(dtype=np.float32) # bool (3)
-            ground_truth = self.polygons.obtain_blood_vessel_mask(x1_int, x2_int, y1_int, y2_int).astype(dtype=np.float32) # long (4)
+            ground_truth = self.polygons.obtain_blood_vessel_mask(x1_int, x2_int, y1_int, y2_int) # long (4)
             gt1 = self.sampling_region.get_region_mask(x1_int, x2_int, y1_int, y2_int)
             gt2 = self.wsi_region.get_interior_pixels_mask(x1_int, x2_int, y1_int, y2_int)
+            gt_not = self.polygons.obtain_unknown_mask(x1_int, x2_int, y1_int, y2_int)
 
-            ground_truth_mask = np.logical_and(gt1, gt2).astype(dtype=np.float32) # bool (5)
+            # condition is that it is inside the sampling region (gt1), not on the boundary of the WSI (gt2), and either on a blood vessel polygon (ground_truth > 0)
+            # or not on an unknown polygon (gt_not == 0)
+            ground_truth_mask = np.logical_and(np.logical_and(gt1, gt2),
+                                               np.logical_or(ground_truth > 0, gt_not == 0)).astype(dtype=np.float32) # bool (5)
 
 
-            cat = np.concatenate([image, np.expand_dims(region_mask, axis=0), np.expand_dims(ground_truth, axis=0), np.expand_dims(ground_truth_mask, axis=0)], axis=0)
+            cat = np.concatenate([image, np.expand_dims(region_mask, axis=0), np.expand_dims(ground_truth.astype(dtype=np.float32), axis=0), np.expand_dims(ground_truth_mask, axis=0)], axis=0)
             cat = torch.tensor(cat, dtype=torch.float32, device=device)
             cat[4, ...] = cat[4, ...] * cat[5, ...]
 
@@ -480,18 +485,19 @@ class ImageSampler:
         with torch.no_grad():
             image_radius = image_width // 2
             if self.sampling_region.pixel_in_rotated_interior(x, y) and augmentation:
+                # apply random rotation
                 rotation = rng.uniform(0, 360)
-
                 sample_image_radius = int(image_radius * (np.sin(np.deg2rad(rotation % 90)) + np.cos(np.deg2rad(rotation % 90))))
-
                 cat = self.obtain_image(x, y, sample_image_radius * 2, device=device) # image (0-2), region_mask (3), ground_truth (4), ground_truth_mask (5)
-
-
                 cat = torchvision.transforms.functional.rotate(cat, angle=rotation, fill=0.0) \
                     [:, sample_image_radius - image_radius:sample_image_radius + image_radius, sample_image_radius - image_radius:sample_image_radius + image_radius]
 
-                region_mask = obtain_mask_clearance(cat[3, ...].to(torch.bool), min_radius=self.prediction_radius, device=device)
+                # apply random elastic deformation
+                displacement_field = image_sampling.generate_displacement_field(image_size=image_width, image_pad=image_width, dtype=torch.float32, device=self.device, num_kernels=5)
+                cat = torchvision.transforms.functional.elastic_transform(cat.unsqueeze(1), displacement_field, interpolation=torchvision.transforms.InterpolationMode.NEAREST).squeeze(1)
 
+                # restrict to more "box" like mask
+                region_mask = obtain_mask_clearance(cat[3, ...].to(torch.bool), min_radius=self.prediction_radius, device=device)
                 cat *= region_mask
             else:
                 cat = self.obtain_image(x, y, image_width, device=device)
