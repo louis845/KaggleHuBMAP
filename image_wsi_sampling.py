@@ -516,13 +516,13 @@ class ImageSampler:
             cat[4:6, :, :image_radius - self.prediction_radius] = 0.0
             cat[4:6, :, image_radius + self.prediction_radius:] = 0.0
 
-            """# randomly dropout corner pixels.
+            # randomly dropout corner pixels.
             if augmentation:
-                dropouts = (rng.beta(0.7, 1.0, size=(8,)) * (image_radius - self.sampling_region.interior_box_width // 2)).astype(dtype=np.int32)
+                dropouts = (rng.beta(0.8, 1.0, size=(8,)) * (image_radius - self.sampling_region.interior_box_width // 2)).astype(dtype=np.int32)
                 cat[:4, :dropouts[0], :dropouts[1]] = 0.0
                 cat[:4, :dropouts[2], -dropouts[3]:] = 0.0
                 cat[:4, -dropouts[4]:, :dropouts[5]] = 0.0
-                cat[:4, -dropouts[6]:, -dropouts[7]:] = 0.0"""
+                cat[:4, -dropouts[6]:, -dropouts[7]:] = 0.0
 
         ret = (cat[:4, ...], cat[4, ...].to(torch.long), cat[5, ...])
         return ret
