@@ -16,66 +16,69 @@ def subprocess_run(image_loading_pipe_recv, subdata_name: str, image_width: int,
                    image_access_lock: torch.multiprocessing.Lock, image_available_lock: torch.multiprocessing.Lock,
                    image_required_flag: torch.multiprocessing.Value, running: torch.multiprocessing.Value,
                    sampling_type:str="random_image"):
-    print("Subprocess starting...")
-    sampler = image_wsi_sampling.get_image_sampler(subdata_name, image_width, device="cpu")
+    try:
+        print("Subprocess starting...")
+        sampler = image_wsi_sampling.get_image_sampler(subdata_name, image_width, device="cpu")
 
-    buffered_outputs = []
-    pending_images = []
-    print("Subprocess running...")
+        buffered_outputs = []
+        pending_images = []
+        print("Subprocess running...")
 
-    run_time = 0
-    while running.value:
-        if image_loading_pipe_recv.poll():
-            sample_object = image_loading_pipe_recv.recv()
-            pending_images.append(sample_object)
+        run_time = 0
+        while running.value:
+            if image_loading_pipe_recv.poll():
+                sample_object = image_loading_pipe_recv.recv()
+                pending_images.append(sample_object)
 
-        if ((buffer_max_size == -1) or (len(buffered_outputs) < buffer_max_size)) and (len(pending_images) > 0):
-            sample_object = pending_images.pop(0)
-            if sampling_type == "random_image":
-                result = sampler.obtain_random_image_from_tile(sample_object) # here its wsi_tile_id
-                buffered_outputs.append(result)
-            elif sampling_type == "batch_random_image":
-                tile_ids, augmentation, random_location = sample_object # args for obtain_random_sample_batch
-                length = len(tile_ids)
-                result = sampler.obtain_random_sample_batch(tile_id=tile_ids, augmentation=augmentation, random_location=random_location)
-                buffered_outputs.append((result, length))
-            elif sampling_type == "batch_random_image_mixup":
-                tile_id1, tile_id2, mixup_alpha, augmentation = sample_object  # args for obtain_random_sample_batch
-                length = len(tile_id1)
-                result = sampler.obtain_random_sample_with_mixup_batch(tile_id1=tile_id1, tile_id2=tile_id2, mixup_alpha=mixup_alpha, augmentation=augmentation)
-                buffered_outputs.append((result, length))
+            if ((buffer_max_size == -1) or (len(buffered_outputs) < buffer_max_size)) and (len(pending_images) > 0):
+                sample_object = pending_images.pop(0)
+                if sampling_type == "random_image":
+                    result = sampler.obtain_random_image_from_tile(sample_object) # here its wsi_tile_id
+                    buffered_outputs.append(result)
+                elif sampling_type == "batch_random_image":
+                    tile_ids, augmentation, random_location = sample_object # args for obtain_random_sample_batch
+                    length = len(tile_ids)
+                    result = sampler.obtain_random_sample_batch(tile_id=tile_ids, augmentation=augmentation, random_location=random_location)
+                    buffered_outputs.append((result, length))
+                elif sampling_type == "batch_random_image_mixup":
+                    tile_id1, tile_id2, mixup_alpha, augmentation = sample_object  # args for obtain_random_sample_batch
+                    length = len(tile_id1)
+                    result = sampler.obtain_random_sample_with_mixup_batch(tile_id1=tile_id1, tile_id2=tile_id2, mixup_alpha=mixup_alpha, augmentation=augmentation)
+                    buffered_outputs.append((result, length))
 
 
-        if image_required_flag.value and len(buffered_outputs) > 0:
-            image_access_lock.acquire(block=True)
-            last_result = buffered_outputs.pop(0)
+            if image_required_flag.value and len(buffered_outputs) > 0:
+                image_access_lock.acquire(block=True)
+                last_result = buffered_outputs.pop(0)
 
-            if sampling_type == "random_image":
-                image_cat, ground_truth, ground_truth_mask = last_result
-                shared_image_cat.copy_(image_cat)
-                shared_ground_truth.copy_(ground_truth)
-                shared_ground_truth_mask.copy_(ground_truth_mask)
+                if sampling_type == "random_image":
+                    image_cat, ground_truth, ground_truth_mask = last_result
+                    shared_image_cat.copy_(image_cat)
+                    shared_ground_truth.copy_(ground_truth)
+                    shared_ground_truth_mask.copy_(ground_truth_mask)
 
-                del image_cat, ground_truth, ground_truth_mask
+                    del image_cat, ground_truth, ground_truth_mask
+                    gc.collect()
+                else:
+                    result, length = last_result
+                    image_cat_batch, image_ground_truth_batch, image_ground_truth_mask_batch = result
+                    shared_image_cat[:length, ...].copy_(image_cat_batch)
+                    shared_ground_truth[:length, ...].copy_(image_ground_truth_batch)
+                    shared_ground_truth_mask[:length, ...].copy_(image_ground_truth_mask_batch)
+
+                    del result, length, image_cat_batch, image_ground_truth_batch, image_ground_truth_mask_batch
+                    gc.collect()
+                image_required_flag.value = False
+                image_access_lock.release()
+                image_available_lock.release()
+
+            time.sleep(0.01)
+
+            run_time += 1
+            if run_time % 100 == 0:
                 gc.collect()
-            else:
-                result, length = last_result
-                image_cat_batch, image_ground_truth_batch, image_ground_truth_mask_batch = result
-                shared_image_cat[:length, ...].copy_(image_cat_batch)
-                shared_ground_truth[:length, ...].copy_(image_ground_truth_batch)
-                shared_ground_truth_mask[:length, ...].copy_(image_ground_truth_mask_batch)
-
-                del result, length, image_cat_batch, image_ground_truth_batch, image_ground_truth_mask_batch
-                gc.collect()
-            image_required_flag.value = False
-            image_access_lock.release()
-            image_available_lock.release()
-
-        time.sleep(0.01)
-
-        run_time += 1
-        if run_time % 100 == 0:
-            gc.collect()
+    except KeyboardInterrupt:
+        print("Interrupted...")
 
     print("Subprocess terminating...")
 
@@ -85,62 +88,65 @@ def subprocess_run_deep(image_loading_pipe_recv, subdata_name: str, image_width:
                    image_access_lock: torch.multiprocessing.Lock, image_available_lock: torch.multiprocessing.Lock,
                    image_required_flag: torch.multiprocessing.Value, running: torch.multiprocessing.Value,
                    sampling_type:str="batch_random_image"):
-    print("Subprocess starting...")
-    sampler = image_wsi_sampling.get_image_sampler(subdata_name, image_width, device="cpu")
+    try:
+        print("Subprocess starting...")
+        sampler = image_wsi_sampling.get_image_sampler(subdata_name, image_width, device="cpu")
 
-    buffered_outputs = []
-    pending_images = []
-    print("Subprocess running...")
+        buffered_outputs = []
+        pending_images = []
+        print("Subprocess running...")
 
-    run_time = 0
-    while running.value:
-        if image_loading_pipe_recv.poll():
-            sample_object = image_loading_pipe_recv.recv()
-            pending_images.append(sample_object)
+        run_time = 0
+        while running.value:
+            if image_loading_pipe_recv.poll():
+                sample_object = image_loading_pipe_recv.recv()
+                pending_images.append(sample_object)
 
-        if ((buffer_max_size == -1) or (len(buffered_outputs) < buffer_max_size)) and (len(pending_images) > 0):
-            sample_object = pending_images.pop(0)
-            if sampling_type == "batch_random_image":
-                tile_ids, augmentation, random_location = sample_object  # args for obtain_random_sample_batch
-                length = len(tile_ids)
-                result = sampler.obtain_random_sample_batch(tile_id=tile_ids, augmentation=augmentation,
-                                                            random_location=random_location, deep_supervision_downsamples=deep_supervision_outputs)
-                buffered_outputs.append((result, length))
-            elif sampling_type == "batch_random_image_mixup":
-                tile_id1, tile_id2, mixup_alpha, augmentation = sample_object  # args for obtain_random_sample_batch
-                length = len(tile_id1)
-                result = sampler.obtain_random_sample_with_mixup_batch(tile_id1=tile_id1, tile_id2=tile_id2,
-                                                                       mixup_alpha=mixup_alpha,
-                                                                       augmentation=augmentation, deep_supervision_downsamples=deep_supervision_outputs)
-                buffered_outputs.append((result, length))
+            if ((buffer_max_size == -1) or (len(buffered_outputs) < buffer_max_size)) and (len(pending_images) > 0):
+                sample_object = pending_images.pop(0)
+                if sampling_type == "batch_random_image":
+                    tile_ids, augmentation, random_location = sample_object  # args for obtain_random_sample_batch
+                    length = len(tile_ids)
+                    result = sampler.obtain_random_sample_batch(tile_id=tile_ids, augmentation=augmentation,
+                                                                random_location=random_location, deep_supervision_downsamples=deep_supervision_outputs)
+                    buffered_outputs.append((result, length))
+                elif sampling_type == "batch_random_image_mixup":
+                    tile_id1, tile_id2, mixup_alpha, augmentation = sample_object  # args for obtain_random_sample_batch
+                    length = len(tile_id1)
+                    result = sampler.obtain_random_sample_with_mixup_batch(tile_id1=tile_id1, tile_id2=tile_id2,
+                                                                           mixup_alpha=mixup_alpha,
+                                                                           augmentation=augmentation, deep_supervision_downsamples=deep_supervision_outputs)
+                    buffered_outputs.append((result, length))
 
-        if image_required_flag.value and len(buffered_outputs) > 0:
-            image_access_lock.acquire(block=True)
+            if image_required_flag.value and len(buffered_outputs) > 0:
+                image_access_lock.acquire(block=True)
 
-            last_result = buffered_outputs.pop(0)
+                last_result = buffered_outputs.pop(0)
 
-            result, length = last_result
-            image_cat_batch, image_ground_truth_batch, image_ground_truth_mask_batch, image_ground_truth_deep, image_ground_truth_mask_deep = result
-            shared_image_cat[:length, ...].copy_(image_cat_batch)
-            shared_ground_truth[:length, ...].copy_(image_ground_truth_batch)
-            shared_ground_truth_mask[:length, ...].copy_(image_ground_truth_mask_batch)
+                result, length = last_result
+                image_cat_batch, image_ground_truth_batch, image_ground_truth_mask_batch, image_ground_truth_deep, image_ground_truth_mask_deep = result
+                shared_image_cat[:length, ...].copy_(image_cat_batch)
+                shared_ground_truth[:length, ...].copy_(image_ground_truth_batch)
+                shared_ground_truth_mask[:length, ...].copy_(image_ground_truth_mask_batch)
 
-            for l in range(deep_supervision_outputs):
-                shared_ground_truth_deep[l][:length, ...].copy_(image_ground_truth_deep[l])
-                shared_ground_truth_mask_deep[l][:length, ...].copy_(image_ground_truth_mask_deep[l])
+                for l in range(deep_supervision_outputs):
+                    shared_ground_truth_deep[l][:length, ...].copy_(image_ground_truth_deep[l])
+                    shared_ground_truth_mask_deep[l][:length, ...].copy_(image_ground_truth_mask_deep[l])
 
-            del result, length, image_cat_batch, image_ground_truth_batch, image_ground_truth_mask_batch, image_ground_truth_deep[:], image_ground_truth_mask_deep[:]
-            gc.collect()
+                del result, length, image_cat_batch, image_ground_truth_batch, image_ground_truth_mask_batch, image_ground_truth_deep[:], image_ground_truth_mask_deep[:]
+                gc.collect()
 
-            image_required_flag.value = False
-            image_access_lock.release()
-            image_available_lock.release()
+                image_required_flag.value = False
+                image_access_lock.release()
+                image_available_lock.release()
 
-        time.sleep(0.01)
+            time.sleep(0.01)
 
-        run_time += 1
-        if run_time % 100 == 0:
-            gc.collect()
+            run_time += 1
+            if run_time % 100 == 0:
+                gc.collect()
+    except KeyboardInterrupt:
+        print("Interrupted...")
 
     print("Subprocess terminating...")
 

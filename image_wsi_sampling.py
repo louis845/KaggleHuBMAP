@@ -247,7 +247,7 @@ class Region:
         for y in tqdm.tqdm(available_row_indices):
             x_indices = np.unique(np.squeeze(np.argwhere(region[y, :]), -1))
             for x in x_indices:
-                if y >= interior_radius_rotated and y < horizontal_clearance.shape[0] - interior_radius_rotated and x >= interior_radius_rotated and x < horizontal_clearance.shape[1] - interior_radius_rotated:
+                if y >= interior_radius_rotated and y <= horizontal_clearance.shape[0] - interior_radius_rotated and x >= interior_radius_rotated and x <= horizontal_clearance.shape[1] - interior_radius_rotated:
                     if rotated_interior_pixels[y - 1, x]:
                         rotated_interior_pixels[y, x] = np.all(region[y + interior_radius_rotated - 1, x - interior_radius_rotated:x + interior_radius_rotated])
                     elif rotated_interior_pixels[y, x - 1]:
@@ -423,7 +423,6 @@ class ImageSampler:
         self.wsi_id = wsi_region.wsi_id
         self.image_width = image_width
 
-        image_radius = image_width // 2
         self.prediction_radius = self.sampling_region.interior_box_width // 2
         self.device = device
 
@@ -559,6 +558,10 @@ class MultipleImageSampler:
         self.image_size = image_samplers[next(iter(image_samplers.keys()))].image_width
         self.image_samplers = image_samplers
         self.device = device
+
+        for sampler in image_samplers:
+            assert image_samplers[sampler].image_width == self.image_size, "All image samplers must have the same image size!"
+            assert image_samplers[sampler].device == self.device, "All image samplers must have the same device!"
 
     def obtain_random_image_from_tile(self, tile_id: str, augmentation: bool=True, deep_supervision_downsamples=0, random_location=True):
         wsi_id = model_data_manager.data_information.loc[tile_id, "source_wsi"]

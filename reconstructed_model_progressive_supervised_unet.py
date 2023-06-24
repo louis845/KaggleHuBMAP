@@ -15,13 +15,247 @@ import matplotlib.pyplot as plt
 
 import torch
 import torch.nn
-import torchvision.transforms.functional
 
 import model_data_manager
 import model_unet_base
 import model_unet_attention
 import image_wsi_sampling
 
+def compute_confidence_class(result: torch.Tensor):
+    with torch.no_grad():
+        softmax = torch.softmax(result, dim=1)
+        # (confidence level at least 0.5)
+        return (softmax[:, 0, ...] > 0.5) * (torch.argmax(result[:, 1:, ...], dim=1) + 1)
+
+
+def training_step(train_history=None):
+    # pass train_history = None if extra steps, pass train_history = train_history main step.
+    trained = 0
+    if train_history is not None:
+        total_cum_loss = 0.0
+        total_loss_per_output = np.zeros(pyr_height, dtype=np.float64)
+        true_negative_per_output = np.zeros(pyr_height, dtype=np.int64)
+        false_negative_per_output = np.zeros(pyr_height, dtype=np.int64)
+        true_positive_per_output = np.zeros(pyr_height, dtype=np.int64)
+        false_positive_per_output = np.zeros(pyr_height, dtype=np.int64)
+
+        true_negative_confidence, true_positive_confidence, false_negative_confidence, false_positive_confidence = 0, 0, 0, 0
+
+        true_negative_class, true_positive_class, false_negative_class, false_positive_class = {}, {}, {}, {}
+        true_negative_confidence_class, true_positive_confidence_class, false_negative_confidence_class, false_positive_confidence_class = {}, {}, {}, {}
+        for seg_class in classes:
+            true_negative_class[seg_class], true_positive_class[seg_class], false_negative_class[seg_class], \
+                false_positive_class[seg_class] = 0, 0, 0, 0
+            true_negative_confidence_class[seg_class], true_positive_confidence_class[seg_class], \
+                false_negative_confidence_class[seg_class], false_positive_confidence_class[seg_class] = 0, 0, 0, 0
+
+    # Shuffle if not async. if async its loaded in another process
+    if use_async_sampling == 0:
+        training_entries_shuffle = rng.permutation(training_entries)
+        if mixup > 0.0:
+            training_entries_shuffle2 = rng.permutation(training_entries)
+    else:
+        if train_history is None:
+            async_request_images_train()
+        else:
+            async_request_images_val()  # else we preload the validation samples in another process. we are in main step
+
+    with tqdm.tqdm(total=len(training_entries)) as pbar:
+        while trained < len(training_entries):
+            batch_end = min(trained + batch_size, len(training_entries))
+            if use_async_sampling != 0:
+                batch_indices = training_entries[trained:batch_end]
+                length = len(batch_indices)
+
+                train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep, train_image_ground_truth_mask_deep = \
+                    train_sampler.get_samples(device=config.device, length=length)
+            else:
+                batch_indices = training_entries_shuffle[trained:batch_end]
+                if mixup > 0.0:
+                    batch_indices2 = training_entries_shuffle2[trained:batch_end]
+
+                    train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep, train_image_ground_truth_mask_deep = \
+                        train_sampler.obtain_random_sample_with_mixup_batch(batch_indices, batch_indices2,
+                                                                            mixup_alpha=mixup,
+                                                                            augmentation=augmentation,
+                                                                            deep_supervision_downsamples=pyr_height - 1)
+
+                else:
+                    train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep, train_image_ground_truth_mask_deep = \
+                        train_sampler.obtain_random_sample_batch(batch_indices, augmentation=augmentation,
+                                                                 deep_supervision_downsamples=pyr_height - 1)
+
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            optimizer.zero_grad()
+            result, deep_outputs = model(train_image_cat_batch)
+
+            loss = 0.0
+            for k in range(pyr_height - 2, -1, -1):
+                multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
+
+                k_loss = torch.sum(torch.nn.functional.cross_entropy(deep_outputs[k],
+                                                                     train_image_ground_truth_deep[pyr_height - 2 - k],
+                                                                     reduction="none")
+                                   * train_image_ground_truth_mask_deep[pyr_height - 2 - k]) * multiply_scale_factor
+                loss += k_loss
+
+                if train_history is not None:
+                    total_loss_per_output[k] += k_loss.item()
+
+                    with torch.no_grad():
+                        deep_class_prediction = torch.argmax(deep_outputs[k], dim=1)
+                        if mixup > 0.0:
+                            train_image_ground_truth_deep_class = torch.argmax(
+                                train_image_ground_truth_deep[pyr_height - 2 - k], dim=1)
+                        else:
+                            train_image_ground_truth_deep_class = train_image_ground_truth_deep[pyr_height - 2 - k]
+                        bool_mask = train_image_ground_truth_mask_deep[pyr_height - 2 - k].to(torch.bool)
+                        true_negative_per_output[k] += ((deep_class_prediction == 0) & (
+                                    train_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
+                        false_negative_per_output[k] += ((deep_class_prediction == 0) & (
+                                    train_image_ground_truth_deep_class > 0) & bool_mask).sum().item()
+                        true_positive_per_output[k] += ((deep_class_prediction > 0) & (
+                                    train_image_ground_truth_deep_class > 0) & bool_mask).sum().item()
+                        false_positive_per_output[k] += ((deep_class_prediction > 0) & (
+                                    train_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
+
+            result_loss = torch.sum(
+                torch.nn.functional.cross_entropy(result, train_image_ground_truth_batch, reduction="none",
+                                                  weight=class_weights) * train_image_ground_truth_mask_batch)
+            loss += result_loss
+
+            if train_history is not None:
+                total_loss_per_output[-1] += result_loss.item()
+                with torch.no_grad():
+                    pred_labels = torch.argmax(result, dim=1)
+                    pred_labels_confidence = compute_confidence_class(result)
+                    bool_mask = train_image_ground_truth_mask_batch.to(torch.bool)
+                    if mixup > 0.0:
+                        train_image_ground_truth_batch = torch.argmax(train_image_ground_truth_batch, dim=1)
+                    true_negative_per_output[-1] += (
+                                (pred_labels == 0) & (train_image_ground_truth_batch == 0) & bool_mask).sum().item()
+                    false_negative_per_output[-1] += (
+                                (pred_labels == 0) & (train_image_ground_truth_batch > 0) & bool_mask).sum().item()
+                    true_positive_per_output[-1] += (
+                                (pred_labels > 0) & (train_image_ground_truth_batch > 0) & bool_mask).sum().item()
+                    false_positive_per_output[-1] += (
+                                (pred_labels > 0) & (train_image_ground_truth_batch == 0) & bool_mask).sum().item()
+
+                    true_negative_confidence += ((pred_labels_confidence == 0) & (train_image_ground_truth_batch == 0) & bool_mask).sum().item()
+                    false_negative_confidence += ((pred_labels_confidence == 0) & (train_image_ground_truth_batch > 0) & bool_mask).sum().item()
+                    true_positive_confidence += ((pred_labels_confidence > 0) & (train_image_ground_truth_batch > 0) & bool_mask).sum().item()
+                    false_positive_confidence += ((pred_labels_confidence > 0) & (train_image_ground_truth_batch == 0) & bool_mask).sum().item()
+
+                    for seg_idx in range(len(classes)):
+                        seg_class = classes[seg_idx]
+                        seg_ps = seg_idx + 1
+                        true_positive_class[seg_class] += int(torch.sum(
+                            (pred_labels == seg_ps) & (train_image_ground_truth_batch == seg_ps) & bool_mask).item())
+                        true_negative_class[seg_class] += int(torch.sum(
+                            (pred_labels != seg_ps) & (train_image_ground_truth_batch != seg_ps) & bool_mask).item())
+                        false_positive_class[seg_class] += int(torch.sum(
+                            (pred_labels == seg_ps) & (train_image_ground_truth_batch != seg_ps) & bool_mask).item())
+                        false_negative_class[seg_class] += int(torch.sum(
+                            (pred_labels != seg_ps) & (train_image_ground_truth_batch == seg_ps) & bool_mask).item())
+
+                        true_positive_confidence_class[seg_class] += int(torch.sum(
+                            (pred_labels_confidence == seg_ps) & (train_image_ground_truth_batch == seg_ps) & bool_mask).item())
+                        true_negative_confidence_class[seg_class] += int(torch.sum(
+                            (pred_labels_confidence != seg_ps) & (train_image_ground_truth_batch != seg_ps) & bool_mask).item())
+                        false_positive_confidence_class[seg_class] += int(torch.sum(
+                            (pred_labels_confidence == seg_ps) & (train_image_ground_truth_batch != seg_ps) & bool_mask).item())
+                        false_negative_confidence_class[seg_class] += int(torch.sum(
+                            (pred_labels_confidence != seg_ps) & (train_image_ground_truth_batch == seg_ps) & bool_mask).item())
+
+            loss.backward()
+            optimizer.step()
+
+            if train_history is not None:
+                total_cum_loss += loss.item()
+
+            trained += len(batch_indices)
+
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            pbar.update(len(batch_indices))
+
+    if train_history is not None:
+        total_loss_per_output /= len(training_entries)
+        total_cum_loss /= len(training_entries)
+
+        accuracy_per_output = (true_positive_per_output + true_negative_per_output).astype(np.float64) / (
+                    true_positive_per_output + true_negative_per_output + false_positive_per_output + false_negative_per_output)
+        precision_per_output = true_positive_per_output.astype(np.float64) / (
+                    true_positive_per_output + false_positive_per_output)
+        recall_per_output = true_positive_per_output.astype(np.float64) / (
+                    true_positive_per_output + false_negative_per_output)
+
+        accuracy_per_output = np.nan_to_num(accuracy_per_output, nan=0.0, posinf=0.0, neginf=0.0)
+        precision_per_output = np.nan_to_num(precision_per_output, nan=0.0, posinf=0.0, neginf=0.0)
+        recall_per_output = np.nan_to_num(recall_per_output, nan=0.0, posinf=0.0, neginf=0.0)
+
+        for seg_class in classes:
+            train_history["accuracy_" + seg_class].append(
+                (true_positive_class[seg_class] + true_negative_class[seg_class]) / (
+                            true_positive_class[seg_class] + true_negative_class[seg_class] + false_positive_class[
+                        seg_class] + false_negative_class[seg_class]))
+            if true_positive_class[seg_class] + false_positive_class[seg_class] == 0:
+                train_history["precision_" + seg_class].append(0.0)
+            else:
+                train_history["precision_" + seg_class].append(
+                    true_positive_class[seg_class] / (true_positive_class[seg_class] + false_positive_class[seg_class]))
+            if true_positive_class[seg_class] + false_negative_class[seg_class] == 0:
+                train_history["recall_" + seg_class].append(0.0)
+            else:
+                train_history["recall_" + seg_class].append(
+                    true_positive_class[seg_class] / (true_positive_class[seg_class] + false_negative_class[seg_class]))
+
+        train_history["loss_cum"].append(total_cum_loss)
+        for k in range(pyr_height):
+            train_history["loss{}".format(k)].append(total_loss_per_output[k])
+            train_history["accuracy{}".format(k)].append(accuracy_per_output[k])
+            train_history["precision{}".format(k)].append(precision_per_output[k])
+            train_history["recall{}".format(k)].append(recall_per_output[k])
+
+        confidence_accuracy = (true_positive_confidence + true_negative_confidence) / (
+                    true_positive_confidence + true_negative_confidence + false_positive_confidence + false_negative_confidence)
+        if true_positive_confidence + false_positive_confidence == 0:
+            confidence_precision = 0.0
+        else:
+            confidence_precision = true_positive_confidence / (true_positive_confidence + false_positive_confidence)
+        if true_positive_confidence + false_negative_confidence == 0:
+            confidence_recall = 0.0
+        else:
+            confidence_recall = true_positive_confidence / (true_positive_confidence + false_negative_confidence)
+
+        train_history["confidence_accuracy"].append(confidence_accuracy)
+        train_history["confidence_precision"].append(confidence_precision)
+        train_history["confidence_recall"].append(confidence_recall)
+
+        for seg_class in classes:
+            train_history["confidence_accuracy_" + seg_class].append(
+                (true_positive_confidence_class[seg_class] + true_negative_confidence_class[seg_class]) / (
+                            true_positive_confidence_class[seg_class] + true_negative_confidence_class[seg_class] + false_positive_confidence_class[
+                        seg_class] + false_negative_confidence_class[seg_class]))
+            if true_positive_confidence_class[seg_class] + false_positive_confidence_class[seg_class] == 0:
+                train_history["confidence_precision_" + seg_class].append(0.0)
+            else:
+                train_history["confidence_precision_" + seg_class].append(
+                    true_positive_confidence_class[seg_class] / (
+                                true_positive_confidence_class[seg_class] + false_positive_confidence_class[seg_class]))
+            if true_positive_confidence_class[seg_class] + false_negative_confidence_class[seg_class] == 0:
+                train_history["confidence_recall_" + seg_class].append(0.0)
+            else:
+                train_history["confidence_recall_" + seg_class].append(
+                    true_positive_confidence_class[seg_class] / (
+                                true_positive_confidence_class[seg_class] + false_negative_confidence_class[seg_class]))
+
+    del train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep[:], train_image_ground_truth_mask_deep[:]
+    gc.collect()
+    torch.cuda.empty_cache()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a progressively supervised U-Net model with reconstructed WSI data.")
@@ -137,6 +371,13 @@ if __name__ == "__main__":
         train_history["val_precision{}".format(k)] = []
         train_history["val_recall{}".format(k)] = []
 
+    train_history["confidence_accuracy"] = []
+    train_history["confidence_precision"] = []
+    train_history["confidence_recall"] = []
+    train_history["val_confidence_accuracy"] = []
+    train_history["val_confidence_precision"] = []
+    train_history["val_confidence_recall"] = []
+
     print("Using class weights:")
     classes = ["blood_vessel", "boundary"]
     class_weights = [1.0, 1.0]
@@ -149,6 +390,12 @@ if __name__ == "__main__":
         train_history["val_precision_{}".format(seg_class)] = []
         train_history["recall_{}".format(seg_class)] = []
         train_history["val_recall_{}".format(seg_class)] = []
+        train_history["confidence_accuracy_{}".format(seg_class)] = []
+        train_history["val_confidence_accuracy_{}".format(seg_class)] = []
+        train_history["confidence_precision_{}".format(seg_class)] = []
+        train_history["val_confidence_precision_{}".format(seg_class)] = []
+        train_history["confidence_recall_{}".format(seg_class)] = []
+        train_history["val_confidence_recall_{}".format(seg_class)] = []
         print("Class {}: {}".format(seg_class, class_weights[k]))
 
     class_weights = torch.tensor([1.0] + class_weights, dtype=torch.float32, device=config.device)
@@ -210,207 +457,13 @@ if __name__ == "__main__":
             print("Training {} extra steps...".format(num_extra_steps))
             print()
             for extra_step in range(num_extra_steps):
-                trained = 0
-                # Shuffle if not async. if async its loaded in another process
-                if use_async_sampling == 0:
-                    training_entries_shuffle = rng.permutation(training_entries)
-                    if mixup > 0.0:
-                        training_entries_shuffle2 = rng.permutation(training_entries)
-                else:
-                    async_request_images_train()  # else we preload the validation samples in another process
-
-                with tqdm.tqdm(total=len(training_entries)) as pbar:
-                    while trained < len(training_entries):
-                        if use_async_sampling != 0:
-                            batch_end = min(trained + batch_size, len(training_entries))
-                            batch_indices = training_entries[trained:batch_end]
-                            length = len(batch_indices)
-
-                            train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep, train_image_ground_truth_mask_deep = \
-                                train_sampler.get_samples(device=config.device, length=length)
-                        else:
-                            batch_end = min(trained + batch_size, len(training_entries))
-                            batch_indices = training_entries_shuffle[trained:batch_end]
-                            length = len(batch_indices)
-                            if mixup > 0.0:
-                                batch_indices2 = training_entries_shuffle2[trained:batch_end]
-
-                                train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep, train_image_ground_truth_mask_deep = \
-                                    train_sampler.obtain_random_sample_with_mixup_batch(batch_indices, batch_indices2,
-                                                                                        mixup_alpha=mixup,
-                                                                                        augmentation=augmentation,
-                                                                                        deep_supervision_downsamples=pyr_height - 1)
-
-                            else:
-                                train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep, train_image_ground_truth_mask_deep = \
-                                    train_sampler.obtain_random_sample_batch(batch_indices, augmentation=augmentation,
-                                                                             deep_supervision_downsamples=pyr_height - 1)
-
-                        gc.collect()
-                        torch.cuda.empty_cache()
-
-                        optimizer.zero_grad()
-                        result, deep_outputs = model(train_image_cat_batch)
-
-                        loss = 0.0
-                        for k in range(pyr_height - 2, -1, -1):
-                            multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
-
-                            k_loss = torch.sum(torch.nn.functional.cross_entropy(deep_outputs[k],
-                                                train_image_ground_truth_deep[pyr_height - 2 - k], reduction="none")
-                                                    * train_image_ground_truth_mask_deep[pyr_height - 2 - k])\
-                                        * multiply_scale_factor
-                            loss += k_loss
-
-                        result_loss = torch.sum(torch.nn.functional.cross_entropy(result, train_image_ground_truth_batch, reduction="none",
-                                                              weight=class_weights) * train_image_ground_truth_mask_batch)
-                        loss += result_loss
-                        loss.backward()
-                        optimizer.step()
-                        trained += len(batch_indices)
-
-                        gc.collect()
-                        torch.cuda.empty_cache()
-
-                        pbar.update(len(batch_indices))
+                training_step(None)
 
             # ----------------------------------------- Main training step -----------------------------------------
-            trained = 0
-            total_cum_loss = 0.0
-            total_loss_per_output = np.zeros(pyr_height, dtype=np.float64)
-            true_negative_per_output = np.zeros(pyr_height, dtype=np.int64)
-            false_negative_per_output = np.zeros(pyr_height, dtype=np.int64)
-            true_positive_per_output = np.zeros(pyr_height, dtype=np.int64)
-            false_positive_per_output = np.zeros(pyr_height, dtype=np.int64)
-            true_negative_class, true_positive_class, false_negative_class, false_positive_class = {}, {}, {}, {}
-            for seg_class in classes:
-                true_negative_class[seg_class], true_positive_class[seg_class], false_negative_class[seg_class], false_positive_class[seg_class] = 0, 0, 0, 0
-
-            # Shuffle if not async. if async its loaded in another process
-            if use_async_sampling == 0:
-                training_entries_shuffle = rng.permutation(training_entries)
-                if mixup > 0.0:
-                    training_entries_shuffle2 = rng.permutation(training_entries)
-            else:
-                async_request_images_val() # else we preload the validation samples in another process
-
             print()
             print("Training.....")
             print()
-            with tqdm.tqdm(total=len(training_entries)) as pbar:
-                while trained < len(training_entries):
-                    if use_async_sampling != 0:
-                        batch_end = min(trained + batch_size, len(training_entries))
-                        batch_indices = training_entries[trained:batch_end]
-                        length = len(batch_indices)
-
-                        train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep, train_image_ground_truth_mask_deep =\
-                            train_sampler.get_samples(device=config.device, length=length)
-                    else:
-                        batch_end = min(trained + batch_size, len(training_entries))
-                        batch_indices = training_entries_shuffle[trained:batch_end]
-                        length = len(batch_indices)
-                        if mixup > 0.0:
-                            batch_indices2 = training_entries_shuffle2[trained:batch_end]
-
-                            train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep, train_image_ground_truth_mask_deep =\
-                                train_sampler.obtain_random_sample_with_mixup_batch(batch_indices, batch_indices2, mixup_alpha=mixup, augmentation=augmentation, deep_supervision_downsamples=pyr_height - 1)
-
-                        else:
-                            train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep, train_image_ground_truth_mask_deep = \
-                                train_sampler.obtain_random_sample_batch(batch_indices, augmentation=augmentation, deep_supervision_downsamples=pyr_height - 1)
-
-                    gc.collect()
-                    torch.cuda.empty_cache()
-
-                    optimizer.zero_grad()
-                    result, deep_outputs = model(train_image_cat_batch)
-
-                    loss = 0.0
-                    for k in range(pyr_height - 2, -1, -1):
-                        multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
-
-                        k_loss = torch.sum(torch.nn.functional.cross_entropy(deep_outputs[k], train_image_ground_truth_deep[pyr_height - 2 - k], reduction="none")
-                                 * train_image_ground_truth_mask_deep[pyr_height - 2 - k]) * multiply_scale_factor
-                        loss += k_loss
-
-                        total_loss_per_output[k] += k_loss.item()
-
-                        with torch.no_grad():
-                            deep_class_prediction = torch.argmax(deep_outputs[k], dim=1)
-                            if mixup > 0.0:
-                                train_image_ground_truth_deep_class = torch.argmax(train_image_ground_truth_deep[pyr_height - 2 - k], dim=1)
-                            else:
-                                train_image_ground_truth_deep_class = train_image_ground_truth_deep[pyr_height - 2 - k]
-                            bool_mask = train_image_ground_truth_mask_deep[pyr_height - 2 - k].to(torch.bool)
-                            true_negative_per_output[k] += ((deep_class_prediction == 0) & (train_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
-                            false_negative_per_output[k] += ((deep_class_prediction == 0) & (train_image_ground_truth_deep_class > 0) & bool_mask).sum().item()
-                            true_positive_per_output[k] += ((deep_class_prediction > 0) & (train_image_ground_truth_deep_class > 0) & bool_mask).sum().item()
-                            false_positive_per_output[k] += ((deep_class_prediction > 0) & (train_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
-
-
-                    result_loss = torch.sum(torch.nn.functional.cross_entropy(result, train_image_ground_truth_batch, reduction="none", weight=class_weights) * train_image_ground_truth_mask_batch)
-                    loss += result_loss
-
-                    total_loss_per_output[-1] += result_loss.item()
-                    with torch.no_grad():
-                        pred_labels = torch.argmax(result, dim=1)
-                        bool_mask = train_image_ground_truth_mask_batch.to(torch.bool)
-                        if mixup > 0.0:
-                            train_image_ground_truth_batch = torch.argmax(train_image_ground_truth_batch, dim=1)
-                        true_negative_per_output[-1] += ((pred_labels == 0) & (train_image_ground_truth_batch == 0) & bool_mask).sum().item()
-                        false_negative_per_output[-1] += ((pred_labels == 0) & (train_image_ground_truth_batch > 0) & bool_mask).sum().item()
-                        true_positive_per_output[-1] += ((pred_labels > 0) & (train_image_ground_truth_batch > 0) & bool_mask).sum().item()
-                        false_positive_per_output[-1] += ((pred_labels > 0) & (train_image_ground_truth_batch == 0) & bool_mask).sum().item()
-
-                        for seg_idx in range(len(classes)):
-                            seg_class = classes[seg_idx]
-                            seg_ps = seg_idx + 1
-                            true_positive_class[seg_class] += int(torch.sum((pred_labels == seg_ps) & (train_image_ground_truth_batch == seg_ps) & bool_mask).item())
-                            true_negative_class[seg_class] += int(torch.sum((pred_labels != seg_ps) & (train_image_ground_truth_batch != seg_ps) & bool_mask).item())
-                            false_positive_class[seg_class] += int(torch.sum((pred_labels == seg_ps) & (train_image_ground_truth_batch != seg_ps) & bool_mask).item())
-                            false_negative_class[seg_class] += int(torch.sum((pred_labels != seg_ps) & (train_image_ground_truth_batch == seg_ps) & bool_mask).item())
-
-                    loss.backward()
-                    optimizer.step()
-
-                    total_cum_loss += loss.item()
-
-                    trained += len(batch_indices)
-
-                    gc.collect()
-                    torch.cuda.empty_cache()
-
-                    pbar.update(len(batch_indices))
-
-            total_loss_per_output /= len(training_entries)
-            total_cum_loss /= len(training_entries)
-
-            accuracy_per_output = (true_positive_per_output + true_negative_per_output).astype(np.float64) / (true_positive_per_output + true_negative_per_output + false_positive_per_output + false_negative_per_output)
-            precision_per_output = true_positive_per_output.astype(np.float64) / (true_positive_per_output + false_positive_per_output)
-            recall_per_output = true_positive_per_output.astype(np.float64) / (true_positive_per_output + false_negative_per_output)
-
-            accuracy_per_output = np.nan_to_num(accuracy_per_output, nan=0.0, posinf=0.0, neginf=0.0)
-            precision_per_output = np.nan_to_num(precision_per_output, nan=0.0, posinf=0.0, neginf=0.0)
-            recall_per_output = np.nan_to_num(recall_per_output, nan=0.0, posinf=0.0, neginf=0.0)
-
-            for seg_class in classes:
-                train_history["accuracy_" + seg_class].append((true_positive_class[seg_class] + true_negative_class[seg_class]) / (true_positive_class[seg_class] + true_negative_class[seg_class] + false_positive_class[seg_class] + false_negative_class[seg_class]))
-                if true_positive_class[seg_class] + false_positive_class[seg_class] == 0:
-                    train_history["precision_" + seg_class].append(0.0)
-                else:
-                    train_history["precision_" + seg_class].append(true_positive_class[seg_class] / (true_positive_class[seg_class] + false_positive_class[seg_class]))
-                if true_positive_class[seg_class] + false_negative_class[seg_class] == 0:
-                    train_history["recall_" + seg_class].append(0.0)
-                else:
-                    train_history["recall_" + seg_class].append(true_positive_class[seg_class] / (true_positive_class[seg_class] + false_negative_class[seg_class]))
-
-            train_history["loss_cum"].append(total_cum_loss)
-            for k in range(pyr_height):
-                train_history["loss{}".format(k)].append(total_loss_per_output[k])
-                train_history["accuracy{}".format(k)].append(accuracy_per_output[k])
-                train_history["precision{}".format(k)].append(precision_per_output[k])
-                train_history["recall{}".format(k)].append(recall_per_output[k])
+            training_step(train_history)
 
             if use_async_sampling != 0:
                 async_request_images_train() # request preloading training images for next epoch
@@ -424,10 +477,16 @@ if __name__ == "__main__":
                 false_negative_per_output = np.zeros(pyr_height, dtype=np.int64)
                 true_positive_per_output = np.zeros(pyr_height, dtype=np.int64)
                 false_positive_per_output = np.zeros(pyr_height, dtype=np.int64)
+
+                true_negative_confidence, true_positive_confidence, false_negative_confidence, false_positive_confidence = 0, 0, 0, 0
+
                 true_negative_class, true_positive_class, false_negative_class, false_positive_class = {}, {}, {}, {}
+                true_negative_confidence_class, true_positive_confidence_class, false_negative_confidence_class, false_positive_confidence_class = {}, {}, {}, {}
                 for seg_class in classes:
                     true_negative_class[seg_class], true_positive_class[seg_class], false_negative_class[seg_class], \
-                    false_positive_class[seg_class] = 0, 0, 0, 0
+                        false_positive_class[seg_class] = 0, 0, 0, 0
+                    true_negative_confidence_class[seg_class], true_positive_confidence_class[seg_class],\
+                        false_negative_confidence_class[seg_class], false_positive_confidence_class[seg_class] = 0, 0, 0, 0
 
                 print()
                 print("Validating.....")
@@ -460,9 +519,9 @@ if __name__ == "__main__":
                             test_image_ground_truth_deep_class = test_image_ground_truth_deep[pyr_height - 2 - k]
                             bool_mask = test_image_ground_truth_mask_deep[pyr_height - 2 - k].bool()
                             true_negative_per_output[k] += ((deep_class_prediction == 0) & (test_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
-                            false_negative_per_output[k] += ((deep_class_prediction == 0) & (test_image_ground_truth_deep_class == 1) & bool_mask).sum().item()
-                            true_positive_per_output[k] += ((deep_class_prediction == 1) & (test_image_ground_truth_deep_class == 1) & bool_mask).sum().item()
-                            false_positive_per_output[k] += ((deep_class_prediction == 1) & (test_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
+                            false_negative_per_output[k] += ((deep_class_prediction == 0) & (test_image_ground_truth_deep_class > 0) & bool_mask).sum().item()
+                            true_positive_per_output[k] += ((deep_class_prediction > 0) & (test_image_ground_truth_deep_class > 0) & bool_mask).sum().item()
+                            false_positive_per_output[k] += ((deep_class_prediction > 0) & (test_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
 
                         result_loss = torch.sum(torch.nn.functional.cross_entropy(result, test_image_ground_truth_batch, reduction="none", weight=class_weights)
                                          * test_image_ground_truth_mask_batch)
@@ -471,11 +530,18 @@ if __name__ == "__main__":
                         total_loss_per_output[-1] += result_loss.item()
 
                         pred_labels = torch.argmax(result, dim=1)
+                        pred_labels_confidence = compute_confidence_class(result)
+
                         bool_mask = test_image_ground_truth_mask_batch.to(dtype=torch.bool)
                         true_negative_per_output[-1] += ((pred_labels == 0) & (test_image_ground_truth_batch == 0) & bool_mask).sum().item()
                         false_negative_per_output[-1] += ((pred_labels == 0) & (test_image_ground_truth_batch > 0) & bool_mask).sum().item()
                         true_positive_per_output[-1] += ((pred_labels > 0) & (test_image_ground_truth_batch > 0) & bool_mask).sum().item()
                         false_positive_per_output[-1] += ((pred_labels > 0) & (test_image_ground_truth_batch == 0) & bool_mask).sum().item()
+
+                        true_negative_confidence += ((pred_labels_confidence == 0) & (test_image_ground_truth_batch == 0) & bool_mask).sum().item()
+                        false_negative_confidence += ((pred_labels_confidence == 0) & (test_image_ground_truth_batch > 0) & bool_mask).sum().item()
+                        true_positive_confidence += ((pred_labels_confidence > 0) & (test_image_ground_truth_batch > 0) & bool_mask).sum().item()
+                        false_positive_confidence += ((pred_labels_confidence > 0) & (test_image_ground_truth_batch == 0) & bool_mask).sum().item()
 
                         for seg_idx in range(len(classes)):
                             seg_class = classes[seg_idx]
@@ -488,6 +554,15 @@ if __name__ == "__main__":
                                 torch.sum((pred_labels == seg_ps) & (test_image_ground_truth_batch != seg_ps) & bool_mask).item())
                             false_negative_class[seg_class] += int(
                                 torch.sum((pred_labels != seg_ps) & (test_image_ground_truth_batch == seg_ps) & bool_mask).item())
+
+                            true_positive_confidence_class[seg_class] += int(torch.sum((pred_labels_confidence == seg_ps)\
+                                        & (test_image_ground_truth_batch == seg_ps) & bool_mask).item())
+                            true_negative_confidence_class[seg_class] += int(torch.sum((pred_labels_confidence != seg_ps)\
+                                        & (test_image_ground_truth_batch != seg_ps) & bool_mask).item())
+                            false_positive_confidence_class[seg_class] += int(torch.sum((pred_labels_confidence == seg_ps)\
+                                        & (test_image_ground_truth_batch != seg_ps) & bool_mask).item())
+                            false_negative_confidence_class[seg_class] += int(torch.sum((pred_labels_confidence != seg_ps)\
+                                        & (test_image_ground_truth_batch == seg_ps) & bool_mask).item())
 
                         total_cum_loss += loss.item()
 
@@ -527,6 +602,39 @@ if __name__ == "__main__":
                     train_history["val_precision{}".format(k)].append(precision_per_output[k])
                     train_history["val_recall{}".format(k)].append(recall_per_output[k])
 
+                confidence_accuracy = (true_positive_confidence + true_negative_confidence) / (
+                        true_positive_confidence + true_negative_confidence + false_positive_confidence + false_negative_confidence)
+                if true_positive_confidence + false_positive_confidence == 0:
+                    confidence_precision = 0.0
+                else:
+                    confidence_precision = true_positive_confidence / (
+                                true_positive_confidence + false_positive_confidence)
+                if true_positive_confidence + false_negative_confidence == 0:
+                    confidence_recall = 0.0
+                else:
+                    confidence_recall = true_positive_confidence / (
+                                true_positive_confidence + false_negative_confidence)
+
+                train_history["val_confidence_accuracy"].append(confidence_accuracy)
+                train_history["val_confidence_precision"].append(confidence_precision)
+                train_history["val_confidence_recall"].append(confidence_recall)
+
+                for seg_class in classes:
+                    train_history["val_confidence_accuracy_" + seg_class].append(
+                        (true_positive_confidence_class[seg_class] + true_negative_confidence_class[seg_class])
+                            / (true_positive_confidence_class[seg_class] + true_negative_confidence_class[seg_class] +
+                                false_positive_confidence_class[seg_class] + false_negative_confidence_class[seg_class]))
+                    if true_positive_confidence_class[seg_class] + false_positive_confidence_class[seg_class] == 0:
+                        train_history["val_confidence_precision_" + seg_class].append(0.0)
+                    else:
+                        train_history["val_confidence_precision_" + seg_class].append(true_positive_confidence_class[seg_class]
+                            / (true_positive_confidence_class[seg_class] + false_positive_confidence_class[seg_class]))
+                    if true_positive_confidence_class[seg_class] + false_negative_confidence_class[seg_class] == 0:
+                        train_history["val_confidence_recall_" + seg_class].append(0.0)
+                    else:
+                        train_history["val_confidence_recall_" + seg_class].append(true_positive_confidence_class[seg_class]
+                            / (true_positive_confidence_class[seg_class] + false_negative_confidence_class[seg_class]))
+
             print("Time Elapsed: {}".format(time.time() - ctime))
             print("Epoch: {}/{}".format(epoch, num_epochs))
             print("{} (Loss Cum)".format(train_history["loss_cum"][-1]))
@@ -546,6 +654,21 @@ if __name__ == "__main__":
                 print("{} (Val Precision {})".format(train_history["val_precision_" + seg_class][-1], seg_class))
                 print("{} (Recall {})".format(train_history["recall_" + seg_class][-1], seg_class))
                 print("{} (Val Recall {})".format(train_history["val_recall_" + seg_class][-1], seg_class))
+
+            print("{} (Confidence Accuracy)".format(train_history["confidence_accuracy"][-1]))
+            print("{} (Val Confidence Accuracy)".format(train_history["val_confidence_accuracy"][-1]))
+            print("{} (Confidence Precision)".format(train_history["confidence_precision"][-1]))
+            print("{} (Val Confidence Precision)".format(train_history["val_confidence_precision"][-1]))
+            print("{} (Confidence Recall)".format(train_history["confidence_recall"][-1]))
+            print("{} (Val Confidence Recall)".format(train_history["val_confidence_recall"][-1]))
+            for seg_class in classes:
+                print("{} (Confidence Accuracy {})".format(train_history["confidence_accuracy_" + seg_class][-1], seg_class))
+                print("{} (Val Confidence Accuracy {})".format(train_history["val_confidence_accuracy_" + seg_class][-1], seg_class))
+                print("{} (Confidence Precision {})".format(train_history["confidence_precision_" + seg_class][-1], seg_class))
+                print("{} (Val Confidence Precision {})".format(train_history["val_confidence_precision_" + seg_class][-1], seg_class))
+                print("{} (Confidence Recall {})".format(train_history["confidence_recall_" + seg_class][-1], seg_class))
+                print("{} (Val Confidence Recall {})".format(train_history["val_confidence_recall_" + seg_class][-1], seg_class))
+
             print("Learning Rate: {}".format(args.learning_rate))
             print("")
 
@@ -556,7 +679,6 @@ if __name__ == "__main__":
 
             ctime = time.time()
 
-            del train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep[:], train_image_ground_truth_mask_deep[:]
             del test_image_cat_batch, test_image_ground_truth_batch, test_image_ground_truth_mask_batch, test_image_ground_truth_deep[:], test_image_ground_truth_mask_deep[:]
             gc.collect()
             torch.cuda.empty_cache()
@@ -579,7 +701,7 @@ if __name__ == "__main__":
             json.dump(model_config, f, indent=4)
 
         # Plot the training history
-        fig, axes = plt.subplots(1 + 2 * pyr_height + num_classes, 1, figsize=(12, 4 + 8 * pyr_height + 4 * num_classes))
+        fig, axes = plt.subplots(2 + 2 * pyr_height + 2 * num_classes, 1, figsize=(12, 8 + 8 * pyr_height + 8 * num_classes))
         # Plot the cum loss
         axes[0].plot(train_history["loss_cum"], label="Train")
         axes[0].plot(train_history["val_loss_cum"], label="Validation")
@@ -617,6 +739,30 @@ if __name__ == "__main__":
             axes[1 + 2 * pyr_height + k].set_xlabel("Epoch")
             axes[1 + 2 * pyr_height + k].set_ylabel("Metric")
             axes[1 + 2 * pyr_height + k].legend()
+
+        # plot the confidence predictions
+        axes[1 + 2 * pyr_height + num_classes].plot(train_history["confidence_accuracy"], label="Train Accuracy")
+        axes[1 + 2 * pyr_height + num_classes].plot(train_history["val_confidence_accuracy"], label="Validation Accuracy")
+        axes[1 + 2 * pyr_height + num_classes].plot(train_history["confidence_precision"], label="Train Precision")
+        axes[1 + 2 * pyr_height + num_classes].plot(train_history["val_confidence_precision"], label="Validation Precision")
+        axes[1 + 2 * pyr_height + num_classes].plot(train_history["confidence_recall"], label="Train Recall")
+        axes[1 + 2 * pyr_height + num_classes].plot(train_history["val_confidence_recall"], label="Validation Recall")
+        axes[1 + 2 * pyr_height + num_classes].set_title("Accuracy, Precision, and Recall (Confidence)")
+        axes[1 + 2 * pyr_height + num_classes].set_xlabel("Epoch")
+        axes[1 + 2 * pyr_height + num_classes].set_ylabel("Metric")
+        axes[1 + 2 * pyr_height + num_classes].legend()
+
+        for k in range(num_classes):
+            axes[2 + 2 * pyr_height + num_classes + k].plot(train_history["confidence_accuracy_" + classes[k]], label="Train Accuracy")
+            axes[2 + 2 * pyr_height + num_classes + k].plot(train_history["val_confidence_accuracy_" + classes[k]], label="Validation Accuracy")
+            axes[2 + 2 * pyr_height + num_classes + k].plot(train_history["confidence_precision_" + classes[k]], label="Train Precision")
+            axes[2 + 2 * pyr_height + num_classes + k].plot(train_history["val_confidence_precision_" + classes[k]], label="Validation Precision")
+            axes[2 + 2 * pyr_height + num_classes + k].plot(train_history["confidence_recall_" + classes[k]], label="Train Recall")
+            axes[2 + 2 * pyr_height + num_classes + k].plot(train_history["val_confidence_recall_" + classes[k]], label="Validation Recall")
+            axes[2 + 2 * pyr_height + num_classes + k].set_title("Accuracy, Precision, and Recall (Confidence {})".format(classes[k]))
+            axes[2 + 2 * pyr_height + num_classes + k].set_xlabel("Epoch")
+            axes[2 + 2 * pyr_height + num_classes + k].set_ylabel("Metric")
+            axes[2 + 2 * pyr_height + num_classes + k].legend()
 
         plt.tight_layout()
         plt.savefig(os.path.join(model_dir, "train_history.png"))
