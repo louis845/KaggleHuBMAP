@@ -25,7 +25,7 @@ def compute_confidence_class(result: torch.Tensor):
     with torch.no_grad():
         softmax = torch.softmax(result, dim=1)
         # (confidence level at least 0.5)
-        return (softmax[:, 0, ...] > 0.5) * (torch.argmax(result[:, 1:, ...], dim=1) + 1)
+        return (softmax[:, 0, ...] <= 0.5) * (torch.argmax(result[:, 1:, ...], dim=1) + 1)
 
 
 def training_step(train_history=None):
