@@ -618,6 +618,8 @@ class MultipleImageSampler:
 
             # apply mixup augmentation
             lambda_interp = np.random.beta(mixup_alpha, mixup_alpha)
+            if lambda_interp > 0.5:
+                lambda_interp = 1 - lambda_interp
             image_cat = lambda_interp * image_cat1 + (1 - lambda_interp) * image_cat2
             ground_truth = lambda_interp * ground_truth1 + (1 - lambda_interp) * ground_truth2
             ground_truth_mask = ground_truth_mask1 * ground_truth_mask2

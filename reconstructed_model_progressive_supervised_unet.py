@@ -27,6 +27,13 @@ def compute_confidence_class(result: torch.Tensor):
         # (confidence level at least 0.5)
         return (softmax[:, 0, ...] <= 0.5) * (torch.argmax(result[:, 1:, ...], dim=1) + 1)
 
+def focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_hot_ground_truth:bool):
+    cross_entropy = torch.nn.functional.cross_entropy(result, ground_truth, reduction="none", weight=class_weights)
+
+    ground_truth_one_hot = ground_truth if one_hot_ground_truth else torch.nn.functional.one_hot(ground_truth, num_classes=3).permute(0, 3, 1, 2).to(torch.float32)
+    softmax = torch.softmax(result, dim=1)
+
+    return torch.sum((softmax - ground_truth_one_hot) ** 2, dim=1) * cross_entropy
 
 def training_step(train_history=None):
     # pass train_history = None if extra steps, pass train_history = train_history main step.
@@ -95,10 +102,12 @@ def training_step(train_history=None):
             for k in range(pyr_height - 2, -1, -1):
                 multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
 
-                k_loss = torch.sum(torch.nn.functional.cross_entropy(deep_outputs[k],
-                                                                     train_image_ground_truth_deep[pyr_height - 2 - k],
+                if use_focal_loss:
+                    ce_res = focal_loss(deep_outputs[k], train_image_ground_truth_deep[pyr_height - 2 - k], one_hot_ground_truth=mixup > 0.0)
+                else:
+                    ce_res = torch.nn.functional.cross_entropy(deep_outputs[k], train_image_ground_truth_deep[pyr_height - 2 - k],
                                                                      reduction="none")
-                                   * train_image_ground_truth_mask_deep[pyr_height - 2 - k]) * multiply_scale_factor
+                k_loss = torch.sum(ce_res * train_image_ground_truth_mask_deep[pyr_height - 2 - k]) * multiply_scale_factor
                 loss += k_loss
 
                 if train_history is not None:
@@ -121,9 +130,12 @@ def training_step(train_history=None):
                         false_positive_per_output[k] += ((deep_class_prediction > 0) & (
                                     train_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
 
-            result_loss = torch.sum(
-                torch.nn.functional.cross_entropy(result, train_image_ground_truth_batch, reduction="none",
-                                                  weight=class_weights) * train_image_ground_truth_mask_batch)
+            if use_focal_loss:
+                ce_res = focal_loss(result, train_image_ground_truth_batch, one_hot_ground_truth=mixup > 0.0)
+            else:
+                ce_res = torch.nn.functional.cross_entropy(result, train_image_ground_truth_batch, reduction="none",
+                                                  weight=class_weights)
+            result_loss = torch.sum(ce_res * train_image_ground_truth_mask_batch)
             loss += result_loss
 
             if train_history is not None:
@@ -268,6 +280,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_batch_norm", action="store_true", help="Whether to use batch normalization. Default False.")
     parser.add_argument("--use_res_conv", action="store_true", help="Whether to use deeper residual convolutional networks. Default False.")
     parser.add_argument("--use_atrous_conv", action="store_true", help="Whether to use atrous convolutional networks. Default False.")
+    parser.add_argument("--use_focal_loss", action="store_true", help="Whether to use focal loss. Default False.")
     parser.add_argument("--hidden_channels", type=int, default=64, help="Number of hidden channels to use. Default 64.")
     parser.add_argument("--pyramid_height", type=int, default=4, help="Number of pyramid levels to use. Default 4.")
     parser.add_argument("--unet_attention", action="store_true", help="Whether to use attention in the U-Net. Default False.")
@@ -331,6 +344,7 @@ if __name__ == "__main__":
     image_pixels_round = 2 ** args.pyramid_height
     pyr_height = args.pyramid_height
     deep_exponent_base = args.deep_exponent_base
+    use_focal_loss = args.use_focal_loss
 
     model_config = {
         "model": "reconstructed_model_progressive_supervised_unet",
@@ -343,6 +357,7 @@ if __name__ == "__main__":
         "use_batch_norm": args.use_batch_norm,
         "use_res_conv": args.use_res_conv,
         "use_atrous_conv": args.use_atrous_conv,
+        "use_focal_loss": args.use_focal_loss,
         "hidden_channels": args.hidden_channels,
         "pyramid_height": args.pyramid_height,
         "unet_attention": args.unet_attention,
@@ -509,8 +524,12 @@ if __name__ == "__main__":
                         for k in range(pyr_height - 2, -1, -1):
                             multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
 
-                            k_loss = torch.sum(torch.nn.functional.cross_entropy(deep_outputs[k], test_image_ground_truth_deep[pyr_height - 2 - k], reduction="none")
-                                      * test_image_ground_truth_mask_deep[pyr_height - 2 - k]) * multiply_scale_factor
+                            if use_focal_loss:
+                                ce_res = focal_loss(deep_outputs[k], test_image_ground_truth_deep[pyr_height - 2 - k], one_hot_ground_truth=mixup > 0.0)
+                            else:
+                                ce_res = torch.nn.functional.cross_entropy(deep_outputs[k], test_image_ground_truth_deep[pyr_height - 2 - k], reduction="none")
+
+                            k_loss = torch.sum(ce_res * test_image_ground_truth_mask_deep[pyr_height - 2 - k]) * multiply_scale_factor
                             loss += k_loss
 
                             total_loss_per_output[k] += k_loss.item()
@@ -523,8 +542,11 @@ if __name__ == "__main__":
                             true_positive_per_output[k] += ((deep_class_prediction > 0) & (test_image_ground_truth_deep_class > 0) & bool_mask).sum().item()
                             false_positive_per_output[k] += ((deep_class_prediction > 0) & (test_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
 
-                        result_loss = torch.sum(torch.nn.functional.cross_entropy(result, test_image_ground_truth_batch, reduction="none", weight=class_weights)
-                                         * test_image_ground_truth_mask_batch)
+                        if use_focal_loss:
+                            ce_res = focal_loss(result, test_image_ground_truth_batch, one_hot_ground_truth=mixup > 0.0)
+                        else:
+                            ce_res = torch.nn.functional.cross_entropy(result, test_image_ground_truth_batch, reduction="none", weight=class_weights)
+                        result_loss = torch.sum(ce_res * test_image_ground_truth_mask_batch)
                         loss += result_loss
 
                         total_loss_per_output[-1] += result_loss.item()
