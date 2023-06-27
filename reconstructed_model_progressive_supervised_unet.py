@@ -27,6 +27,10 @@ def compute_confidence_class(result: torch.Tensor):
         # (confidence level at least 0.5)
         return (softmax[:, 0, ...] <= 0.5) * (torch.argmax(result[:, 1:, ...], dim=1) + 1)
 
+def compute_class_no_confidence(result: torch.Tensor):
+    with torch.no_grad():
+        return torch.argmax(result[:, 1:, ...], dim=1) + 1
+
 def focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_hot_ground_truth:bool):
     cross_entropy = torch.nn.functional.cross_entropy(result, ground_truth, reduction="none", weight=class_weights)
 
@@ -50,11 +54,14 @@ def training_step(train_history=None):
 
         true_negative_class, true_positive_class, false_negative_class, false_positive_class = {}, {}, {}, {}
         true_negative_confidence_class, true_positive_confidence_class, false_negative_confidence_class, false_positive_confidence_class = {}, {}, {}, {}
+        true_negative_class_class, true_positive_class_class, false_negative_class_class, false_positive_class_class = {}, {}, {}, {}
         for seg_class in classes:
             true_negative_class[seg_class], true_positive_class[seg_class], false_negative_class[seg_class], \
                 false_positive_class[seg_class] = 0, 0, 0, 0
             true_negative_confidence_class[seg_class], true_positive_confidence_class[seg_class], \
                 false_negative_confidence_class[seg_class], false_positive_confidence_class[seg_class] = 0, 0, 0, 0
+            true_negative_class_class[seg_class], true_positive_class_class[seg_class],\
+                false_negative_class_class[seg_class], false_positive_class_class[seg_class] = 0, 0, 0, 0
 
     # Shuffle if not async. if async its loaded in another process
     if use_async_sampling == 0:
@@ -143,6 +150,7 @@ def training_step(train_history=None):
                 with torch.no_grad():
                     pred_labels = torch.argmax(result, dim=1)
                     pred_labels_confidence = compute_confidence_class(result)
+                    pred_labels_class = compute_class_no_confidence(result)
                     bool_mask = train_image_ground_truth_mask_batch.to(torch.bool)
                     if mixup > 0.0:
                         train_image_ground_truth_batch = torch.argmax(train_image_ground_truth_batch, dim=1)
@@ -180,6 +188,15 @@ def training_step(train_history=None):
                             (pred_labels_confidence == seg_ps) & (train_image_ground_truth_batch != seg_ps) & bool_mask).item())
                         false_negative_confidence_class[seg_class] += int(torch.sum(
                             (pred_labels_confidence != seg_ps) & (train_image_ground_truth_batch == seg_ps) & bool_mask).item())
+
+                        true_positive_class_class[seg_class] += int(torch.sum(
+                            (pred_labels_class == seg_ps) & (train_image_ground_truth_batch == seg_ps) & bool_mask).item())
+                        true_negative_class_class[seg_class] += int(torch.sum(
+                            (pred_labels_class != seg_ps) & (train_image_ground_truth_batch != seg_ps) & bool_mask).item())
+                        false_positive_class_class[seg_class] += int(torch.sum(
+                            (pred_labels_class == seg_ps) & (train_image_ground_truth_batch != seg_ps) & bool_mask).item())
+                        false_negative_class_class[seg_class] += int(torch.sum(
+                            (pred_labels_class != seg_ps) & (train_image_ground_truth_batch == seg_ps) & bool_mask).item())
 
             loss.backward()
             optimizer.step()
@@ -264,6 +281,24 @@ def training_step(train_history=None):
                 train_history["confidence_recall_" + seg_class].append(
                     true_positive_confidence_class[seg_class] / (
                                 true_positive_confidence_class[seg_class] + false_negative_confidence_class[seg_class]))
+
+            train_history["class_accuracy_" + seg_class].append(
+                (true_positive_class_class[seg_class] + true_negative_class_class[seg_class]) / (
+                            true_positive_class_class[seg_class] + true_negative_class_class[seg_class] +
+                            false_positive_class_class[seg_class] + false_negative_class_class[seg_class]) )
+            if true_positive_class_class[seg_class] + false_positive_class_class[seg_class] == 0:
+                train_history["class_precision_" + seg_class].append(0.0)
+            else:
+                train_history["class_precision_" + seg_class].append(
+                    true_positive_class_class[seg_class] / (
+                                true_positive_class_class[seg_class] + false_positive_class_class[seg_class]))
+            if true_positive_class_class[seg_class] + false_negative_class_class[seg_class] == 0:
+                train_history["class_recall_" + seg_class].append(0.0)
+            else:
+                train_history["class_recall_" + seg_class].append(
+                    true_positive_class_class[seg_class] / (
+                            true_positive_class_class[seg_class] + false_negative_class_class[seg_class]
+                    ))
 
     del train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep[:], train_image_ground_truth_mask_deep[:]
     gc.collect()
@@ -405,12 +440,20 @@ if __name__ == "__main__":
         train_history["val_precision_{}".format(seg_class)] = []
         train_history["recall_{}".format(seg_class)] = []
         train_history["val_recall_{}".format(seg_class)] = []
+
         train_history["confidence_accuracy_{}".format(seg_class)] = []
         train_history["val_confidence_accuracy_{}".format(seg_class)] = []
         train_history["confidence_precision_{}".format(seg_class)] = []
         train_history["val_confidence_precision_{}".format(seg_class)] = []
         train_history["confidence_recall_{}".format(seg_class)] = []
         train_history["val_confidence_recall_{}".format(seg_class)] = []
+
+        train_history["class_accuracy_{}".format(seg_class)] = []
+        train_history["val_class_accuracy_{}".format(seg_class)] = []
+        train_history["class_precision_{}".format(seg_class)] = []
+        train_history["val_class_precision_{}".format(seg_class)] = []
+        train_history["class_recall_{}".format(seg_class)] = []
+        train_history["val_class_recall_{}".format(seg_class)] = []
         print("Class {}: {}".format(seg_class, class_weights[k]))
 
     class_weights = torch.tensor([1.0] + class_weights, dtype=torch.float32, device=config.device)
@@ -497,11 +540,14 @@ if __name__ == "__main__":
 
                 true_negative_class, true_positive_class, false_negative_class, false_positive_class = {}, {}, {}, {}
                 true_negative_confidence_class, true_positive_confidence_class, false_negative_confidence_class, false_positive_confidence_class = {}, {}, {}, {}
+                true_negative_class_class, true_positive_class_class, false_negative_class_class, false_positive_class_class = {}, {}, {}, {}
                 for seg_class in classes:
                     true_negative_class[seg_class], true_positive_class[seg_class], false_negative_class[seg_class], \
                         false_positive_class[seg_class] = 0, 0, 0, 0
                     true_negative_confidence_class[seg_class], true_positive_confidence_class[seg_class],\
                         false_negative_confidence_class[seg_class], false_positive_confidence_class[seg_class] = 0, 0, 0, 0
+                    true_negative_class_class[seg_class], true_positive_class_class[seg_class], false_negative_class_class[seg_class], \
+                        false_positive_class_class[seg_class] = 0, 0, 0, 0
 
                 print()
                 print("Validating.....")
@@ -553,6 +599,7 @@ if __name__ == "__main__":
 
                         pred_labels = torch.argmax(result, dim=1)
                         pred_labels_confidence = compute_confidence_class(result)
+                        pred_labels_class = compute_class_no_confidence(result)
 
                         bool_mask = test_image_ground_truth_mask_batch.to(dtype=torch.bool)
                         true_negative_per_output[-1] += ((pred_labels == 0) & (test_image_ground_truth_batch == 0) & bool_mask).sum().item()
@@ -584,6 +631,15 @@ if __name__ == "__main__":
                             false_positive_confidence_class[seg_class] += int(torch.sum((pred_labels_confidence == seg_ps)\
                                         & (test_image_ground_truth_batch != seg_ps) & bool_mask).item())
                             false_negative_confidence_class[seg_class] += int(torch.sum((pred_labels_confidence != seg_ps)\
+                                        & (test_image_ground_truth_batch == seg_ps) & bool_mask).item())
+
+                            true_positive_class_class[seg_class] += int(torch.sum((pred_labels_class == seg_ps)\
+                                        & (test_image_ground_truth_batch == seg_ps) & bool_mask).item())
+                            true_negative_class_class[seg_class] += int(torch.sum((pred_labels_class != seg_ps)\
+                                        & (test_image_ground_truth_batch != seg_ps) & bool_mask).item())
+                            false_positive_class_class[seg_class] += int(torch.sum((pred_labels_class == seg_ps)\
+                                        & (test_image_ground_truth_batch != seg_ps) & bool_mask).item())
+                            false_negative_class_class[seg_class] += int(torch.sum((pred_labels_class != seg_ps)\
                                         & (test_image_ground_truth_batch == seg_ps) & bool_mask).item())
 
                         total_cum_loss += loss.item()
@@ -657,6 +713,23 @@ if __name__ == "__main__":
                         train_history["val_confidence_recall_" + seg_class].append(true_positive_confidence_class[seg_class]
                             / (true_positive_confidence_class[seg_class] + false_negative_confidence_class[seg_class]))
 
+                    train_history["val_class_accuracy_{}".format(seg_class)].append(
+                        (true_positive_class_class[seg_class] + true_negative_class_class[seg_class]) / (
+                                    true_positive_class_class[seg_class] + true_negative_class_class[seg_class] +
+                                    false_positive_class_class[seg_class] + false_negative_class_class[seg_class]))
+                    if true_positive_class_class[seg_class] + false_positive_class_class[seg_class] == 0:
+                        train_history["val_class_precision_{}".format(seg_class)].append(0.0)
+                    else:
+                        train_history["val_class_precision_{}".format(seg_class)].append(
+                            true_positive_class_class[seg_class] / (
+                                        true_positive_class_class[seg_class] + false_positive_class_class[seg_class]))
+                    if true_positive_class_class[seg_class] + false_negative_class_class[seg_class] == 0:
+                        train_history["val_class_recall_{}".format(seg_class)].append(0.0)
+                    else:
+                        train_history["val_class_recall_{}".format(seg_class)].append(
+                            true_positive_class_class[seg_class] / (
+                                        true_positive_class_class[seg_class] + false_negative_class_class[seg_class]))
+
             print("Time Elapsed: {}".format(time.time() - ctime))
             print("Epoch: {}/{}".format(epoch, num_epochs))
             print("{} (Loss Cum)".format(train_history["loss_cum"][-1]))
@@ -691,6 +764,14 @@ if __name__ == "__main__":
                 print("{} (Confidence Recall {})".format(train_history["confidence_recall_" + seg_class][-1], seg_class))
                 print("{} (Val Confidence Recall {})".format(train_history["val_confidence_recall_" + seg_class][-1], seg_class))
 
+            for seg_class in classes:
+                print("{} (Class Accuracy {})".format(train_history["class_accuracy_" + seg_class][-1], seg_class))
+                print("{} (Val Class Accuracy {})".format(train_history["val_class_accuracy_" + seg_class][-1], seg_class))
+                print("{} (Class Precision {})".format(train_history["class_precision_" + seg_class][-1], seg_class))
+                print("{} (Val Class Precision {})".format(train_history["val_class_precision_" + seg_class][-1], seg_class))
+                print("{} (Class Recall {})".format(train_history["class_recall_" + seg_class][-1], seg_class))
+                print("{} (Val Class Recall {})".format(train_history["val_class_recall_" + seg_class][-1], seg_class))
+
             print("Learning Rate: {}".format(args.learning_rate))
             print("")
 
@@ -723,7 +804,7 @@ if __name__ == "__main__":
             json.dump(model_config, f, indent=4)
 
         # Plot the training history
-        fig, axes = plt.subplots(2 + 2 * pyr_height + 2 * num_classes, 1, figsize=(12, 8 + 8 * pyr_height + 8 * num_classes))
+        fig, axes = plt.subplots(2 + 2 * pyr_height + 3 * num_classes, 1, figsize=(12, 8 + 8 * pyr_height + 12 * num_classes))
         # Plot the cum loss
         axes[0].plot(train_history["loss_cum"], label="Train")
         axes[0].plot(train_history["val_loss_cum"], label="Validation")
@@ -785,6 +866,18 @@ if __name__ == "__main__":
             axes[2 + 2 * pyr_height + num_classes + k].set_xlabel("Epoch")
             axes[2 + 2 * pyr_height + num_classes + k].set_ylabel("Metric")
             axes[2 + 2 * pyr_height + num_classes + k].legend()
+
+        for k in range(num_classes):
+            axes[2 + 2 * pyr_height + 2 * num_classes + k].plot(train_history["class_accuracy_" + classes[k]], label="Train Accuracy")
+            axes[2 + 2 * pyr_height + 2 * num_classes + k].plot(train_history["val_class_accuracy_" + classes[k]], label="Validation Accuracy")
+            axes[2 + 2 * pyr_height + 2 * num_classes + k].plot(train_history["class_precision_" + classes[k]], label="Train Precision")
+            axes[2 + 2 * pyr_height + 2 * num_classes + k].plot(train_history["val_class_precision_" + classes[k]], label="Validation Precision")
+            axes[2 + 2 * pyr_height + 2 * num_classes + k].plot(train_history["class_recall_" + classes[k]], label="Train Recall")
+            axes[2 + 2 * pyr_height + 2 * num_classes + k].plot(train_history["val_class_recall_" + classes[k]], label="Validation Recall")
+            axes[2 + 2 * pyr_height + 2 * num_classes + k].set_title("Accuracy, Precision, and Recall (Class {})".format(classes[k]))
+            axes[2 + 2 * pyr_height + 2 * num_classes + k].set_xlabel("Epoch")
+            axes[2 + 2 * pyr_height + 2 * num_classes + k].set_ylabel("Metric")
+            axes[2 + 2 * pyr_height + 2 * num_classes + k].legend()
 
         plt.tight_layout()
         plt.savefig(os.path.join(model_dir, "train_history.png"))
