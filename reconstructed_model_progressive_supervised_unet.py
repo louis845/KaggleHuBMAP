@@ -406,6 +406,10 @@ if __name__ == "__main__":
     for key, value in extra_info.items():
         model_config[key] = value
 
+    # Save the model config
+    with open(os.path.join(model_dir, "config.json"), "w") as f:
+        json.dump(model_config, f, indent=4)
+
     # Initialize training
     rng = np.random.default_rng()
 
@@ -799,9 +803,6 @@ if __name__ == "__main__":
         # Save the training history by converting it to a dataframe
         train_history = pd.DataFrame(train_history)
         train_history.to_csv(os.path.join(model_dir, "train_history.csv"), index=False)
-        # Save the model config
-        with open(os.path.join(model_dir, "config.json"), "w") as f:
-            json.dump(model_config, f, indent=4)
 
         # Plot the training history
         fig, axes = plt.subplots(2 + 2 * pyr_height + 3 * num_classes, 1, figsize=(12, 8 + 8 * pyr_height + 12 * num_classes))
