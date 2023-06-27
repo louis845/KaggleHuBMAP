@@ -10,4 +10,4 @@ Repo for hubmap
  * matplotlib
  * PyQt5
  * opencv-python
- * shapely
+ * h5py
