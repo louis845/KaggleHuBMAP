@@ -360,8 +360,8 @@ class Region:
             pixel = locations[np.random.randint(0, locations.shape[0]), :]
             return pixel[1], pixel[0]
         else:
-            x = model_data_manager.data_information.loc[tile_id, "i"]
-            y = model_data_manager.data_information.loc[tile_id, "j"]
+            x = model_data_manager.data_information.loc[tile_id, "i"] + 256
+            y = model_data_manager.data_information.loc[tile_id, "j"] + 256
             return x, y
 
     def get_region_mask(self, x1, x2, y1, y2):
