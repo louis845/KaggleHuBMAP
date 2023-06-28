@@ -46,7 +46,7 @@ def convert_predictions_to_image(pred_type: torch.Tensor):
 
 def convert_confidence_levels_to_image(pred_type: torch.Tensor):
     pred_mask_image = np.zeros((compute_end - computed, 512, 512, 3), dtype=np.uint8)
-    value_mask = (pred_type * 255).unsqueeze(-1).repeat(1, 1, 1, 3).cpu().numpy().astype(np.uint8)
+    value_mask = (pred_type * 255).cpu().numpy().astype(np.uint8)
     hue_mask = np.zeros_like(value_mask)
     saturation_mask = np.zeros_like(value_mask)
 
