@@ -233,15 +233,13 @@ if __name__ == "__main__":
 
             gc.collect()
             torch.cuda.empty_cache()
-
+            pbar.update(compute_end - computed)
             computed = compute_end
 
             if computed - last_compute_print >= 100:
                 print("Computed {} images in {:.2f} seconds".format(computed, time.time() - ctime))
                 last_compute_print = computed
                 ctime = time.time()
-
-            pbar.update(compute_end - computed)
 
     if args.prediction_type != "levels":
         accuracy = (true_positive + true_negative) / (true_positive + true_negative + false_positive + false_negative)
