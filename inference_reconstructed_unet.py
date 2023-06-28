@@ -12,6 +12,7 @@ import pandas as pd
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+import tqdm
 
 import torch
 import torch.nn
@@ -147,97 +148,100 @@ if __name__ == "__main__":
             false_negative_classes_val[seg_class] = 0.0
 
     image_radius = image_width // 2
-    while computed < len(subdata_entries):
-        # Test the model
-        with torch.no_grad():
-            compute_end = min(computed + batch_size, len(subdata_entries))
-            inference_batch = torch.zeros((compute_end - computed, 4, image_width, image_width), dtype=torch.float32, device=config.device)
+    with tqdm.tqdm(total=len(subdata_entries)) as pbar:
+        while computed < len(subdata_entries):
+            # Test the model
+            with torch.no_grad():
+                compute_end = min(computed + batch_size, len(subdata_entries))
+                inference_batch = torch.zeros((compute_end - computed, 4, image_width, image_width), dtype=torch.float32, device=config.device)
 
-            for k in range(computed, compute_end):
-                inference_batch[k - computed, :, :, :] = inference_reconstructed_base.load_combined(subdata_entries[k], image_size=image_width)
-
-            result, deep_outputs = model(inference_batch)
-            del deep_outputs[:]
-            # restrict result to center 512x512
-            result = result[:, :, image_radius-256:image_radius+256, image_radius-256:image_radius+256]
-            pred_type = get_predictions(result, args.prediction_type)
-            if args.prediction_type == "levels":
-                pred_mask_image = convert_confidence_levels_to_image(pred_type)
-            else:
-                pred_mask_image = convert_predictions_to_image(pred_type)
-
-            for k in range(computed, compute_end):
-                output_data_writer.write_image_data(subdata_entries[k],
-                                                    cv2.cvtColor(pred_mask_image[k - computed, :, :, :], cv2.COLOR_HSV2RGB))
-
-            if args.prediction_type != "levels":
-                # Now we load the ground truth masks from the input data loader and compute the metrics
-                # Obtain the ground truth labels
-                ground_truth_batch = torch.zeros((compute_end - computed, 512, 512), dtype=torch.bool, device=config.device)
-                ground_truth_class_labels_batch = torch.zeros((compute_end - computed, 512, 512), dtype=torch.long, device=config.device)
                 for k in range(computed, compute_end):
-                    seg_mask = input_data_loader.get_segmentation_mask(subdata_entries[k], "blood_vessel")
-                    ground_truth_batch[k - computed, :, :] = torch.tensor(seg_mask, dtype=torch.bool, device=config.device)
-                    x = model_data_manager.data_information.loc[subdata_entries[k], "i"]
-                    y = model_data_manager.data_information.loc[subdata_entries[k], "j"]
-                    wsi_id = model_data_manager.data_information.loc[subdata_entries[k], "source_wsi"]
-                    ground_truth_class_labels_batch[k - computed, :, :] = torch.tensor(gt_masks[wsi_id].obtain_blood_vessel_mask(
-                        x, x + 512, y, y + 512
-                    ), dtype=torch.long, device=config.device)
+                    inference_batch[k - computed, :, :, :] = inference_reconstructed_base.load_combined(subdata_entries[k], image_size=image_width)
 
-                # Compute global metrics
-                true_positive += torch.sum((pred_type > 0) & ground_truth_batch).item()
-                true_negative += torch.sum((pred_type == 0) & ~ground_truth_batch).item()
-                false_positive += torch.sum((pred_type > 0) & ~ground_truth_batch).item()
-                false_negative += torch.sum((pred_type == 0) & ground_truth_batch).item()
+                result, deep_outputs = model(inference_batch)
+                del deep_outputs[:]
+                # restrict result to center 512x512
+                result = result[:, :, image_radius-256:image_radius+256, image_radius-256:image_radius+256]
+                pred_type = get_predictions(result, args.prediction_type)
+                if args.prediction_type == "levels":
+                    pred_mask_image = convert_confidence_levels_to_image(pred_type)
+                else:
+                    pred_mask_image = convert_predictions_to_image(pred_type)
 
-                for k in range(len(classes)):
-                    seg_class = classes[k]
-                    true_positive_classes[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch == (k + 1))).item()
-                    true_negative_classes[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch != (k + 1))).item()
-                    false_positive_classes[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch != (k + 1))).item()
-                    false_negative_classes[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch == (k + 1))).item()
-
-                # Compute the train and test metrics
-                training_batch_mask = torch.zeros((compute_end - computed, 1, 1), dtype=torch.bool, device=config.device)
-                validation_batch_mask = torch.zeros((compute_end - computed, 1, 1), dtype=torch.bool, device=config.device)
                 for k in range(computed, compute_end):
-                    if subdata_entries[k] in train_subdata_entries:
-                        training_batch_mask[k - computed, 0, 0] = True
-                    elif subdata_entries[k] in val_subdata_entries:
-                        validation_batch_mask[k - computed, 0, 0] = True
+                    output_data_writer.write_image_data(subdata_entries[k],
+                                                        cv2.cvtColor(pred_mask_image[k - computed, :, :, :], cv2.COLOR_HSV2RGB))
 
-                true_positive_train += torch.sum((pred_type > 0) & ground_truth_batch & training_batch_mask).item()
-                true_negative_train += torch.sum((pred_type == 0) & ~ground_truth_batch & training_batch_mask).item()
-                false_positive_train += torch.sum((pred_type > 0) & ~ground_truth_batch & training_batch_mask).item()
-                false_negative_train += torch.sum((pred_type == 0) & ground_truth_batch & training_batch_mask).item()
+                if args.prediction_type != "levels":
+                    # Now we load the ground truth masks from the input data loader and compute the metrics
+                    # Obtain the ground truth labels
+                    ground_truth_batch = torch.zeros((compute_end - computed, 512, 512), dtype=torch.bool, device=config.device)
+                    ground_truth_class_labels_batch = torch.zeros((compute_end - computed, 512, 512), dtype=torch.long, device=config.device)
+                    for k in range(computed, compute_end):
+                        seg_mask = input_data_loader.get_segmentation_mask(subdata_entries[k], "blood_vessel")
+                        ground_truth_batch[k - computed, :, :] = torch.tensor(seg_mask, dtype=torch.bool, device=config.device)
+                        x = model_data_manager.data_information.loc[subdata_entries[k], "i"]
+                        y = model_data_manager.data_information.loc[subdata_entries[k], "j"]
+                        wsi_id = model_data_manager.data_information.loc[subdata_entries[k], "source_wsi"]
+                        ground_truth_class_labels_batch[k - computed, :, :] = torch.tensor(gt_masks[wsi_id].obtain_blood_vessel_mask(
+                            x, x + 512, y, y + 512
+                        ), dtype=torch.long, device=config.device)
 
-                true_positive_val += torch.sum((pred_type > 0) & ground_truth_batch & validation_batch_mask).item()
-                true_negative_val += torch.sum((pred_type == 0) & ~ground_truth_batch & validation_batch_mask).item()
-                false_positive_val += torch.sum((pred_type > 0) & ~ground_truth_batch & validation_batch_mask).item()
-                false_negative_val += torch.sum((pred_type == 0) & ground_truth_batch & validation_batch_mask).item()
+                    # Compute global metrics
+                    true_positive += torch.sum((pred_type > 0) & ground_truth_batch).item()
+                    true_negative += torch.sum((pred_type == 0) & ~ground_truth_batch).item()
+                    false_positive += torch.sum((pred_type > 0) & ~ground_truth_batch).item()
+                    false_negative += torch.sum((pred_type == 0) & ground_truth_batch).item()
 
-                for k in range(len(classes)):
-                    seg_class = classes[k]
-                    true_positive_classes_train[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & training_batch_mask).item()
-                    true_negative_classes_train[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & training_batch_mask).item()
-                    false_positive_classes_train[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & training_batch_mask).item()
-                    false_negative_classes_train[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & training_batch_mask).item()
+                    for k in range(len(classes)):
+                        seg_class = classes[k]
+                        true_positive_classes[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch == (k + 1))).item()
+                        true_negative_classes[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch != (k + 1))).item()
+                        false_positive_classes[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch != (k + 1))).item()
+                        false_negative_classes[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch == (k + 1))).item()
 
-                    true_positive_classes_val[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & validation_batch_mask).item()
-                    true_negative_classes_val[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & validation_batch_mask).item()
-                    false_positive_classes_val[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & validation_batch_mask).item()
-                    false_negative_classes_val[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & validation_batch_mask).item()
+                    # Compute the train and test metrics
+                    training_batch_mask = torch.zeros((compute_end - computed, 1, 1), dtype=torch.bool, device=config.device)
+                    validation_batch_mask = torch.zeros((compute_end - computed, 1, 1), dtype=torch.bool, device=config.device)
+                    for k in range(computed, compute_end):
+                        if subdata_entries[k] in train_subdata_entries:
+                            training_batch_mask[k - computed, 0, 0] = True
+                        elif subdata_entries[k] in val_subdata_entries:
+                            validation_batch_mask[k - computed, 0, 0] = True
 
-        gc.collect()
-        torch.cuda.empty_cache()
+                    true_positive_train += torch.sum((pred_type > 0) & ground_truth_batch & training_batch_mask).item()
+                    true_negative_train += torch.sum((pred_type == 0) & ~ground_truth_batch & training_batch_mask).item()
+                    false_positive_train += torch.sum((pred_type > 0) & ~ground_truth_batch & training_batch_mask).item()
+                    false_negative_train += torch.sum((pred_type == 0) & ground_truth_batch & training_batch_mask).item()
 
-        computed = compute_end
+                    true_positive_val += torch.sum((pred_type > 0) & ground_truth_batch & validation_batch_mask).item()
+                    true_negative_val += torch.sum((pred_type == 0) & ~ground_truth_batch & validation_batch_mask).item()
+                    false_positive_val += torch.sum((pred_type > 0) & ~ground_truth_batch & validation_batch_mask).item()
+                    false_negative_val += torch.sum((pred_type == 0) & ground_truth_batch & validation_batch_mask).item()
 
-        if computed - last_compute_print >= 100:
-            print("Computed {} images in {:.2f} seconds".format(computed, time.time() - ctime))
-            last_compute_print = computed
-            ctime = time.time()
+                    for k in range(len(classes)):
+                        seg_class = classes[k]
+                        true_positive_classes_train[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & training_batch_mask).item()
+                        true_negative_classes_train[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & training_batch_mask).item()
+                        false_positive_classes_train[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & training_batch_mask).item()
+                        false_negative_classes_train[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & training_batch_mask).item()
+
+                        true_positive_classes_val[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & validation_batch_mask).item()
+                        true_negative_classes_val[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & validation_batch_mask).item()
+                        false_positive_classes_val[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & validation_batch_mask).item()
+                        false_negative_classes_val[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & validation_batch_mask).item()
+
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            computed = compute_end
+
+            if computed - last_compute_print >= 100:
+                print("Computed {} images in {:.2f} seconds".format(computed, time.time() - ctime))
+                last_compute_print = computed
+                ctime = time.time()
+
+            pbar.update(compute_end - computed)
 
     if args.prediction_type != "levels":
         accuracy = (true_positive + true_negative) / (true_positive + true_negative + false_positive + false_negative)
