@@ -5,7 +5,7 @@ import model_unet_base
 # https://arxiv.org/pdf/1804.03999.pdf
 
 class UNetEndClassifier(torch.nn.Module):
-    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, gate_activation=torch.nn.ELU(), deep_supervision=False, num_classes=1, num_deep_multiclasses=0):
+    def __init__(self, hidden_channels, use_batch_norm=False, pyr_height=4, gate_activation=torch.nn.ELU(), deep_supervision=False, num_classes=1, num_deep_multiclasses=0, bottleneck_expansion=1):
         super(UNetEndClassifier, self).__init__()
         self.pyr_height = pyr_height
         self.conv_up = torch.nn.ModuleList()
@@ -18,29 +18,29 @@ class UNetEndClassifier(torch.nn.Module):
         self.attention_upsample = torch.nn.Upsample(scale_factor=(2, 2), mode="bilinear")
 
         for i in range(pyr_height):
-            self.conv_up.append(model_unet_base.Conv(hidden_channels * 2 ** (pyr_height - i), hidden_channels * 2 ** (pyr_height - i - 1), use_batch_norm=use_batch_norm))
+            self.conv_up.append(model_unet_base.Conv(bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i), bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i - 1), use_batch_norm=use_batch_norm))
 
         self.maxpool = torch.nn.MaxPool2d(2)
         for i in range(pyr_height):
-            self.conv_up_transpose.append(torch.nn.ConvTranspose2d(hidden_channels * 2 ** (pyr_height - i), hidden_channels * 2 ** (pyr_height - i - 1), kernel_size=2, stride=2, bias=True))
+            self.conv_up_transpose.append(torch.nn.ConvTranspose2d(bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i), bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i - 1), kernel_size=2, stride=2, bias=True))
 
         for i in range(pyr_height):
-            self.gate_collection.append(torch.nn.Conv2d(hidden_channels * (2 ** (pyr_height - i) + 2 ** (pyr_height - i - 1)), hidden_channels * 2 ** (pyr_height - i - 1), kernel_size=1, bias=True))
-            self.gate_batch_norm.append(torch.nn.BatchNorm2d(hidden_channels * 2 ** (pyr_height - i - 1)))
-            self.attention_proj.append(torch.nn.Conv2d(hidden_channels * 2 ** (pyr_height - i - 1), 1, kernel_size=1, bias=True))
-            self.attention_batch_norm.append(torch.nn.BatchNorm2d(1))
+            self.gate_collection.append(torch.nn.Conv2d(bottleneck_expansion * hidden_channels * (2 ** (pyr_height - i) + 2 ** (pyr_height - i - 1)), hidden_channels * 2 ** (pyr_height - i - 1), kernel_size=1, bias=False))
+            self.gate_batch_norm.append(torch.nn.GroupNorm(num_groups=hidden_channels * 2 ** (pyr_height - i - 1), num_channels=hidden_channels * 2 ** (pyr_height - i - 1)))
+            self.attention_proj.append(torch.nn.Conv2d(hidden_channels * 2 ** (pyr_height - i - 1), 1, kernel_size=1, bias=False))
+            self.attention_batch_norm.append(torch.nn.GroupNorm(num_groups=1, num_channels=1))
 
         self.deep_supervision = deep_supervision
         if deep_supervision:
             self.outconv_deep = torch.nn.ModuleList()
             for i in range(pyr_height - 1 - num_deep_multiclasses):
-                self.outconv_deep.append(torch.nn.Conv2d(hidden_channels * 2 ** (pyr_height - i - 1), 1, 1, bias=True))
+                self.outconv_deep.append(torch.nn.Conv2d(bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i - 1), 1, 1, bias=True))
             for i in range(pyr_height - 1 - num_deep_multiclasses, pyr_height - 1):
-                self.outconv_deep.append(torch.nn.Conv2d(hidden_channels * 2 ** (pyr_height - i - 1), num_classes + 1, 1, bias=True))
+                self.outconv_deep.append(torch.nn.Conv2d(bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i - 1), num_classes + 1, 1, bias=True))
         if num_classes > 1:
-            self.outconv = torch.nn.Conv2d(hidden_channels, num_classes + 1, 1, bias=True)
+            self.outconv = torch.nn.Conv2d(bottleneck_expansion * hidden_channels, num_classes + 1, 1, bias=True)
         else:
-            self.outconv = torch.nn.Conv2d(hidden_channels, 1, 1, bias=True)
+            self.outconv = torch.nn.Conv2d(bottleneck_expansion * hidden_channels, 1, 1, bias=True)
         self.sigmoid = torch.nn.Sigmoid()
 
         self.num_classes = num_classes
@@ -99,10 +99,12 @@ class UNetEndClassifier(torch.nn.Module):
 
 class UNetClassifier(torch.nn.Module):
 
-    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, in_channels=3, use_atrous_conv=False, deep_supervision=False, num_classes=1, num_deep_multiclasses=0, res_conv_blocks=[2, 3, 4, 6, 10, 15, 15]):
+    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, in_channels=3, use_atrous_conv=False, deep_supervision=False, num_classes=1, num_deep_multiclasses=0, res_conv_blocks=[2, 3, 4, 6, 10, 15, 15], bottleneck_expansion=1, squeeze_excitation=False):
         super(UNetClassifier, self).__init__()
-        self.backbone = model_unet_base.UNetBackbone(in_channels, hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height, use_atrous_conv=use_atrous_conv, res_conv_blocks=res_conv_blocks)
-        self.classifier = UNetEndClassifier(hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height, deep_supervision=deep_supervision, num_classes=num_classes, num_deep_multiclasses=num_deep_multiclasses)
+        assert (bottleneck_expansion == 1) or use_res_conv, "residual convolutions must be used if bottleneck_expansion > 1"
+        assert (not squeeze_excitation) or use_res_conv, "residual convolutions must be used if squeeze_excitation is True"
+        self.backbone = model_unet_base.UNetBackbone(in_channels, hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height, use_atrous_conv=use_atrous_conv, res_conv_blocks=res_conv_blocks, bottleneck_expansion=bottleneck_expansion, squeeze_excitation=squeeze_excitation)
+        self.classifier = UNetEndClassifier(hidden_channels, use_batch_norm=use_batch_norm, pyr_height=pyr_height, deep_supervision=deep_supervision, num_classes=num_classes, num_deep_multiclasses=num_deep_multiclasses, bottleneck_expansion=bottleneck_expansion)
         self.pyr_height = pyr_height
 
     def forward(self, x):

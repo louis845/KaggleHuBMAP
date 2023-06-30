@@ -71,44 +71,55 @@ class AtrousConv(torch.nn.Module):
         return x
 
 class ResConvBlock(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, use_batch_norm=False, downsample=False):
+    def __init__(self, in_channels, out_channels, use_batch_norm=False, downsample=False, bottleneck_expansion=1, squeeze_excitation=False):
+        """
+        :param in_channels: number of input channels
+        :param out_channels: number of output channels without bottleneck expansion. The actual number of output channels is out_channels * bottleneck_expansion
+        :param use_batch_norm: whether to use batch (instance) normalization
+        :param downsample: whether to downsample the input 2x2
+        :param bottleneck_expansion: the expansion factor of the bottleneck
+        """
         super(ResConvBlock, self).__init__()
-        assert in_channels <= out_channels
+        assert in_channels <= out_channels * bottleneck_expansion
 
         if downsample:
-            self.maxpool = torch.nn.MaxPool2d(2)
+            self.avgpool = torch.nn.AvgPool2d(2)
 
-        self.conv1 = torch.nn.Conv2d(in_channels, out_channels, 1, bias=True, padding="same", padding_mode="replicate")
+        self.conv1 = torch.nn.Conv2d(in_channels, out_channels, 1, bias=False, padding="same", padding_mode="replicate")
         if use_batch_norm:
-            self.batchnorm1 = torch.nn.GroupNorm(num_groups=out_channels // 4, num_channels=out_channels)
+            self.batchnorm1 = torch.nn.GroupNorm(num_groups=out_channels, num_channels=out_channels) # instance norm
         self.elu1 = torch.nn.ELU(inplace=True)
 
         if downsample:
-            self.conv2 = torch.nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=2, bias=True, padding=0, groups=out_channels // 8)
+            self.conv2 = torch.nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=2, bias=False, padding=0, groups=out_channels // 8) # x8d, meaning 8 channels in each "capacity" connection
         else:
-            self.conv2 = torch.nn.Conv2d(out_channels, out_channels, kernel_size=3, bias=True, padding="same", padding_mode="replicate", groups=out_channels // 8)
+            self.conv2 = torch.nn.Conv2d(out_channels, out_channels, kernel_size=3, bias=False, padding="same", padding_mode="replicate", groups=out_channels // 8)
         if use_batch_norm:
-            self.batchnorm2 = torch.nn.GroupNorm(num_groups=out_channels // 4, num_channels=out_channels)
+            self.batchnorm2 = torch.nn.GroupNorm(num_groups=out_channels, num_channels=out_channels) # instance norm
         self.elu2 = torch.nn.ELU(inplace=True)
 
-        self.conv3 = torch.nn.Conv2d(out_channels, out_channels, 1, bias=True, padding="same", padding_mode="replicate")
+        self.conv3 = torch.nn.Conv2d(out_channels, out_channels * bottleneck_expansion, 1, bias=False, padding="same", padding_mode="replicate")
         if use_batch_norm:
-            self.batchnorm3 = torch.nn.GroupNorm(num_groups=out_channels // 4, num_channels=out_channels)
+            self.batchnorm3 = torch.nn.GroupNorm(num_groups=out_channels * bottleneck_expansion, num_channels=out_channels * bottleneck_expansion) # instance norm
         self.elu3 = torch.nn.ELU(inplace=True)
 
-
-        torch.nn.init.constant_(self.conv1.bias, 0.0)
-        torch.nn.init.constant_(self.conv2.bias, 0.0)
-        torch.nn.init.constant_(self.conv3.bias, 0.0)
+        if squeeze_excitation:
+            self.se_pool = torch.nn.AdaptiveAvgPool2d(1)
+            self.se_conv1 = torch.nn.Conv2d(out_channels * bottleneck_expansion, out_channels // 4, 1, bias=True, padding="same", padding_mode="replicate")
+            self.se_relu = torch.nn.ReLU(inplace=True)
+            self.se_conv2 = torch.nn.Conv2d(out_channels // 4, out_channels * bottleneck_expansion, 1, bias=True, padding="same", padding_mode="replicate")
+            self.se_sigmoid = torch.nn.Sigmoid()
 
         self.use_batch_norm = use_batch_norm
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.downsample = downsample
+        self.bottleneck_expansion = bottleneck_expansion
+        self.squeeze_excitation = squeeze_excitation
 
     def forward(self, x):
-        if self.in_channels < self.out_channels:
-            x_init = torch.nn.functional.pad(x, (0, 0, 0, 0, 0, self.out_channels - self.in_channels), "constant", 0.0)
+        if self.in_channels < self.out_channels * self.bottleneck_expansion:
+            x_init = torch.nn.functional.pad(x, (0, 0, 0, 0, 0, self.out_channels * self.bottleneck_expansion - self.in_channels), "constant", 0.0)
         else:
             x_init = x
 
@@ -129,20 +140,29 @@ class ResConvBlock(torch.nn.Module):
         if self.use_batch_norm:
             x = self.batchnorm3(x)
 
+        if self.squeeze_excitation:
+            x_se = self.se_pool(x)
+            x_se = self.se_conv1(x_se)
+            x_se = self.se_relu(x_se)
+            x_se = self.se_conv2(x_se)
+            x_se = self.se_sigmoid(x_se)
+            x = x * x_se
+
         if self.downsample:
-            x_init = self.maxpool(x_init)
+            x_init = self.avgpool(x_init)
         result = self.elu3(x_init + x)
         return result
 
 class ResConv(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, use_batch_norm=False, downsample=False, blocks=3):
+    def __init__(self, in_channels, out_channels, use_batch_norm=False, downsample=False, blocks=3, bottleneck_expansion=1, squeeze_excitation=False):
+        # bottleneck expansion means how many times the number of channels is increased in the ultimate outputs of resconvs.
         super(ResConv, self).__init__()
         assert in_channels <= out_channels
 
         self.conv_res = torch.nn.ModuleList()
-        self.conv_res.append(ResConvBlock(in_channels, out_channels, use_batch_norm=use_batch_norm, downsample=downsample))
+        self.conv_res.append(ResConvBlock(in_channels, out_channels, use_batch_norm=use_batch_norm, downsample=downsample, bottleneck_expansion=bottleneck_expansion, squeeze_excitation=squeeze_excitation))
         for k in range(1, blocks):
-            self.conv_res.append(ResConvBlock(out_channels, out_channels, use_batch_norm=use_batch_norm))
+            self.conv_res.append(ResConvBlock(out_channels * bottleneck_expansion, out_channels, use_batch_norm=use_batch_norm, bottleneck_expansion=bottleneck_expansion, squeeze_excitation=squeeze_excitation))
 
         self.blocks = blocks
     def forward(self, x):
@@ -152,22 +172,28 @@ class ResConv(torch.nn.Module):
         return x
 
 class UNetBackbone(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, use_batch_norm=False, use_res_conv=False, use_atrous_conv=False, pyr_height=4, res_conv_blocks=[2, 3, 4, 6, 10, 15, 15]):
+    def __init__(self, in_channels, hidden_channels, use_batch_norm=False, use_res_conv=False, use_atrous_conv=False, pyr_height=4, res_conv_blocks=[2, 3, 4, 6, 10, 15, 15], bottleneck_expansion=1, squeeze_excitation=False):
         super(UNetBackbone, self).__init__()
         self.pyr_height = pyr_height
         self.conv_down = torch.nn.ModuleList()
+
+        self.initial_conv = torch.nn.Conv2d(in_channels, hidden_channels, kernel_size=7, bias=False, padding="same", padding_mode="replicate")
+        if use_batch_norm:
+            self.initial_batch_norm = torch.nn.GroupNorm(num_groups=hidden_channels, num_channels=hidden_channels)  # instance norm
+        self.initial_elu = torch.nn.ELU(inplace=True)
+
         if use_res_conv:
-            self.conv0 = ResConv(in_channels, hidden_channels, use_batch_norm=use_batch_norm, blocks=res_conv_blocks[0])
+            self.conv0 = ResConv(hidden_channels, hidden_channels, use_batch_norm=use_batch_norm, blocks=res_conv_blocks[0], bottleneck_expansion=bottleneck_expansion, squeeze_excitation=squeeze_excitation)
             for i in range(pyr_height - 1):
-                self.conv_down.append(ResConv(hidden_channels * 2 ** i, hidden_channels * 2 ** (i + 1), use_batch_norm=use_batch_norm, downsample=True, blocks=res_conv_blocks[i + 1]))
+                self.conv_down.append(ResConv(bottleneck_expansion * hidden_channels * 2 ** i, hidden_channels * 2 ** (i + 1), use_batch_norm=use_batch_norm, downsample=True, blocks=res_conv_blocks[i + 1], bottleneck_expansion=bottleneck_expansion, squeeze_excitation=squeeze_excitation))
         else:
-            self.conv0 = Conv(in_channels, hidden_channels, use_batch_norm=use_batch_norm)
+            self.conv0 = Conv(hidden_channels, hidden_channels, use_batch_norm=use_batch_norm)
             for i in range(pyr_height - 1):
                 self.conv_down.append(Conv(hidden_channels * 2 ** i, hidden_channels * 2 ** (i + 1), use_batch_norm=use_batch_norm))
         if use_atrous_conv:
             self.conv_down.append(AtrousConv(hidden_channels * 2 ** (pyr_height - 1), hidden_channels * 2 ** pyr_height, use_batch_norm=use_batch_norm))
         elif use_res_conv:
-            self.conv_down.append(ResConv(hidden_channels * 2 ** (pyr_height - 1), hidden_channels * 2 ** pyr_height, use_batch_norm=use_batch_norm, downsample=True, blocks=res_conv_blocks[pyr_height]))
+            self.conv_down.append(ResConv(bottleneck_expansion * hidden_channels * 2 ** (pyr_height - 1), hidden_channels * 2 ** pyr_height, use_batch_norm=use_batch_norm, downsample=True, blocks=res_conv_blocks[pyr_height], bottleneck_expansion=bottleneck_expansion, squeeze_excitation=squeeze_excitation))
         else:
             self.conv_down.append(Conv(hidden_channels * 2 ** (pyr_height - 1), hidden_channels * 2 ** pyr_height, use_batch_norm=use_batch_norm))
         self.maxpool = torch.nn.MaxPool2d(2)
@@ -175,6 +201,11 @@ class UNetBackbone(torch.nn.Module):
         self.use_atrous_conv = use_atrous_conv
 
     def forward(self, x):
+        x = self.initial_conv(x)
+        if self.use_batch_norm:
+            x = self.initial_batch_norm(x)
+        x = self.initial_elu(x)
+        
         # contracting path
         ret = []
         x = self.conv0(x)
@@ -194,7 +225,7 @@ class UNetBackbone(torch.nn.Module):
         return ret
 
 class UNetEndClassifier(torch.nn.Module):
-    def __init__(self, hidden_channels, use_batch_norm=False, pyr_height=4, deep_supervision=False, num_classes=1, num_deep_multiclasses=0):
+    def __init__(self, hidden_channels, use_batch_norm=False, pyr_height=4, deep_supervision=False, num_classes=1, num_deep_multiclasses=0, bottleneck_expansion=1):
         """
         Note that num_deep_multiclasses are used only if deep_supervision is True
         """
@@ -203,24 +234,24 @@ class UNetEndClassifier(torch.nn.Module):
         self.conv_up = torch.nn.ModuleList()
         self.conv_up_transpose = torch.nn.ModuleList()
         for i in range(pyr_height):
-            self.conv_up.append(Conv(hidden_channels * 2 ** (pyr_height - i), hidden_channels * 2 ** (pyr_height - i - 1), use_batch_norm=use_batch_norm))
+            self.conv_up.append(Conv(bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i), bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i - 1), use_batch_norm=use_batch_norm))
 
         self.maxpool = torch.nn.MaxPool2d(2)
         for i in range(pyr_height):
-            self.conv_up_transpose.append(torch.nn.ConvTranspose2d(hidden_channels * 2 ** (pyr_height - i), hidden_channels * 2 ** (pyr_height - i - 1), kernel_size=2, stride=2, bias=True))
+            self.conv_up_transpose.append(torch.nn.ConvTranspose2d(bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i), bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i - 1), kernel_size=2, stride=2, bias=True))
 
         self.deep_supervision = deep_supervision
         if deep_supervision:
             self.outconv_deep = torch.nn.ModuleList()
             for i in range(pyr_height - 1 - num_deep_multiclasses):
-                self.outconv_deep.append(torch.nn.Conv2d(hidden_channels * 2 ** (pyr_height - i - 1), 1, 1, bias=True))
+                self.outconv_deep.append(torch.nn.Conv2d(bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i - 1), 1, 1, bias=True))
             for i in range(pyr_height - 1 - num_deep_multiclasses, pyr_height - 1):
-                self.outconv_deep.append(torch.nn.Conv2d(hidden_channels * 2 ** (pyr_height - i - 1), num_classes + 1, 1, bias=True))
+                self.outconv_deep.append(torch.nn.Conv2d(bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i - 1), num_classes + 1, 1, bias=True))
 
         if num_classes > 1:
-            self.outconv = torch.nn.Conv2d(hidden_channels, num_classes + 1, 1, bias=True)
+            self.outconv = torch.nn.Conv2d(bottleneck_expansion * hidden_channels, num_classes + 1, 1, bias=True)
         else:
-            self.outconv = torch.nn.Conv2d(hidden_channels, 1, 1, bias=True)
+            self.outconv = torch.nn.Conv2d(bottleneck_expansion * hidden_channels, 1, 1, bias=True)
         self.sigmoid = torch.nn.Sigmoid()
 
         self.num_classes = num_classes
@@ -253,10 +284,12 @@ class UNetEndClassifier(torch.nn.Module):
 
 class UNetClassifier(torch.nn.Module):
 
-    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, in_channels=3, use_atrous_conv=False, deep_supervision=False, num_classes=1, num_deep_multiclasses=0, res_conv_blocks=[2, 3, 4, 6, 10, 15, 15]):
+    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, in_channels=3, use_atrous_conv=False, deep_supervision=False, num_classes=1, num_deep_multiclasses=0, res_conv_blocks=[2, 3, 4, 6, 10, 15, 15], bottleneck_expansion=1, squeeze_excitation=False):
         super(UNetClassifier, self).__init__()
-        self.backbone = UNetBackbone(in_channels, hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height, use_atrous_conv=use_atrous_conv, res_conv_blocks=res_conv_blocks)
-        self.classifier = UNetEndClassifier(hidden_channels, use_batch_norm=use_batch_norm, pyr_height=pyr_height, deep_supervision=deep_supervision, num_classes=num_classes, num_deep_multiclasses=num_deep_multiclasses)
+        assert (bottleneck_expansion == 1) or use_res_conv, "residual convolutions must be used if bottleneck_expansion > 1"
+        assert (not squeeze_excitation) or use_res_conv, "residual convolutions must be used if squeeze_excitation is True"
+        self.backbone = UNetBackbone(in_channels, hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height, use_atrous_conv=use_atrous_conv, res_conv_blocks=res_conv_blocks, bottleneck_expansion=bottleneck_expansion, squeeze_excitation=squeeze_excitation)
+        self.classifier = UNetEndClassifier(hidden_channels, use_batch_norm=use_batch_norm, pyr_height=pyr_height, deep_supervision=deep_supervision, num_classes=num_classes, num_deep_multiclasses=num_deep_multiclasses, bottleneck_expansion=bottleneck_expansion)
         self.pyr_height = pyr_height
 
     def forward(self, x):

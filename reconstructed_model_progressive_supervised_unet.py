@@ -316,7 +316,9 @@ if __name__ == "__main__":
     parser.add_argument("--use_res_conv", action="store_true", help="Whether to use deeper residual convolutional networks. Default False.")
     parser.add_argument("--use_atrous_conv", action="store_true", help="Whether to use atrous convolutional networks. Default False.")
     parser.add_argument("--use_focal_loss", action="store_true", help="Whether to use focal loss. Default False.")
+    parser.add_argument("--use_squeeze_excitation", action="store_true", help="Whether to use squeeze and excitation. Default False.")
     parser.add_argument("--hidden_channels", type=int, default=64, help="Number of hidden channels to use. Default 64.")
+    parser.add_argument("--bottleneck_expansion", type=int, default=1, help="The expansion factor of the bottleneck. Default 1.")
     parser.add_argument("--pyramid_height", type=int, default=4, help="Number of pyramid levels to use. Default 4.")
     parser.add_argument("--unet_attention", action="store_true", help="Whether to use attention in the U-Net. Default False.")
     parser.add_argument("--deep_exponent_base", type=float, default=2.0, help="The base of the exponent for the deep supervision loss. Default 2.0.")
@@ -345,13 +347,15 @@ if __name__ == "__main__":
                                                     hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                     use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
                                                     in_channels=4, use_atrous_conv=args.use_atrous_conv,
-                                                    deep_supervision=True,
+                                                    deep_supervision=True, squeeze_excitation=args.use_squeeze_excitation,
+                                                    bottleneck_expansion=args.bottleneck_expansion,
                                                     res_conv_blocks=[2, 3, 4, 6, 10, 10, 10]).to(device=config.device)
     else:
         model = model_unet_base.UNetClassifier(num_classes=2, num_deep_multiclasses=args.pyramid_height - 1,
                                                 hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
                                                in_channels=4, use_atrous_conv=args.use_atrous_conv, deep_supervision=True,
+                                               squeeze_excitation=args.use_squeeze_excitation, bottleneck_expansion=args.bottleneck_expansion,
                                                res_conv_blocks=[2, 3, 4, 6, 10, 10, 10]).to(device=config.device)
 
     if args.optimizer.lower() == "adam":
@@ -393,7 +397,9 @@ if __name__ == "__main__":
         "use_res_conv": args.use_res_conv,
         "use_atrous_conv": args.use_atrous_conv,
         "use_focal_loss": args.use_focal_loss,
+        "use_squeeze_excitation": args.use_squeeze_excitation,
         "hidden_channels": args.hidden_channels,
+        "bottleneck_expansion": args.bottleneck_expansion,
         "pyramid_height": args.pyramid_height,
         "unet_attention": args.unet_attention,
         "deep_exponent_base": deep_exponent_base,
@@ -434,7 +440,7 @@ if __name__ == "__main__":
 
     print("Using class weights:")
     classes = ["blood_vessel", "boundary"]
-    class_weights = [1.0, 1.0]
+    class_weights = [5.0, 5.0]
     num_classes = 2
     for k in range(len(classes)):
         seg_class = classes[k]
