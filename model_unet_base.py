@@ -199,6 +199,7 @@ class UNetBackbone(torch.nn.Module):
         self.maxpool = torch.nn.MaxPool2d(2)
         self.use_res_conv = use_res_conv
         self.use_atrous_conv = use_atrous_conv
+        self.use_batch_norm = use_batch_norm
 
     def forward(self, x):
         x = self.initial_conv(x)
