@@ -451,7 +451,6 @@ class ImageSampler:
 
         with torch.no_grad():
             image = images.get_image(self.wsi_region.wsi_id, x1_int, x2_int, y1_int, y2_int).astype(dtype=np.float32).transpose([2, 0, 1]) # float32, (0-2)
-            image = image / 255.0 # normalize to [0, 1]
             region_mask = self.wsi_region.get_region_mask(x1_int, x2_int, y1_int, y2_int).astype(dtype=np.float32) # bool (3)
             ground_truth = self.polygons.obtain_blood_vessel_mask(x1_int, x2_int, y1_int, y2_int) # long (4)
             gt1 = self.sampling_region.get_region_mask(x1_int, x2_int, y1_int, y2_int)
