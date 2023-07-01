@@ -354,6 +354,8 @@ if __name__ == "__main__":
     num_extra_steps = args.num_extra_steps
     use_amp = args.use_amp
 
+    blocks = [2, 3, 4, 6, 6, 7, 7]
+    # blocks = [2, 3, 4, 6, 10, 10, 10]
 
     if args.unet_attention:
         model = model_unet_attention.UNetClassifier(num_classes=2, num_deep_multiclasses=args.pyramid_height - 1,
@@ -362,14 +364,14 @@ if __name__ == "__main__":
                                                     in_channels=4, use_atrous_conv=args.use_atrous_conv,
                                                     deep_supervision=True, squeeze_excitation=args.use_squeeze_excitation,
                                                     bottleneck_expansion=args.bottleneck_expansion,
-                                                    res_conv_blocks=[2, 3, 4, 6, 10, 10, 10]).to(device=config.device)
+                                                    res_conv_blocks=blocks).to(device=config.device)
     else:
         model = model_unet_base.UNetClassifier(num_classes=2, num_deep_multiclasses=args.pyramid_height - 1,
                                                 hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
                                                in_channels=4, use_atrous_conv=args.use_atrous_conv, deep_supervision=True,
                                                squeeze_excitation=args.use_squeeze_excitation, bottleneck_expansion=args.bottleneck_expansion,
-                                               res_conv_blocks=[2, 3, 4, 6, 10, 10, 10]).to(device=config.device)
+                                               res_conv_blocks=blocks).to(device=config.device)
 
     if args.optimizer.lower() == "adam":
         optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.999))
