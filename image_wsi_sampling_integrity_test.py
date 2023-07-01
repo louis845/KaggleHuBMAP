@@ -7,6 +7,7 @@ import model_data_manager
 import matplotlib.pyplot as plt
 import config
 import tqdm
+import argparse
 
 def show_tensor(tensor):
     """
@@ -72,15 +73,19 @@ def display_tile(tile_id):
     plt.show()
 
 if __name__ == "__main__":
-    dataset = "dataset1_regional_split1"
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", type=str, required=True)
+    args = parser.parse_args()
+    dataset = args.dataset
 
-    #combined_sampler = image_wsi_sampling.get_image_sampler(dataset, image_width=768)
-    combined_sampler = image_wsi_sampling_async.get_image_sampler(dataset, image_width=768, sampling_type="batch_random_image", buffer_max_size=100)
+    combined_sampler = image_wsi_sampling.get_image_sampler(dataset, image_width=768)
+    """combined_sampler = image_wsi_sampling_async.get_image_sampler(dataset, image_width=768, sampling_type="batch_random_image", buffer_max_size=100)
     for tile_id in model_data_manager.get_subdata_entry_list(dataset):
-        combined_sampler.request_load_sample([tile_id], augmentation=False, random_location=False)
+        combined_sampler.request_load_sample([tile_id], augmentation=False, random_location=False)"""
 
     loader = model_data_manager.get_dataset_dataloader(None)
     for tile_id in tqdm.tqdm(model_data_manager.get_subdata_entry_list(dataset)):
         check_tile_id(tile_id)
 
-    combined_sampler.terminate()
+    if isinstance(combined_sampler, image_wsi_sampling_async.MultipleImageSamplerAsync):
+        combined_sampler.terminate()
