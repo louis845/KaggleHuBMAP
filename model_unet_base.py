@@ -157,7 +157,6 @@ class ResConv(torch.nn.Module):
     def __init__(self, in_channels, out_channels, use_batch_norm=False, downsample=False, blocks=3, bottleneck_expansion=1, squeeze_excitation=False):
         # bottleneck expansion means how many times the number of channels is increased in the ultimate outputs of resconvs.
         super(ResConv, self).__init__()
-        assert in_channels <= out_channels
 
         self.conv_res = torch.nn.ModuleList()
         self.conv_res.append(ResConvBlock(in_channels, out_channels, use_batch_norm=use_batch_norm, downsample=downsample, bottleneck_expansion=bottleneck_expansion, squeeze_excitation=squeeze_excitation))
