@@ -176,13 +176,13 @@ class UNetBackbone(torch.nn.Module):
         self.pyr_height = pyr_height
         self.conv_down = torch.nn.ModuleList()
 
-        self.initial_conv = torch.nn.Conv2d(in_channels, hidden_channels, kernel_size=7, bias=False, padding="same", padding_mode="replicate")
+        self.initial_conv = torch.nn.Conv2d(in_channels, hidden_channels * bottleneck_expansion, kernel_size=7, bias=False, padding="same", padding_mode="replicate")
         if use_batch_norm:
-            self.initial_batch_norm = torch.nn.GroupNorm(num_groups=hidden_channels, num_channels=hidden_channels)  # instance norm
+            self.initial_batch_norm = torch.nn.GroupNorm(num_groups=hidden_channels * bottleneck_expansion, num_channels=hidden_channels * bottleneck_expansion)  # instance norm
         self.initial_elu = torch.nn.ELU(inplace=True)
 
         if use_res_conv:
-            self.conv0 = ResConv(hidden_channels, hidden_channels, use_batch_norm=use_batch_norm, blocks=res_conv_blocks[0], bottleneck_expansion=bottleneck_expansion, squeeze_excitation=squeeze_excitation)
+            self.conv0 = ResConv(hidden_channels * bottleneck_expansion, hidden_channels, use_batch_norm=use_batch_norm, blocks=res_conv_blocks[0], bottleneck_expansion=bottleneck_expansion, squeeze_excitation=squeeze_excitation)
             for i in range(pyr_height - 1):
                 self.conv_down.append(ResConv(bottleneck_expansion * hidden_channels * 2 ** i, hidden_channels * 2 ** (i + 1), use_batch_norm=use_batch_norm, downsample=True, blocks=res_conv_blocks[i + 1], bottleneck_expansion=bottleneck_expansion, squeeze_excitation=squeeze_excitation))
         else:

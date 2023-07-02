@@ -684,7 +684,7 @@ if not os.path.isdir(folder):
 if not os.path.isfile(os.path.join(folder, "data.hdf5")):
     print("Data not yet generated. Generating data now....")
     with h5py.File(os.path.join(folder, "data.hdf5"), "w") as segmentation_masks:
-        for wsi_id in range(1, 3):
+        for wsi_id in range(1, 5):
             print("Generating data for wsi_{}".format(wsi_id))
             group = segmentation_masks.create_group("wsi_{}".format(wsi_id))
             r = Region(wsi_id, group, writable=True)
@@ -694,7 +694,7 @@ if not os.path.isfile(os.path.join(folder, "data.hdf5")):
 
 if not os.path.isfile(os.path.join(folder, "wsi512_1_region.png")):
     with h5py.File(os.path.join(folder, "data.hdf5"), "r") as segmentation_masks:
-        for wsi_id in range(1, 3):
+        for wsi_id in range(1, 5):
             print("Generating images for wsi_{}".format(wsi_id))
             group = segmentation_masks["wsi_{}".format(wsi_id)]
             r = Region(wsi_id, group, writable=False)
@@ -820,8 +820,10 @@ if __name__ == "__main__":
     #generate_masks_from_subdata("dataset1_split2")
     #generate_masks_from_subdata("dataset1_regional_split1")
     #generate_masks_from_subdata("dataset1_regional_split2")
+    generate_masks_from_subdata("dataset1_regional_split1_extra")
+    generate_masks_from_subdata("dataset1_regional_split2_extra")
 
-    mask1 = get_subdata_mask("dataset1_regional_split1")
+    """mask1 = get_subdata_mask("dataset1_regional_split1")
     sampler = ImageSampler(get_wsi_region_mask(1), mask1[1], obtain_reconstructed_binary_segmentation.get_default_WSI_mask(1), 1024)
 
     tiles = ["5ac25a1e40dd", "39b8aafd630b", "8e90e6189c6b", "f45a29109ff5"]
@@ -839,4 +841,4 @@ if __name__ == "__main__":
     print("Min time elapsed: {} seconds".format(np.min(all_time_elapsed)))
     print("Max time elapsed: {} seconds".format(np.max(all_time_elapsed)))
     print("First time elapsed: {} seconds".format(all_time_elapsed[0]))
-    print("Last time elapsed: {} seconds".format(all_time_elapsed[-1]))
+    print("Last time elapsed: {} seconds".format(all_time_elapsed[-1]))"""

@@ -354,7 +354,8 @@ if __name__ == "__main__":
     num_extra_steps = args.num_extra_steps
     use_amp = args.use_amp
 
-    blocks = [2, 3, 4, 6, 6, 7, 7]
+    blocks = [1, 4, 4, 6, 10, 10, 10]
+    # blocks = [2, 3, 4, 6, 6, 7, 7]
     # blocks = [2, 3, 4, 6, 10, 10, 10]
 
     if args.unet_attention:
