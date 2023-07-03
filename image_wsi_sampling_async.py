@@ -259,29 +259,43 @@ class MultipleImageSamplerAsync:
 
         return image, ground_truth, ground_truth_mask
 
-    def get_samples(self, device, length:int):
+    def get_samples(self, device, length:int, image_tensor: torch.Tensor=None, ground_truth_tensor: torch.Tensor=None,
+                    ground_truth_mask_tensor: torch.Tensor=None, ground_truth_deep_tensors: list[torch.Tensor]=None,
+                    ground_truth_mask_deep_tensors: list[torch.Tensor]=None):
         """Get the loaded samples for the batch. WARNING - this is a blocking call."""
         assert self.sampling_type != "random_image", "Sampling can only be used not with the random_image sampling type."
         self.image_available_lock.acquire(block=True)
 
         self.image_access_lock.acquire(block=True)
 
-        image = self.shared_image_cat[:length, ...].to(device, copy=True)
-        ground_truth = self.shared_ground_truth[:length, ...].to(device, copy=True)
-        ground_truth_mask = self.shared_ground_truth_mask[:length, ...].to(device, copy=True)
-        if self.deep_supervision_outputs > 0:
-            ground_truth_deep = []
-            ground_truth_mask_deep = []
-            for k in range(self.deep_supervision_outputs):
-                ground_truth_deep.append(self.shared_ground_truth_deep[k][:length, ...].to(device, copy=True))
-                ground_truth_mask_deep.append(self.shared_ground_truth_mask_deep[k][:length, ...].to(device, copy=True))
+        if image_tensor is None:
+            # we allocate and create a copy and then return it
+            image = self.shared_image_cat[:length, ...].to(device, copy=True)
+            ground_truth = self.shared_ground_truth[:length, ...].to(device, copy=True)
+            ground_truth_mask = self.shared_ground_truth_mask[:length, ...].to(device, copy=True)
+            if self.deep_supervision_outputs > 0:
+                ground_truth_deep = []
+                ground_truth_mask_deep = []
+                for k in range(self.deep_supervision_outputs):
+                    ground_truth_deep.append(self.shared_ground_truth_deep[k][:length, ...].to(device, copy=True))
+                    ground_truth_mask_deep.append(self.shared_ground_truth_mask_deep[k][:length, ...].to(device, copy=True))
+        else:
+            # directly copy into the tensors
+            image_tensor.copy_(self.shared_image_cat)
+            ground_truth_tensor.copy_(self.shared_ground_truth)
+            ground_truth_mask_tensor.copy_(self.shared_ground_truth_mask)
+            if self.deep_supervision_outputs > 0:
+                for k in range(self.deep_supervision_outputs):
+                    ground_truth_deep_tensors[k].copy_(self.shared_ground_truth_deep[k])
+                    ground_truth_mask_deep_tensors[k].copy_(self.shared_ground_truth_mask_deep[k])
 
         self.image_required_flag.value = True
         self.image_access_lock.release()
 
-        if self.deep_supervision_outputs > 0:
-            return image, ground_truth, ground_truth_mask, ground_truth_deep, ground_truth_mask_deep
-        return image, ground_truth, ground_truth_mask
+        if image_tensor is None:
+            if self.deep_supervision_outputs > 0:
+                return image, ground_truth, ground_truth_mask, ground_truth_deep, ground_truth_mask_deep
+            return image, ground_truth, ground_truth_mask
 
 def get_image_sampler(subdata_name: str, image_width=1024, batch_size: int=1, sampling_type:str="random_image", deep_supervision_outputs=0, buffer_max_size=-1) -> MultipleImageSamplerAsync:
     return MultipleImageSamplerAsync(subdata_name, image_width, batch_size, sampling_type, deep_supervision_outputs, buffer_max_size)
