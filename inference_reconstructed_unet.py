@@ -69,13 +69,63 @@ def get_predictions(result: torch.Tensor, predictions_type:str="argmax"):
         softmax = torch.softmax(result, dim=1)
         return 1 - softmax[:, 0, ...]
 
+def get_result_logits(model: torch.nn.Module, inference_batch: torch.Tensor, test_time_augmentation: bool):
+    # inference_batch is a batch of images of shape (N, C, H, W)
+    if test_time_augmentation:
+        # obtain all variants using TTA
+        result = get_result_logits(model, inference_batch, False)
+        gc.collect()
+        torch.cuda.empty_cache()
+        result_rot90 = torch.rot90(get_result_logits(model, torch.rot90(inference_batch, 1, [2, 3]), False),
+                                   -1, [2, 3])
+        gc.collect()
+        torch.cuda.empty_cache()
+        result_rot180 = torch.rot90(get_result_logits(model, torch.rot90(inference_batch, 2, [2, 3]), False),
+                                    -2, [2, 3])
+        gc.collect()
+        torch.cuda.empty_cache()
+        result_rot270 = torch.rot90(get_result_logits(model, torch.rot90(inference_batch, 3, [2, 3]), False),
+                                    -3, [2, 3])
+        gc.collect()
+        torch.cuda.empty_cache()
+        # flip
+        result_flip = torch.flip(get_result_logits(model, torch.flip(inference_batch, [-1]), False), [-1])
+        gc.collect()
+        torch.cuda.empty_cache()
+        result_rot90_flip = torch.rot90(torch.flip(get_result_logits(model, torch.flip(torch.rot90(inference_batch, 1, [2, 3]), [-1]), False),
+                                                   [-1]), -1, [2, 3])
+        gc.collect()
+        torch.cuda.empty_cache()
+        result_rot180_flip = torch.rot90(torch.flip(get_result_logits(model, torch.flip(torch.rot90(inference_batch, 2, [2, 3]), [-1]), False),
+                                                    [-1]), -2, [2, 3])
+        gc.collect()
+        torch.cuda.empty_cache()
+        result_rot270_flip = torch.rot90(torch.flip(get_result_logits(model, torch.flip(torch.rot90(inference_batch, 3, [2, 3]), [-1]), False),
+                                                    [-1]), -3, [2, 3])
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        # average all results
+        result = torch.mean(torch.stack([result, result_rot90, result_rot180, result_rot270,
+                                         result_flip, result_rot90_flip, result_rot180_flip, result_rot270_flip], dim=0), dim=0)
+        return result
+    else:
+        result, deep_outputs = model(inference_batch)
+        del deep_outputs[:]
+        # restrict result to center 512x512
+        result = result[:, :, image_radius - 256:image_radius + 256, image_radius - 256:image_radius + 256]
+        return result
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Inference of a multiclass U-Net model")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size to use. Default 2.")
     parser.add_argument("--use_batch_norm", action="store_true", help="Whether to use batch normalization. Default False.")
     parser.add_argument("--use_res_conv", action="store_true", help="Whether to use deeper residual convolutional networks. Default False.")
     parser.add_argument("--use_atrous_conv", action="store_true", help="Whether to use atrous convolutional networks. Default False.")
+    parser.add_argument("--use_squeeze_excitation", action="store_true", help="Whether to use squeeze and excitation. Default False.")
+    parser.add_argument("--use_tta", action="store_true", help="Whether to use test time augmentation. Default False.")
     parser.add_argument("--hidden_channels", type=int, default=64, help="Number of hidden channels to use. Default 64.")
+    parser.add_argument("--bottleneck_expansion", type=int, default=1, help="The expansion factor of the bottleneck. Default 1.")
     parser.add_argument("--pyramid_height", type=int, default=4, help="Number of pyramid levels to use. Default 4.")
     parser.add_argument("--unet_attention", action="store_true", help="Whether to use attention in the U-Net. Default False. Cannot be used with unet_plus.")
     parser.add_argument("--image_width", type=int, default=768, help="Width of the input images. Default 768.")
@@ -97,6 +147,7 @@ if __name__ == "__main__":
     for k in range(1, 3):
         gt_masks[k] = obtain_reconstructed_binary_segmentation.get_default_WSI_mask(k)
 
+    blocks = [2, 3, 4, 6, 6, 7, 7]
     if args.unet_attention:
         model = model_unet_attention.UNetClassifier(num_classes=2, num_deep_multiclasses=args.pyramid_height - 1,
                                                     hidden_channels=args.hidden_channels,
@@ -104,14 +155,18 @@ if __name__ == "__main__":
                                                     use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
                                                     in_channels=4, use_atrous_conv=args.use_atrous_conv,
                                                     deep_supervision=True,
-                                                    res_conv_blocks=[2, 3, 4, 6, 10, 10, 10]).to(device=config.device)
+                                                    squeeze_excitation=args.use_squeeze_excitation,
+                                                    bottleneck_expansion=args.bottleneck_expansion,
+                                                    res_conv_blocks=blocks).to(device=config.device)
     else:
         model = model_unet_base.UNetClassifier(num_classes=2, num_deep_multiclasses=args.pyramid_height - 1,
                                                hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
                                                in_channels=4, use_atrous_conv=args.use_atrous_conv,
                                                deep_supervision=True,
-                                               res_conv_blocks=[2, 3, 4, 6, 10, 10, 10]).to(device=config.device)
+                                               squeeze_excitation=args.use_squeeze_excitation,
+                                               bottleneck_expansion=args.bottleneck_expansion,
+                                               res_conv_blocks=blocks).to(device=config.device)
 
     model_checkpoint_path = os.path.join(model_path, "model.pt")
 
@@ -148,6 +203,7 @@ if __name__ == "__main__":
             false_negative_classes_val[seg_class] = 0.0
 
     image_radius = image_width // 2
+    print("Computing now. Prediction type: {}    Test time augmentation: {}".format(args.prediction_type, args.use_tta))
     with tqdm.tqdm(total=len(subdata_entries)) as pbar:
         while computed < len(subdata_entries):
             # Test the model
@@ -157,11 +213,8 @@ if __name__ == "__main__":
 
                 for k in range(computed, compute_end):
                     inference_batch[k - computed, :, :, :] = inference_reconstructed_base.load_combined(subdata_entries[k], image_size=image_width)
-
-                result, deep_outputs = model(inference_batch)
-                del deep_outputs[:]
-                # restrict result to center 512x512
-                result = result[:, :, image_radius-256:image_radius+256, image_radius-256:image_radius+256]
+                
+                result = get_result_logits(model, inference_batch, args.use_tta)
                 pred_type = get_predictions(result, args.prediction_type)
                 if args.prediction_type == "levels":
                     pred_mask_image = convert_confidence_levels_to_image(pred_type)
