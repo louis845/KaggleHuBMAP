@@ -5,7 +5,7 @@ import model_unet_base
 # https://arxiv.org/pdf/1804.03999.pdf
 
 class UNetEndClassifier(torch.nn.Module):
-    def __init__(self, hidden_channels, use_batch_norm=False, pyr_height=4, gate_activation=torch.nn.ELU(), deep_supervision=False, num_classes=1, num_deep_multiclasses=0, bottleneck_expansion=1):
+    def __init__(self, hidden_channels, use_batch_norm=False, use_atrous_conv=False, pyr_height=4, gate_activation=torch.nn.ELU(), deep_supervision=False, num_classes=1, num_deep_multiclasses=0, bottleneck_expansion=1):
         super(UNetEndClassifier, self).__init__()
         self.pyr_height = pyr_height
         self.conv_up = torch.nn.ModuleList()
@@ -18,7 +18,10 @@ class UNetEndClassifier(torch.nn.Module):
         self.attention_upsample = torch.nn.Upsample(scale_factor=(2, 2), mode="bilinear")
 
         for i in range(pyr_height):
-            self.conv_up.append(model_unet_base.Conv(bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i), bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i - 1), use_batch_norm=use_batch_norm))
+            if (i == pyr_height - 1) and use_atrous_conv:
+                self.conv_up.append(model_unet_base.AtrousConv(bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i), bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i - 1), use_batch_norm=use_batch_norm))
+            else:
+                self.conv_up.append(model_unet_base.Conv(bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i), bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i - 1), use_batch_norm=use_batch_norm))
 
         self.maxpool = torch.nn.MaxPool2d(2)
         for i in range(pyr_height):
@@ -103,8 +106,8 @@ class UNetClassifier(torch.nn.Module):
         super(UNetClassifier, self).__init__()
         assert (bottleneck_expansion == 1) or use_res_conv, "residual convolutions must be used if bottleneck_expansion > 1"
         assert (not squeeze_excitation) or use_res_conv, "residual convolutions must be used if squeeze_excitation is True"
-        self.backbone = model_unet_base.UNetBackbone(in_channels, hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height, use_atrous_conv=use_atrous_conv, res_conv_blocks=res_conv_blocks, bottleneck_expansion=bottleneck_expansion, squeeze_excitation=squeeze_excitation)
-        self.classifier = UNetEndClassifier(hidden_channels, use_batch_norm=use_batch_norm, pyr_height=pyr_height, deep_supervision=deep_supervision, num_classes=num_classes, num_deep_multiclasses=num_deep_multiclasses, bottleneck_expansion=bottleneck_expansion)
+        self.backbone = model_unet_base.UNetBackbone(in_channels, hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height, res_conv_blocks=res_conv_blocks, bottleneck_expansion=bottleneck_expansion, squeeze_excitation=squeeze_excitation)
+        self.classifier = UNetEndClassifier(hidden_channels, use_batch_norm=use_batch_norm, use_atrous_conv=use_atrous_conv, pyr_height=pyr_height, deep_supervision=deep_supervision, num_classes=num_classes, num_deep_multiclasses=num_deep_multiclasses, bottleneck_expansion=bottleneck_expansion)
         self.pyr_height = pyr_height
 
     def forward(self, x):
