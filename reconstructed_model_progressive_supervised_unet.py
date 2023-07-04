@@ -501,38 +501,6 @@ if __name__ == "__main__":
         val_sampler = image_wsi_sampling_async.get_image_sampler(val_subdata, image_width=image_size, batch_size=batch_size, sampling_type="batch_random_image", deep_supervision_outputs=pyr_height - 1,
                                                                  buffer_max_size=use_async_sampling)
 
-        elif sampling_type == "batch_random_image":
-            train_image_cat = torch.zeros((batch_size, 4, image_width, image_width), device=config.device, dtype=torch.float32)
-            train_ground_truth = torch.zeros((batch_size, image_width, image_width), device=config.device, dtype=torch.long)
-            train_ground_truth_mask = torch.zeros((batch_size, image_width, image_width), device=config.device, dtype=torch.float32)
-
-            if deep_supervision_outputs > 0:
-                train_ground_truth_deep = []
-                train_ground_truth_mask_deep = []
-
-                for k in range(deep_supervision_outputs):
-                    scale_factor = 2 ** (k + 1)
-                    train_ground_truth_deep.append(torch.zeros((batch_size, image_width // scale_factor, image_width // scale_factor), device=config.device, dtype=torch.long))
-                    train_ground_truth_mask_deep.append(torch.zeros((batch_size, image_width // scale_factor, image_width // scale_factor), device=config.device, dtype=torch.float32))
-        elif sampling_type == "batch_random_image_mixup":
-            train_image_cat = torch.zeros((batch_size, 4, image_width, image_width), device=config.device, dtype=torch.float32)
-            train_ground_truth = torch.zeros((batch_size, 3, image_width, image_width), device=config.device, dtype=torch.float32)
-            train_ground_truth_mask = torch.zeros((batch_size, image_width, image_width), device=config.device, dtype=torch.float32)
-
-            if deep_supervision_outputs > 0:
-                train_ground_truth_deep = []
-                train_ground_truth_mask_deep = []
-
-                for k in range(deep_supervision_outputs):
-                    scale_factor = 2 ** (k + 1)
-                    train_ground_truth_deep.append(torch.zeros((batch_size, 3, image_width // scale_factor, image_width // scale_factor), device=config.device, dtype=torch.float32))
-                    train_ground_truth_mask_deep.append(torch.zeros((batch_size, image_width // scale_factor, image_width // scale_factor), device=config.device, dtype=torch.float32))
-
-        if mixup > 0.0:
-            
-        else:
-            test_image_cat_batch, test_image_ground_truth_batch, test_image_ground_truth_mask_batch, test_image_ground_truth_deep, test_image_ground_truth_mask_deep
-
         def async_request_images_train():
             if mixup > 0.0:
                 training_entries_shuffle = rng.permutation(training_entries)
