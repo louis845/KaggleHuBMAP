@@ -141,6 +141,8 @@ def training_step(train_history=None):
                             false_positive_per_output[k] += ((deep_class_prediction > 0) & (
                                         train_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
 
+                            del bool_mask, deep_class_prediction
+
                 if use_focal_loss:
                     ce_res = focal_loss(result, train_image_ground_truth_batch, one_hot_ground_truth=mixup > 0.0)
                 else:
@@ -201,6 +203,7 @@ def training_step(train_history=None):
                                 (pred_labels_class == seg_ps) & (train_image_ground_truth_batch != seg_ps) & bool_mask).item())
                             false_negative_class_class[seg_class] += int(torch.sum(
                                 (pred_labels_class != seg_ps) & (train_image_ground_truth_batch == seg_ps) & bool_mask).item())
+                        del bool_mask, pred_labels, pred_labels_confidence, pred_labels_class
 
             if use_amp:
                 # scaled loss to avoid overflow
@@ -618,6 +621,8 @@ if __name__ == "__main__":
                             true_positive_per_output[k] += ((deep_class_prediction > 0) & (test_image_ground_truth_deep_class > 0) & bool_mask).sum().item()
                             false_positive_per_output[k] += ((deep_class_prediction > 0) & (test_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
 
+                            del bool_mask, deep_class_prediction, test_image_ground_truth_deep_class
+
                         if use_focal_loss:
                             ce_res = focal_loss(result, test_image_ground_truth_batch, one_hot_ground_truth=mixup > 0.0)
                         else:
@@ -675,6 +680,8 @@ if __name__ == "__main__":
                         total_cum_loss += loss.item()
 
                         tested += len(batch_indices)
+
+                        del bool_mask, pred_labels, pred_labels_confidence, pred_labels_class
 
                         gc.collect()
                         torch.cuda.empty_cache()
