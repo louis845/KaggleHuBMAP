@@ -40,6 +40,52 @@ def focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_hot_ground_
 
     return torch.sum((softmax - ground_truth_one_hot) ** 2, dim=1) * cross_entropy
 
+def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image_ground_truth_batch_, train_image_ground_truth_mask_batch_,
+                         train_image_ground_truth_deep_, train_image_ground_truth_mask_deep_, use_amp_=False, scaler_=None):
+    mixup_used = (mixup > 0.0)
+    total_loss_per_outputs = [0] * (pyr_height - 1)
+    optimizer_.zero_grad()
+
+    with torch.cuda.amp.autocast(dtype=torch.float16) if use_amp_ else contextlib.nullcontext() as amp_ctx:
+        result, deep_outputs = model_(train_image_cat_batch_)
+
+        loss = 0.0
+        for k in range(pyr_height - 2, -1, -1):
+            multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
+
+            if use_focal_loss:
+                ce_res = focal_loss(deep_outputs[k], train_image_ground_truth_deep_[pyr_height - 2 - k],
+                                    one_hot_ground_truth=mixup_used)
+            else:
+                ce_res = torch.nn.functional.cross_entropy(deep_outputs[k],
+                                                           train_image_ground_truth_deep_[pyr_height - 2 - k],
+                                                           reduction="none")
+            k_loss = torch.sum(ce_res * train_image_ground_truth_mask_deep_[pyr_height - 2 - k]) * multiply_scale_factor
+            loss += k_loss
+
+            total_loss_per_outputs[k] = k_loss.item()
+
+        if use_focal_loss:
+            ce_res = focal_loss(result, train_image_ground_truth_batch_, one_hot_ground_truth=mixup_used)
+        else:
+            ce_res = torch.nn.functional.cross_entropy(result, train_image_ground_truth_batch_, reduction="none",
+                                                       weight=class_weights)
+        result_loss = torch.sum(ce_res * train_image_ground_truth_mask_batch_)
+        loss += result_loss
+
+    if use_amp:
+        # scaled loss to avoid overflow
+        scaler_.scale(loss).backward()
+        scaler_.step(optimizer_)
+        scaler_.update()
+    else:
+        # usual backward pass if not using AMP
+        loss.backward()
+        optimizer_.step()
+
+    return loss.item(), result_loss.item(), total_loss_per_outputs, result.detach(),\
+        [deep_output.detach() for deep_output in deep_outputs]
+
 def training_step(train_history=None):
     # pass train_history = None if extra steps, pass train_history = train_history main step.
     trained = 0
@@ -78,6 +124,7 @@ def training_step(train_history=None):
     with tqdm.tqdm(total=len(training_entries)) as pbar:
         while trained < len(training_entries):
             batch_end = min(trained + batch_size, len(training_entries))
+            # obtain batch here
             if use_async_sampling != 0:
                 batch_indices = training_entries[trained:batch_end]
                 length = len(batch_indices)
@@ -103,122 +150,120 @@ def training_step(train_history=None):
             gc.collect()
             torch.cuda.empty_cache()
 
-            optimizer.zero_grad()
-            # use amp if use choose to use it
-            with torch.cuda.amp.autocast(dtype=torch.float16) if use_amp else contextlib.nullcontext() as amp_ctx:
-                result, deep_outputs = model(train_image_cat_batch)
+            # training step, forward+backward pass+save some metrics and results
+            loss, result_loss, total_loss_per_outputs, result, deep_outputs = \
+                single_training_step(model, optimizer, train_image_cat_batch, train_image_ground_truth_batch,
+                                train_image_ground_truth_mask_batch, train_image_ground_truth_deep,
+                                train_image_ground_truth_mask_deep, use_amp_=use_amp, scaler_=scaler)
+            gc.collect()
+            torch.cuda.empty_cache()
 
-                loss = 0.0
-                for k in range(pyr_height - 2, -1, -1):
-                    multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
-
-                    if use_focal_loss:
-                        ce_res = focal_loss(deep_outputs[k], train_image_ground_truth_deep[pyr_height - 2 - k], one_hot_ground_truth=mixup > 0.0)
-                    else:
-                        ce_res = torch.nn.functional.cross_entropy(deep_outputs[k], train_image_ground_truth_deep[pyr_height - 2 - k],
-                                                                         reduction="none")
-                    k_loss = torch.sum(ce_res * train_image_ground_truth_mask_deep[pyr_height - 2 - k]) * multiply_scale_factor
-                    loss += k_loss
-
-                    if train_history is not None:
-                        total_loss_per_output[k] += k_loss.item()
-
-                        with torch.no_grad():
-                            deep_class_prediction = torch.argmax(deep_outputs[k], dim=1)
-                            if mixup > 0.0:
-                                train_image_ground_truth_deep_class = torch.argmax(
-                                    train_image_ground_truth_deep[pyr_height - 2 - k], dim=1)
-                            else:
-                                train_image_ground_truth_deep_class = train_image_ground_truth_deep[pyr_height - 2 - k]
-                            bool_mask = train_image_ground_truth_mask_deep[pyr_height - 2 - k].to(torch.bool)
-                            true_negative_per_output[k] += ((deep_class_prediction == 0) & (
-                                        train_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
-                            false_negative_per_output[k] += ((deep_class_prediction == 0) & (
-                                        train_image_ground_truth_deep_class > 0) & bool_mask).sum().item()
-                            true_positive_per_output[k] += ((deep_class_prediction > 0) & (
-                                        train_image_ground_truth_deep_class > 0) & bool_mask).sum().item()
-                            false_positive_per_output[k] += ((deep_class_prediction > 0) & (
-                                        train_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
-
-                            del bool_mask, deep_class_prediction
-
-                if use_focal_loss:
-                    ce_res = focal_loss(result, train_image_ground_truth_batch, one_hot_ground_truth=mixup > 0.0)
-                else:
-                    ce_res = torch.nn.functional.cross_entropy(result, train_image_ground_truth_batch, reduction="none",
-                                                      weight=class_weights)
-                result_loss = torch.sum(ce_res * train_image_ground_truth_mask_batch)
-                loss += result_loss
-
-                if train_history is not None:
-                    total_loss_per_output[-1] += result_loss.item()
-                    with torch.no_grad():
-                        pred_labels = torch.argmax(result, dim=1)
-                        pred_labels_confidence = compute_confidence_class(result)
-                        pred_labels_class = compute_class_no_confidence(result)
-                        bool_mask = train_image_ground_truth_mask_batch.to(torch.bool)
-                        if mixup > 0.0:
-                            train_image_ground_truth_batch = torch.argmax(train_image_ground_truth_batch, dim=1)
-                        true_negative_per_output[-1] += (
-                                    (pred_labels == 0) & (train_image_ground_truth_batch == 0) & bool_mask).sum().item()
-                        false_negative_per_output[-1] += (
-                                    (pred_labels == 0) & (train_image_ground_truth_batch > 0) & bool_mask).sum().item()
-                        true_positive_per_output[-1] += (
-                                    (pred_labels > 0) & (train_image_ground_truth_batch > 0) & bool_mask).sum().item()
-                        false_positive_per_output[-1] += (
-                                    (pred_labels > 0) & (train_image_ground_truth_batch == 0) & bool_mask).sum().item()
-
-                        true_negative_confidence += ((pred_labels_confidence == 0) & (train_image_ground_truth_batch == 0) & bool_mask).sum().item()
-                        false_negative_confidence += ((pred_labels_confidence == 0) & (train_image_ground_truth_batch > 0) & bool_mask).sum().item()
-                        true_positive_confidence += ((pred_labels_confidence > 0) & (train_image_ground_truth_batch > 0) & bool_mask).sum().item()
-                        false_positive_confidence += ((pred_labels_confidence > 0) & (train_image_ground_truth_batch == 0) & bool_mask).sum().item()
-
-                        for seg_idx in range(len(classes)):
-                            seg_class = classes[seg_idx]
-                            seg_ps = seg_idx + 1
-                            true_positive_class[seg_class] += int(torch.sum(
-                                (pred_labels == seg_ps) & (train_image_ground_truth_batch == seg_ps) & bool_mask).item())
-                            true_negative_class[seg_class] += int(torch.sum(
-                                (pred_labels != seg_ps) & (train_image_ground_truth_batch != seg_ps) & bool_mask).item())
-                            false_positive_class[seg_class] += int(torch.sum(
-                                (pred_labels == seg_ps) & (train_image_ground_truth_batch != seg_ps) & bool_mask).item())
-                            false_negative_class[seg_class] += int(torch.sum(
-                                (pred_labels != seg_ps) & (train_image_ground_truth_batch == seg_ps) & bool_mask).item())
-
-                            true_positive_confidence_class[seg_class] += int(torch.sum(
-                                (pred_labels_confidence == seg_ps) & (train_image_ground_truth_batch == seg_ps) & bool_mask).item())
-                            true_negative_confidence_class[seg_class] += int(torch.sum(
-                                (pred_labels_confidence != seg_ps) & (train_image_ground_truth_batch != seg_ps) & bool_mask).item())
-                            false_positive_confidence_class[seg_class] += int(torch.sum(
-                                (pred_labels_confidence == seg_ps) & (train_image_ground_truth_batch != seg_ps) & bool_mask).item())
-                            false_negative_confidence_class[seg_class] += int(torch.sum(
-                                (pred_labels_confidence != seg_ps) & (train_image_ground_truth_batch == seg_ps) & bool_mask).item())
-
-                            true_positive_class_class[seg_class] += int(torch.sum(
-                                (pred_labels_class == seg_ps) & (train_image_ground_truth_batch == seg_ps) & bool_mask).item())
-                            true_negative_class_class[seg_class] += int(torch.sum(
-                                (pred_labels_class != seg_ps) & (train_image_ground_truth_batch != seg_ps) & bool_mask).item())
-                            false_positive_class_class[seg_class] += int(torch.sum(
-                                (pred_labels_class == seg_ps) & (train_image_ground_truth_batch != seg_ps) & bool_mask).item())
-                            false_negative_class_class[seg_class] += int(torch.sum(
-                                (pred_labels_class != seg_ps) & (train_image_ground_truth_batch == seg_ps) & bool_mask).item())
-                        del bool_mask, pred_labels, pred_labels_confidence, pred_labels_class
-
-            if use_amp:
-                # scaled loss to avoid overflow
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                # usual backward pass if not using AMP
-                loss.backward()
-                optimizer.step()
-
+            # compute metrics
             if train_history is not None:
-                total_cum_loss += loss.item()
+                # append loss metrics, they do not require torch (tensor) computations anymore.
+                for k in range(pyr_height - 2, -1, -1):
+                    total_loss_per_output[k] += total_loss_per_outputs[k]
+                total_loss_per_output[-1] += result_loss  # last level loss
+                total_cum_loss += loss  # total cumulative loss
+
+                with torch.no_grad():
+                    # compute per level metrics.
+                    for k in range(pyr_height - 2, -1, -1):
+                        deep_class_prediction = torch.argmax(deep_outputs[k], dim=1)
+                        if mixup > 0.0:
+                            train_image_ground_truth_deep_class = torch.argmax(
+                                train_image_ground_truth_deep[pyr_height - 2 - k], dim=1)
+                        else:
+                            train_image_ground_truth_deep_class = train_image_ground_truth_deep[pyr_height - 2 - k]
+                        bool_mask = train_image_ground_truth_mask_deep[pyr_height - 2 - k].to(torch.bool)
+                        true_negative_per_output[k] += ((deep_class_prediction == 0) & (
+                                train_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
+                        false_negative_per_output[k] += ((deep_class_prediction == 0) & (
+                                train_image_ground_truth_deep_class > 0) & bool_mask).sum().item()
+                        true_positive_per_output[k] += ((deep_class_prediction > 0) & (
+                                train_image_ground_truth_deep_class > 0) & bool_mask).sum().item()
+                        false_positive_per_output[k] += ((deep_class_prediction > 0) & (
+                                train_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
+
+                        del deep_class_prediction, bool_mask
+                        if mixup > 0.0:
+                            del train_image_ground_truth_deep_class
+
+                    # compute final result metrics
+                    pred_labels = torch.argmax(result, dim=1)
+                    pred_labels_confidence = compute_confidence_class(result)
+                    pred_labels_class = compute_class_no_confidence(result)
+                    bool_mask = train_image_ground_truth_mask_batch.to(torch.bool)
+                    if mixup > 0.0:
+                        train_image_ground_truth_batch_ev = torch.argmax(train_image_ground_truth_batch, dim=1)
+                    else:
+                        train_image_ground_truth_batch_ev = train_image_ground_truth_batch
+                    true_negative_per_output[-1] += (
+                            (pred_labels == 0) & (train_image_ground_truth_batch_ev == 0) & bool_mask).sum().item()
+                    false_negative_per_output[-1] += (
+                            (pred_labels == 0) & (train_image_ground_truth_batch_ev > 0) & bool_mask).sum().item()
+                    true_positive_per_output[-1] += (
+                            (pred_labels > 0) & (train_image_ground_truth_batch_ev > 0) & bool_mask).sum().item()
+                    false_positive_per_output[-1] += (
+                            (pred_labels > 0) & (train_image_ground_truth_batch_ev == 0) & bool_mask).sum().item()
+
+                    true_negative_confidence += ((pred_labels_confidence == 0) & (
+                                train_image_ground_truth_batch_ev == 0) & bool_mask).sum().item()
+                    false_negative_confidence += ((pred_labels_confidence == 0) & (
+                                train_image_ground_truth_batch_ev > 0) & bool_mask).sum().item()
+                    true_positive_confidence += ((pred_labels_confidence > 0) & (
+                                train_image_ground_truth_batch_ev > 0) & bool_mask).sum().item()
+                    false_positive_confidence += ((pred_labels_confidence > 0) & (
+                                train_image_ground_truth_batch_ev == 0) & bool_mask).sum().item()
+
+                    for seg_idx in range(len(classes)):
+                        seg_class = classes[seg_idx]
+                        seg_ps = seg_idx + 1
+                        true_positive_class[seg_class] += int(torch.sum(
+                            (pred_labels == seg_ps) & (train_image_ground_truth_batch_ev == seg_ps) & bool_mask).item())
+                        true_negative_class[seg_class] += int(torch.sum(
+                            (pred_labels != seg_ps) & (train_image_ground_truth_batch_ev != seg_ps) & bool_mask).item())
+                        false_positive_class[seg_class] += int(torch.sum(
+                            (pred_labels == seg_ps) & (train_image_ground_truth_batch_ev != seg_ps) & bool_mask).item())
+                        false_negative_class[seg_class] += int(torch.sum(
+                            (pred_labels != seg_ps) & (train_image_ground_truth_batch_ev == seg_ps) & bool_mask).item())
+
+                        true_positive_confidence_class[seg_class] += int(torch.sum(
+                            (pred_labels_confidence == seg_ps) & (
+                                        train_image_ground_truth_batch_ev == seg_ps) & bool_mask).item())
+                        true_negative_confidence_class[seg_class] += int(torch.sum(
+                            (pred_labels_confidence != seg_ps) & (
+                                        train_image_ground_truth_batch_ev != seg_ps) & bool_mask).item())
+                        false_positive_confidence_class[seg_class] += int(torch.sum(
+                            (pred_labels_confidence == seg_ps) & (
+                                        train_image_ground_truth_batch_ev != seg_ps) & bool_mask).item())
+                        false_negative_confidence_class[seg_class] += int(torch.sum(
+                            (pred_labels_confidence != seg_ps) & (
+                                        train_image_ground_truth_batch_ev == seg_ps) & bool_mask).item())
+
+                        true_positive_class_class[seg_class] += int(torch.sum(
+                            (pred_labels_class == seg_ps) & (
+                                        train_image_ground_truth_batch_ev == seg_ps) & bool_mask).item())
+                        true_negative_class_class[seg_class] += int(torch.sum(
+                            (pred_labels_class != seg_ps) & (
+                                        train_image_ground_truth_batch_ev != seg_ps) & bool_mask).item())
+                        false_positive_class_class[seg_class] += int(torch.sum(
+                            (pred_labels_class == seg_ps) & (
+                                        train_image_ground_truth_batch_ev != seg_ps) & bool_mask).item())
+                        false_negative_class_class[seg_class] += int(torch.sum(
+                            (pred_labels_class != seg_ps) & (
+                                        train_image_ground_truth_batch_ev == seg_ps) & bool_mask).item())
+
+                    del pred_labels, pred_labels_confidence, pred_labels_class, bool_mask
+                    if mixup > 0.0:
+                        del train_image_ground_truth_batch_ev
 
             trained += len(batch_indices)
 
+            del train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, \
+                train_image_ground_truth_deep[:], train_image_ground_truth_mask_deep[:]
+            del result, deep_outputs[:]
+            del train_image_ground_truth_deep, train_image_ground_truth_mask_deep, deep_outputs
             gc.collect()
             torch.cuda.empty_cache()
 
@@ -312,8 +357,6 @@ def training_step(train_history=None):
                     true_positive_class_class[seg_class] / (
                             true_positive_class_class[seg_class] + false_negative_class_class[seg_class]
                     ))
-
-    del train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep[:], train_image_ground_truth_mask_deep[:]
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -614,6 +657,7 @@ if __name__ == "__main__":
                                 ce_res = torch.nn.functional.cross_entropy(deep_outputs[k], test_image_ground_truth_deep[pyr_height - 2 - k], reduction="none")
 
                             k_loss = torch.sum(ce_res * test_image_ground_truth_mask_deep[pyr_height - 2 - k]) * multiply_scale_factor
+                            del ce_res
                             loss += k_loss
 
                             total_loss_per_output[k] += k_loss.item()
@@ -626,13 +670,14 @@ if __name__ == "__main__":
                             true_positive_per_output[k] += ((deep_class_prediction > 0) & (test_image_ground_truth_deep_class > 0) & bool_mask).sum().item()
                             false_positive_per_output[k] += ((deep_class_prediction > 0) & (test_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
 
-                            del bool_mask, deep_class_prediction, test_image_ground_truth_deep_class
+                            del bool_mask, deep_class_prediction
 
                         if use_focal_loss:
                             ce_res = focal_loss(result, test_image_ground_truth_batch, one_hot_ground_truth=mixup > 0.0)
                         else:
                             ce_res = torch.nn.functional.cross_entropy(result, test_image_ground_truth_batch, reduction="none", weight=class_weights)
                         result_loss = torch.sum(ce_res * test_image_ground_truth_mask_batch)
+                        del ce_res
                         loss += result_loss
 
                         total_loss_per_output[-1] += result_loss.item()
@@ -687,6 +732,10 @@ if __name__ == "__main__":
                         tested += len(batch_indices)
 
                         del bool_mask, pred_labels, pred_labels_confidence, pred_labels_class
+                        del test_image_cat_batch, test_image_ground_truth_batch, test_image_ground_truth_mask_batch,\
+                            test_image_ground_truth_deep[:], test_image_ground_truth_mask_deep[:]
+                        del result, deep_outputs[:]
+                        del test_image_ground_truth_deep, test_image_ground_truth_mask_deep, deep_outputs
 
                         gc.collect()
                         torch.cuda.empty_cache()
@@ -824,7 +873,6 @@ if __name__ == "__main__":
 
             ctime = time.time()
 
-            del test_image_cat_batch, test_image_ground_truth_batch, test_image_ground_truth_mask_batch, test_image_ground_truth_deep[:], test_image_ground_truth_mask_deep[:]
             gc.collect()
             torch.cuda.empty_cache()
 
