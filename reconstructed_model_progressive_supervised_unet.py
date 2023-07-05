@@ -41,14 +41,14 @@ def focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_hot_ground_
 
     return torch.sum((softmax - ground_truth_one_hot) ** 2, dim=1) * cross_entropy
 
-def single_training_step(train_image_cat_batch_, train_image_ground_truth_batch_, train_image_ground_truth_mask_batch_,
-                         train_image_ground_truth_deep_, train_image_ground_truth_mask_deep_, use_amp_=False):
+def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image_ground_truth_batch_, train_image_ground_truth_mask_batch_,
+                         train_image_ground_truth_deep_, train_image_ground_truth_mask_deep_, use_amp_=False, scaler_=None):
     mixup_used = (mixup > 0.0)
     total_loss_per_outputs = [0] * (pyr_height - 1)
-    optimizer.zero_grad()
+    optimizer_.zero_grad()
 
     with torch.cuda.amp.autocast(dtype=torch.float16) if use_amp_ else contextlib.nullcontext() as amp_ctx:
-        result, deep_outputs = model(train_image_cat_batch_)
+        result, deep_outputs = model_(train_image_cat_batch_)
 
         loss = 0.0
         for k in range(pyr_height - 2, -1, -1):
@@ -76,13 +76,13 @@ def single_training_step(train_image_cat_batch_, train_image_ground_truth_batch_
 
     if use_amp:
         # scaled loss to avoid overflow
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+        scaler_.scale(loss).backward()
+        scaler_.step(optimizer_)
+        scaler_.update()
     else:
         # usual backward pass if not using AMP
         loss.backward()
-        optimizer.step()
+        optimizer_.step()
 
     return loss.item(), result_loss.item(), total_loss_per_outputs, result.detach(),\
         [deep_output.detach() for deep_output in deep_outputs]
@@ -153,9 +153,9 @@ def training_step(train_history=None):
 
             # training step, forward+backward pass+save some metrics and results
             loss, result_loss, total_loss_per_outputs, result, deep_outputs = \
-                single_training_step_compile(train_image_cat_batch, train_image_ground_truth_batch,
+                single_training_step_compile(model, optimizer, train_image_cat_batch, train_image_ground_truth_batch,
                                 train_image_ground_truth_mask_batch, train_image_ground_truth_deep,
-                                train_image_ground_truth_mask_deep, use_amp_=use_amp)
+                                train_image_ground_truth_mask_deep, use_amp_=use_amp, scaler_=scaler if use_amp else None)
             #gc.collect()
             #torch.cuda.empty_cache()
 

@@ -6,11 +6,11 @@ class Conv(torch.nn.Module):
         self.conv1 = torch.nn.Conv2d(in_channels, out_channels, 3, bias=True, padding="same", padding_mode="replicate")
         if use_batch_norm:
             self.batchnorm1 = torch.nn.GroupNorm(num_groups=out_channels // 4, num_channels=out_channels)
-        self.elu1 = torch.nn.ELU(inplace=True)
+        self.elu1 = torch.nn.ReLU(inplace=True)
         self.conv2 = torch.nn.Conv2d(out_channels, out_channels, 3, bias=True, padding="same", padding_mode="replicate")
         if use_batch_norm:
             self.batchnorm2 = torch.nn.GroupNorm(num_groups=out_channels // 4, num_channels=out_channels)
-        self.elu2 = torch.nn.ELU(inplace=True)
+        self.elu2 = torch.nn.ReLU(inplace=True)
 
         torch.nn.init.constant_(self.conv1.bias, 0.0)
         torch.nn.init.constant_(self.conv2.bias, 0.0)
@@ -37,12 +37,12 @@ class AtrousConv(torch.nn.Module):
 
         if use_batch_norm:
             self.batchnorm_atrous = torch.nn.GroupNorm(num_groups=out_channels * num_atrous_blocks, num_channels=out_channels * num_atrous_blocks) # instance norm
-        self.elu_atrous = torch.nn.ELU(inplace=True)
+        self.elu_atrous = torch.nn.ReLU(inplace=True)
 
         self.conv_project = torch.nn.Conv2d(out_channels * num_atrous_blocks, out_channels, 1, bias=False, padding="same", padding_mode="replicate")
         if use_batch_norm:
             self.batchnorm_project = torch.nn.GroupNorm(num_groups=out_channels, num_channels=out_channels) # instance norm
-        self.elu_project = torch.nn.ELU(inplace=True)
+        self.elu_project = torch.nn.ReLU(inplace=True)
 
         self.use_batch_norm = use_batch_norm
         self.num_atrous_blocks = num_atrous_blocks
@@ -76,7 +76,7 @@ class ResConvBlock(torch.nn.Module):
         self.conv1 = torch.nn.Conv2d(in_channels, out_channels, 1, bias=False, padding="same", padding_mode="replicate")
         if use_batch_norm:
             self.batchnorm1 = torch.nn.GroupNorm(num_groups=out_channels, num_channels=out_channels) # instance norm
-        self.elu1 = torch.nn.ELU(inplace=True)
+        self.elu1 = torch.nn.ReLU(inplace=True)
 
         if downsample:
             self.conv2 = torch.nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=2, bias=False, padding=0, groups=out_channels // 8) # x8d, meaning 8 channels in each "capacity" connection
@@ -84,12 +84,12 @@ class ResConvBlock(torch.nn.Module):
             self.conv2 = torch.nn.Conv2d(out_channels, out_channels, kernel_size=3, bias=False, padding="same", padding_mode="replicate", groups=out_channels // 8)
         if use_batch_norm:
             self.batchnorm2 = torch.nn.GroupNorm(num_groups=out_channels, num_channels=out_channels) # instance norm
-        self.elu2 = torch.nn.ELU(inplace=True)
+        self.elu2 = torch.nn.ReLU(inplace=True)
 
         self.conv3 = torch.nn.Conv2d(out_channels, out_channels * bottleneck_expansion, 1, bias=False, padding="same", padding_mode="replicate")
         if use_batch_norm:
             self.batchnorm3 = torch.nn.GroupNorm(num_groups=out_channels * bottleneck_expansion, num_channels=out_channels * bottleneck_expansion) # instance norm
-        self.elu3 = torch.nn.ELU(inplace=True)
+        self.elu3 = torch.nn.ReLU(inplace=True)
 
         if squeeze_excitation:
             self.se_pool = torch.nn.AdaptiveAvgPool2d(1)
@@ -167,7 +167,7 @@ class UNetBackbone(torch.nn.Module):
         self.initial_conv = torch.nn.Conv2d(in_channels, hidden_channels * bottleneck_expansion, kernel_size=7, bias=False, padding="same", padding_mode="replicate")
         if use_batch_norm:
             self.initial_batch_norm = torch.nn.GroupNorm(num_groups=hidden_channels * bottleneck_expansion, num_channels=hidden_channels * bottleneck_expansion)  # instance norm
-        self.initial_elu = torch.nn.ELU(inplace=True)
+        self.initial_elu = torch.nn.ReLU(inplace=True)
 
         if use_res_conv:
             self.conv0 = ResConv(hidden_channels * bottleneck_expansion, hidden_channels, use_batch_norm=use_batch_norm, blocks=res_conv_blocks[0], bottleneck_expansion=bottleneck_expansion, squeeze_excitation=squeeze_excitation)

@@ -5,7 +5,7 @@ import model_unet_base
 # https://arxiv.org/pdf/1804.03999.pdf
 
 class UNetEndClassifier(torch.nn.Module):
-    def __init__(self, hidden_channels, use_batch_norm=False, use_atrous_conv=False, pyr_height=4, gate_activation=torch.nn.ELU(inplace=True), deep_supervision=False, num_classes=1, num_deep_multiclasses=0, bottleneck_expansion=1):
+    def __init__(self, hidden_channels, use_batch_norm=False, use_atrous_conv=False, pyr_height=4, gate_activation=torch.nn.ReLU(inplace=True), deep_supervision=False, num_classes=1, num_deep_multiclasses=0, bottleneck_expansion=1):
         super(UNetEndClassifier, self).__init__()
         self.pyr_height = pyr_height
         self.conv_up = torch.nn.ModuleList()
