@@ -332,6 +332,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_amp", action="store_true", help="Whether to use automatic mixed precision. Default False.")
     parser.add_argument("--use_squeeze_excitation", action="store_true", help="Whether to use squeeze and excitation. Default False.")
     parser.add_argument("--hidden_channels", type=int, default=64, help="Number of hidden channels to use. Default 64.")
+    parser.add_argument("--hidden_blocks", type=int, nargs="+", default=[2, 3, 4, 6, 6, 7, 7], help="Number of hidden blocks for ResNets. Ignored if not resnet.")
     parser.add_argument("--bottleneck_expansion", type=int, default=1, help="The expansion factor of the bottleneck. Default 1.")
     parser.add_argument("--pyramid_height", type=int, default=4, help="Number of pyramid levels to use. Default 4.")
     parser.add_argument("--unet_attention", action="store_true", help="Whether to use attention in the U-Net. Default False.")
@@ -355,10 +356,14 @@ if __name__ == "__main__":
     use_async_sampling = args.use_async_sampling
     num_extra_steps = args.num_extra_steps
     use_amp = args.use_amp
+    blocks = args.hidden_blocks
 
-    blocks = [1, 4, 4, 6, 10, 10, 10]
-    # blocks = [2, 3, 4, 6, 6, 7, 7]
-    # blocks = [2, 3, 4, 6, 10, 10, 10]
+    assert type(blocks) == list, "Blocks must be a list."
+    for k in blocks:
+        assert type(k) == int, "Blocks must be a list of integers."
+    
+    print("Hidden channels: " + str(args.hidden_channels))
+    print("Hidden blocks: " + str(blocks))
 
     if args.unet_attention:
         model = model_unet_attention.UNetClassifier(num_classes=2, num_deep_multiclasses=args.pyramid_height - 1,
@@ -421,6 +426,7 @@ if __name__ == "__main__":
         "use_amp": args.use_amp,
         "use_squeeze_excitation": args.use_squeeze_excitation,
         "hidden_channels": args.hidden_channels,
+        "hidden_blocks": args.hidden_blocks,
         "bottleneck_expansion": args.bottleneck_expansion,
         "pyramid_height": args.pyramid_height,
         "unet_attention": args.unet_attention,
