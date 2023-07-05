@@ -36,7 +36,7 @@ class AtrousConv(torch.nn.Module):
             self.atrous_convs.append(torch.nn.Conv2d(in_channels, 2 * out_channels // num_atrous_blocks, 3, bias=False, padding="same", padding_mode="replicate", dilation=(1 + 4 * k)))
 
         if use_batch_norm:
-            self.batchnorm_atrous = torch.nn.GroupNorm(num_groups=2 * out_channels // num_atrous_blocks, num_channels=2 * out_channels // num_atrous_blocks) # instance norm
+            self.batchnorm_atrous = torch.nn.GroupNorm(num_groups=2 * out_channels, num_channels=2 * out_channels) # instance norm
         self.elu_atrous = torch.nn.ReLU(inplace=True)
 
         self.conv_project = torch.nn.Conv2d(2 * out_channels // num_atrous_blocks, out_channels, 1, bias=False, padding="same", padding_mode="replicate")
