@@ -154,7 +154,7 @@ def training_step(train_history=None):
             loss, result_loss, total_loss_per_outputs, result, deep_outputs = \
                 single_training_step_compile(model, optimizer, train_image_cat_batch, train_image_ground_truth_batch,
                                 train_image_ground_truth_mask_batch, train_image_ground_truth_deep,
-                                train_image_ground_truth_mask_deep, use_amp_=use_amp, scaler_=scaler)
+                                train_image_ground_truth_mask_deep, use_amp_=use_amp, scaler_=scaler if use_amp else None)
             gc.collect()
             torch.cuda.empty_cache()
 
@@ -384,6 +384,8 @@ if __name__ == "__main__":
     parser.add_argument("--image_size", type=int, default=1024, help="The size of the images to use. Default 1024.")
     parser.add_argument("--use_async_sampling", type=int, default=0, help="Whether to use async sampling. Default 0, meaning no async sampling. The values represent the max buffer of the processes. If -1, the max buffer is unlimited.")
     parser.add_argument("--num_extra_steps", type=int, default=0, help="Extra steps of gradient descent before the usual step in an epoch. Default 0.")
+    parser.add_argument("--extra_training_subdata", type=str, default=None, help="Additional training subdata to mix with the main training data. Default None.")
+    parser.add_argument("--extra_subdata_ratio", type=float, default=0.2, help="The ratio of the extra subdata to mix with the main training data. Default 0.2. If extra training subdata is not provided, this is ignored.")
 
     model_data_manager.model_add_argparse_arguments(parser)
 
@@ -392,6 +394,31 @@ if __name__ == "__main__":
     model_dir, dataset_loader, training_entries, validation_entries, prev_model_checkpoint_dir, extra_info, train_subdata, val_subdata = model_data_manager.model_get_argparse_arguments(args, return_subdata_name=True)
     assert type(training_entries) == list
     assert type(validation_entries) == list
+
+    extra_training_entries = None
+    if args.extra_training_subdata is not None:
+        extra_training_entries = model_data_manager.get_subdata_entry_list(args.extra_training_subdata)
+        assert type(extra_training_entries) == list
+        # convert to int lists
+        training_int_id = np.unique(model_data_manager.get_intid_by_entry_index(training_entries))
+        extra_training_int_id = np.unique(model_data_manager.get_intid_by_entry_index(extra_training_entries))
+        valid_int_id = np.unique(model_data_manager.get_intid_by_entry_index(validation_entries))
+        # check disjoint, and check contains
+        intersection_empty = np.sum(np.searchsorted(extra_training_int_id, valid_int_id, side="left")
+               < np.searchsorted(extra_training_int_id, valid_int_id, side="right")) == 0
+        assert intersection_empty, "The validation set and the extra training set must be disjoint."
+        del valid_int_id
+        assert np.all(np.searchsorted(extra_training_int_id, training_int_id, side="left")
+               < np.searchsorted(extra_training_int_id, training_int_id, side="right")), "The extra training set must contain all the training set."
+        # get the diff
+        diff = extra_training_int_id[np.searchsorted(training_int_id, extra_training_int_id, side="left") == np.searchsorted(training_int_id, extra_training_int_id, side="right")]
+        del extra_training_entries[:], extra_training_entries, training_int_id, extra_training_int_id
+        extra_training_entries = model_data_manager.get_entry_index_by_intid(diff)
+        del diff
+        gc.collect()
+
+
+
     training_entries = np.array(training_entries, dtype=object)
     validation_entries = np.array(validation_entries, dtype=object)
     mixup = args.mixup
@@ -480,6 +507,8 @@ if __name__ == "__main__":
         "image_size": args.image_size,
         "use_async_sampling": use_async_sampling,
         "num_extra_steps": num_extra_steps,
+        "extra_training_subdata": args.extra_training_subdata,
+        "extra_subdata_ratio": args.extra_subdata_ratio,
         "training_script": "reconstructed_model_progressive_supervised_unet.py",
     }
     for key, value in extra_info.items():
@@ -543,14 +572,21 @@ if __name__ == "__main__":
 
     # Initialize image sampler here
     if use_async_sampling == 0:
-        train_sampler = image_wsi_sampling.get_image_sampler(train_subdata, image_width=image_size)
+        if args.extra_training_subdata is not None:
+            train_sampler = image_wsi_sampling.get_image_sampler(args.extra_training_subdata, image_width=image_size)
+        else:
+            train_sampler = image_wsi_sampling.get_image_sampler(train_subdata, image_width=image_size)
         val_sampler = image_wsi_sampling.get_image_sampler(val_subdata, image_width=image_size)
     else:
         import image_wsi_sampling_async
         torch.multiprocessing.set_start_method("spawn")
 
-        train_sampler = image_wsi_sampling_async.get_image_sampler(train_subdata, image_width=image_size, batch_size=batch_size, sampling_type="batch_random_image_mixup" if mixup > 0.0 else "batch_random_image",
-                                                                   deep_supervision_outputs=pyr_height - 1, buffer_max_size=use_async_sampling)
+        if args.extra_training_subdata is not None:
+            train_sampler = image_wsi_sampling_async.get_image_sampler(args.extra_training_subdata, image_width=image_size, batch_size=batch_size, sampling_type="batch_random_image_mixup" if mixup > 0.0 else "batch_random_image",
+                                                                deep_supervision_outputs=pyr_height - 1, buffer_max_size=use_async_sampling)
+        else:
+            train_sampler = image_wsi_sampling_async.get_image_sampler(train_subdata, image_width=image_size, batch_size=batch_size, sampling_type="batch_random_image_mixup" if mixup > 0.0 else "batch_random_image",
+                                                                deep_supervision_outputs=pyr_height - 1, buffer_max_size=use_async_sampling)
         val_sampler = image_wsi_sampling_async.get_image_sampler(val_subdata, image_width=image_size, batch_size=batch_size, sampling_type="batch_random_image", deep_supervision_outputs=pyr_height - 1,
                                                                  buffer_max_size=use_async_sampling)
 
