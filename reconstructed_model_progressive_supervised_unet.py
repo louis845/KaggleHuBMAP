@@ -499,6 +499,7 @@ if __name__ == "__main__":
         "use_focal_loss": args.use_focal_loss,
         "use_amp": args.use_amp,
         "use_squeeze_excitation": args.use_squeeze_excitation,
+        "use_initial_conv": args.use_initial_conv,
         "hidden_channels": args.hidden_channels,
         "hidden_blocks": args.hidden_blocks,
         "bottleneck_expansion": args.bottleneck_expansion,
