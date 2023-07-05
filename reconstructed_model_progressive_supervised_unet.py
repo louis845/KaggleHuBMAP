@@ -152,7 +152,7 @@ def training_step(train_history=None):
 
             # training step, forward+backward pass+save some metrics and results
             loss, result_loss, total_loss_per_outputs, result, deep_outputs = \
-                single_training_step(model, optimizer, train_image_cat_batch, train_image_ground_truth_batch,
+                single_training_step_compile(model, optimizer, train_image_cat_batch, train_image_ground_truth_batch,
                                 train_image_ground_truth_mask_batch, train_image_ground_truth_deep,
                                 train_image_ground_truth_mask_deep, use_amp_=use_amp, scaler_=scaler)
             gc.collect()
@@ -423,6 +423,8 @@ if __name__ == "__main__":
                                                in_channels=4, use_atrous_conv=args.use_atrous_conv, deep_supervision=True,
                                                squeeze_excitation=args.use_squeeze_excitation, bottleneck_expansion=args.bottleneck_expansion,
                                                res_conv_blocks=blocks).to(device=config.device)
+
+    single_training_step_compile = torch.compile(single_training_step)
 
     if args.optimizer.lower() == "adam":
         optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.999))
