@@ -375,6 +375,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_focal_loss", action="store_true", help="Whether to use focal loss. Default False.")
     parser.add_argument("--use_amp", action="store_true", help="Whether to use automatic mixed precision. Default False.")
     parser.add_argument("--use_squeeze_excitation", action="store_true", help="Whether to use squeeze and excitation. Default False.")
+    parser.add_argument("--use_initial_conv", action="store_true", help="Whether to use the initial 7x7 kernel convolution. Default False.")
     parser.add_argument("--hidden_channels", type=int, default=64, help="Number of hidden channels to use. Default 64.")
     parser.add_argument("--hidden_blocks", type=int, nargs="+", default=[2, 3, 4, 6, 6, 7, 7], help="Number of hidden blocks for ResNets. Ignored if not resnet.")
     parser.add_argument("--bottleneck_expansion", type=int, default=1, help="The expansion factor of the bottleneck. Default 1.")
@@ -443,14 +444,14 @@ if __name__ == "__main__":
                                                     in_channels=4, use_atrous_conv=args.use_atrous_conv,
                                                     deep_supervision=True, squeeze_excitation=args.use_squeeze_excitation,
                                                     bottleneck_expansion=args.bottleneck_expansion,
-                                                    res_conv_blocks=blocks).to(device=config.device)
+                                                    res_conv_blocks=blocks, use_initial_conv=args.use_initial_conv).to(device=config.device)
     else:
         model = model_unet_base.UNetClassifier(num_classes=2, num_deep_multiclasses=args.pyramid_height - 1,
                                                 hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
                                                in_channels=4, use_atrous_conv=args.use_atrous_conv, deep_supervision=True,
                                                squeeze_excitation=args.use_squeeze_excitation, bottleneck_expansion=args.bottleneck_expansion,
-                                               res_conv_blocks=blocks).to(device=config.device)
+                                               res_conv_blocks=blocks, use_initial_conv=args.use_initial_conv).to(device=config.device)
 
     single_training_step_compile = torch.compile(single_training_step)
 
