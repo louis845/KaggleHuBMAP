@@ -4,6 +4,7 @@ import time
 import argparse
 import json
 import contextlib
+import traceback
 
 import tqdm
 
@@ -40,14 +41,14 @@ def focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_hot_ground_
 
     return torch.sum((softmax - ground_truth_one_hot) ** 2, dim=1) * cross_entropy
 
-def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image_ground_truth_batch_, train_image_ground_truth_mask_batch_,
-                         train_image_ground_truth_deep_, train_image_ground_truth_mask_deep_, use_amp_=False, scaler_=None):
+def single_training_step(train_image_cat_batch_, train_image_ground_truth_batch_, train_image_ground_truth_mask_batch_,
+                         train_image_ground_truth_deep_, train_image_ground_truth_mask_deep_, use_amp_=False):
     mixup_used = (mixup > 0.0)
     total_loss_per_outputs = [0] * (pyr_height - 1)
-    optimizer_.zero_grad()
+    optimizer.zero_grad()
 
     with torch.cuda.amp.autocast(dtype=torch.float16) if use_amp_ else contextlib.nullcontext() as amp_ctx:
-        result, deep_outputs = model_(train_image_cat_batch_)
+        result, deep_outputs = model(train_image_cat_batch_)
 
         loss = 0.0
         for k in range(pyr_height - 2, -1, -1):
@@ -75,13 +76,13 @@ def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image
 
     if use_amp:
         # scaled loss to avoid overflow
-        scaler_.scale(loss).backward()
-        scaler_.step(optimizer_)
-        scaler_.update()
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
     else:
         # usual backward pass if not using AMP
         loss.backward()
-        optimizer_.step()
+        optimizer.step()
 
     return loss.item(), result_loss.item(), total_loss_per_outputs, result.detach(),\
         [deep_output.detach() for deep_output in deep_outputs]
@@ -147,16 +148,16 @@ def training_step(train_history=None):
                         train_sampler.obtain_random_sample_batch(batch_indices, augmentation=augmentation,
                                                                  deep_supervision_downsamples=pyr_height - 1)
 
-            gc.collect()
-            torch.cuda.empty_cache()
+            #gc.collect()
+            #torch.cuda.empty_cache()
 
             # training step, forward+backward pass+save some metrics and results
             loss, result_loss, total_loss_per_outputs, result, deep_outputs = \
-                single_training_step_compile(model, optimizer, train_image_cat_batch, train_image_ground_truth_batch,
+                single_training_step_compile(train_image_cat_batch, train_image_ground_truth_batch,
                                 train_image_ground_truth_mask_batch, train_image_ground_truth_deep,
-                                train_image_ground_truth_mask_deep, use_amp_=use_amp, scaler_=scaler if use_amp else None)
-            gc.collect()
-            torch.cuda.empty_cache()
+                                train_image_ground_truth_mask_deep, use_amp_=use_amp)
+            #gc.collect()
+            #torch.cuda.empty_cache()
 
             # compute metrics
             if train_history is not None:
@@ -264,8 +265,8 @@ def training_step(train_history=None):
                 train_image_ground_truth_deep[:], train_image_ground_truth_mask_deep[:]
             del result, deep_outputs[:]
             del train_image_ground_truth_deep, train_image_ground_truth_mask_deep, deep_outputs
-            gc.collect()
-            torch.cuda.empty_cache()
+            #gc.collect()
+            #torch.cuda.empty_cache()
 
             pbar.update(len(batch_indices))
 
@@ -775,8 +776,8 @@ if __name__ == "__main__":
                         del result, deep_outputs[:]
                         del test_image_ground_truth_deep, test_image_ground_truth_mask_deep, deep_outputs
 
-                        gc.collect()
-                        torch.cuda.empty_cache()
+                        #gc.collect()
+                        #torch.cuda.empty_cache()
 
                         pbar.update(len(batch_indices))
 
@@ -1016,6 +1017,12 @@ if __name__ == "__main__":
         torch.save(model.state_dict(), os.path.join(model_dir, "model.pt"))
         torch.save(optimizer.state_dict(), os.path.join(model_dir, "optimizer.pt"))
 
+        if use_async_sampling != 0:
+            train_sampler.terminate()
+            val_sampler.terminate()
+    except Exception as e:
+        traceback.print_exc()
+        print("Training failed! Terminating...")
         if use_async_sampling != 0:
             train_sampler.terminate()
             val_sampler.terminate()
