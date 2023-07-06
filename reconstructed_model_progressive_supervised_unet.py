@@ -116,20 +116,34 @@ def training_step(train_history=None):
         training_entries_shuffle = rng.permutation(training_entries)
         if mixup > 0.0:
             training_entries_shuffle2 = rng.permutation(training_entries)
+            if extra_training_entries is not None:
+                training_entries_shuffle = np.concatenate((training_entries_shuffle,
+                                                           rng.choice(extra_training_entries, size=num_extra_trains,
+                                                                      replace=False)))
+                training_entries_shuffle2 = np.concatenate((training_entries_shuffle2,
+                                                            rng.choice(training_entries, size=num_extra_trains,
+                                                                       replace=False)))
+
+                perm = rng.permutation(np.arange(len(training_entries_shuffle)))
+                training_entries_shuffle = training_entries_shuffle[perm]
+                training_entries_shuffle2 = training_entries_shuffle2[perm]
+
+        elif extra_training_entries is not None:
+                training_entries_shuffle = np.concatenate((training_entries_shuffle, rng.choice(
+                    extra_training_entries, size=num_extra_trains, replace=False)))
+                training_entries_shuffle = rng.permutation(training_entries_shuffle)
     else:
         if train_history is None:
             async_request_images_train()
         else:
             async_request_images_val()  # else we preload the validation samples in another process. we are in main step
 
-    with tqdm.tqdm(total=len(training_entries)) as pbar:
-        while trained < len(training_entries):
-            batch_end = min(trained + batch_size, len(training_entries))
+    with tqdm.tqdm(total=total_training_len) as pbar:
+        while trained < total_training_len:
+            batch_end = min(trained + batch_size, total_training_len)
+            length = batch_end - trained
             # obtain batch here
             if use_async_sampling != 0:
-                batch_indices = training_entries[trained:batch_end]
-                length = len(batch_indices)
-
                 train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep, train_image_ground_truth_mask_deep = \
                     train_sampler.get_samples(device=config.device, length=length)
             else:
@@ -259,7 +273,7 @@ def training_step(train_history=None):
                     if mixup > 0.0:
                         del train_image_ground_truth_batch_ev
 
-            trained += len(batch_indices)
+            trained += length
 
             del train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, \
                 train_image_ground_truth_deep[:], train_image_ground_truth_mask_deep[:]
@@ -268,11 +282,11 @@ def training_step(train_history=None):
             #gc.collect()
             #torch.cuda.empty_cache()
 
-            pbar.update(len(batch_indices))
+            pbar.update(length)
 
     if train_history is not None:
-        total_loss_per_output /= len(training_entries)
-        total_cum_loss /= len(training_entries)
+        total_loss_per_output /= total_training_len
+        total_cum_loss /= total_training_len
 
         accuracy_per_output = (true_positive_per_output + true_negative_per_output).astype(np.float64) / (
                     true_positive_per_output + true_negative_per_output + false_positive_per_output + false_negative_per_output)
@@ -398,6 +412,8 @@ if __name__ == "__main__":
     assert type(validation_entries) == list
 
     extra_training_entries = None
+    num_extra_trains = None
+    total_training_len = len(training_entries)
     if args.extra_training_subdata is not None:
         extra_training_entries = model_data_manager.get_subdata_entry_list(args.extra_training_subdata)
         assert type(extra_training_entries) == list
@@ -415,9 +431,11 @@ if __name__ == "__main__":
         # get the diff
         diff = extra_training_int_id[np.searchsorted(training_int_id, extra_training_int_id, side="left") == np.searchsorted(training_int_id, extra_training_int_id, side="right")]
         del extra_training_entries[:], extra_training_entries, training_int_id, extra_training_int_id
-        extra_training_entries = model_data_manager.get_entry_index_by_intid(diff)
+        extra_training_entries = np.array(list(model_data_manager.get_entry_index_by_intid(diff)), dtype=object)
         del diff
         gc.collect()
+        num_extra_trains = int(total_training_len * args.extra_subdata_ratio)
+        total_training_len += num_extra_trains
 
 
 
@@ -597,9 +615,21 @@ if __name__ == "__main__":
             if mixup > 0.0:
                 training_entries_shuffle = rng.permutation(training_entries)
                 training_entries_shuffle2 = rng.permutation(training_entries)
+                if extra_training_entries is not None:
+                    training_entries_shuffle = np.concatenate((training_entries_shuffle,
+                                                               rng.choice(extra_training_entries, size=num_extra_trains, replace=False)))
+                    training_entries_shuffle2 = np.concatenate((training_entries_shuffle2,
+                                                                rng.choice(training_entries, size=num_extra_trains, replace=False)))
+
+                    perm = rng.permutation(np.arange(len(training_entries_shuffle)))
+                    training_entries_shuffle = training_entries_shuffle[perm]
+                    training_entries_shuffle2 = training_entries_shuffle2[perm]
+                    del perm
+
+                # add to sampler
                 trained = 0
-                while trained < len(training_entries):
-                    batch_end = min(trained + batch_size, len(training_entries))
+                while trained < total_training_len:
+                    batch_end = min(trained + batch_size, total_training_len)
                     batch_indices = training_entries_shuffle[trained:batch_end]
                     batch_indices2 = training_entries_shuffle2[trained:batch_end]
                     train_sampler.request_load_sample_mixup(list(batch_indices), list(batch_indices2), mixup, augmentation=augmentation)
@@ -607,9 +637,15 @@ if __name__ == "__main__":
                     trained += len(batch_indices)
             else:
                 training_entries_shuffle = rng.permutation(training_entries)
+                if extra_training_entries is not None:
+                    training_entries_shuffle = np.concatenate((training_entries_shuffle,
+                                                                rng.choice(extra_training_entries, size=num_extra_trains, replace=False)))
+                    training_entries_shuffle = rng.permutation(training_entries_shuffle)
+
+                # add to sampler
                 trained = 0
-                while trained < len(training_entries):
-                    batch_end = min(trained + batch_size, len(training_entries))
+                while trained < total_training_len:
+                    batch_end = min(trained + batch_size, total_training_len)
                     batch_indices = training_entries_shuffle[trained:batch_end]
                     train_sampler.request_load_sample(list(batch_indices), augmentation=augmentation, random_location=True)
 
