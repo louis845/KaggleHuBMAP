@@ -83,10 +83,6 @@ def relative_mask_set(mask: np.ndarray, top_left_x: int, top_left_y: int, new_ma
     new_mask_x, new_mask_y = 0, 0
     new_mask_height, new_mask_width = new_mask.shape
 
-    #print("---relative mask set---")
-
-    #print(top_left_x, top_left_y, new_top_left_x, new_top_left_y, new_mask_width, new_mask_height, mask.shape)
-
     # Shrink now
     if new_top_left_x < top_left_x:
         new_mask_x = top_left_x - new_top_left_x
@@ -100,8 +96,6 @@ def relative_mask_set(mask: np.ndarray, top_left_x: int, top_left_y: int, new_ma
         new_mask_width = top_left_x + mask.shape[1] - new_top_left_x
     if new_top_left_y + new_mask_height > top_left_y + mask.shape[0]:
         new_mask_height = top_left_y + mask.shape[0] - new_top_left_y
-
-    #print(new_mask_x, new_mask_y, new_mask_width, new_mask_height, new_top_left_x, new_top_left_y)
 
     mask[new_top_left_y - top_left_y:new_top_left_y - top_left_y + new_mask_height,
             new_top_left_x - top_left_x:new_top_left_x - top_left_x + new_mask_width] = \
@@ -220,13 +214,12 @@ if __name__ == '__main__':
                                 neighborhood_problem_mask = np.zeros((512 + 2 * boundary_clearance, 512 + 2 * boundary_clearance), dtype=np.uint8)
                                 relative_mask_set(neighborhood_problem_mask, wsi_tiles.loc[tile_id]["i"] - boundary_clearance,
                                                   wsi_tiles.loc[tile_id]["j"] - boundary_clearance, polygon_boundary_mask // 2, polygon_top_left_x, polygon_top_left_y)
-                                neighborhood_expanded_problem_mask = cv2.dilate(neighborhood_problem_mask, kernel, iterations=boundary_clearance, borderType=cv2.BORDER_CONSTANT, borderValue=0)
+                                neighborhood_expanded_problem_mask = cv2.dilate(
+                                    neighborhood_problem_mask * small_central_mask,
+                                    kernel, iterations=boundary_clearance, borderType=cv2.BORDER_CONSTANT, borderValue=0)
 
                                 neighborhood_problem_mask = (neighborhood_problem_mask * (1 - central_mask) +\
                                                             neighborhood_expanded_problem_mask * central_mask) * small_central_mask
-
-                                #print("---neighborhood choice info---")
-                                #print(wsi_tiles.loc[tile_id, "i"], wsi_tiles.loc[tile_id, "j"], polygon_top_left_x, polygon_top_left_y, polygon_mask.shape)
 
                                 relative_mask_set(clearance_mask, clearance_top_left_x, clearance_top_left_y, neighborhood_problem_mask,
                                                   wsi_tiles.loc[tile_id]["i"] - boundary_clearance, wsi_tiles.loc[tile_id]["j"] - boundary_clearance)
