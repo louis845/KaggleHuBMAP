@@ -42,6 +42,68 @@ def get_modified_mask(mask: np.ndarray, top_left_x: int, top_left_y: int):
 
     return mask, inner_mask, boundary_mask, top_left_x, top_left_y
 
+def assign_mask(combined_mask: np.ndarray, mask: np.ndarray, top_left_x: int, top_left_y: int):
+    height, width = combined_mask.shape
+
+    # Compute the shrunk bounds of the mask
+    x1, x2 = top_left_x, top_left_x + mask.shape[1]
+    y1, y2 = top_left_y, top_left_y + mask.shape[0]
+
+    mask_x1, mask_x2 = 0, mask.shape[1]
+    mask_y1, mask_y2 = 0, mask.shape[0]
+
+    if x1 < 0:
+        mask_x1 = -x1
+        x1 = 0
+    if x2 > width:
+        mask_x2 = mask.shape[1] - (x2 - width)
+        x2 = width
+    if y1 < 0:
+        mask_y1 = -y1
+        y1 = 0
+    if y2 > height:
+        mask_y2 = mask.shape[0] - (y2 - height)
+        y2 = height
+
+    # Assignment of masks
+    combined_mask[y1:y2, x1:x2] = np.maximum(combined_mask[y1:y2, x1:x2], mask[mask_y1:mask_y2, mask_x1:mask_x2])
+
+def relative_mask_set(mask: np.ndarray, top_left_x: int, top_left_y: int, new_mask: np.ndarray, new_top_left_x: int, new_top_left_y: int, function: callable=np.maximum):
+    """
+    Uses given function to write the new_mask onto mask, where out of bounds pixels are ignored.
+    :param mask: The mask to be set
+    :param top_left_x: The top left x coordinate of the mask
+    :param top_left_y: The top left y coordinate of the mask
+    :param new_mask: The new mask
+    :param new_top_left_x: The top left x coordinate of the new mask
+    :param new_top_left_y: The top left y coordinate of the new mask
+    :param function: The function to use to set the mask. Default np.maximum
+    """
+
+    new_mask_x, new_mask_y = 0, 0
+    new_mask_height, new_mask_width = new_mask.shape
+
+    # Shrink now
+    if new_top_left_x < top_left_x:
+        new_mask_x = top_left_x - new_top_left_x
+        new_top_left_x = top_left_x
+        new_mask_width -= new_mask_x
+    if new_top_left_y < top_left_y:
+        new_mask_y = top_left_y - new_top_left_y
+        new_top_left_y = top_left_y
+        new_mask_height -= new_mask_y
+    if new_top_left_x + new_mask_width > top_left_x + mask.shape[1]:
+        new_mask_width = top_left_x + mask.shape[1] - new_top_left_x
+    if new_top_left_y + new_mask_height > top_left_y + mask.shape[0]:
+        new_mask_height = top_left_y + mask.shape[0] - new_top_left_y
+
+    mask[new_top_left_y - top_left_y:new_top_left_y - top_left_y + new_mask_height,
+            new_top_left_x - top_left_x:new_top_left_x - top_left_x + new_mask_width] = \
+        function(mask[new_top_left_y - top_left_y:new_top_left_y - top_left_y + new_mask_height,
+            new_top_left_x - top_left_x:new_top_left_x - top_left_x + new_mask_width],
+            new_mask[new_mask_y:new_mask_y + new_mask_height, new_mask_x:new_mask_x + new_mask_width])
+
+
 class WSIMask:
     def __init__(self, combined_masks: h5py.File, wsi_id: int):
         key = "wsi_{}".format(wsi_id)
@@ -106,6 +168,7 @@ if __name__ == '__main__':
             for wsi_id in range(1, 15):
                 if wsi_id != 5:
                     wsi_group = "wsi_{}".format(wsi_id)
+                    wsi_tiles = model_data_manager.data_information.loc[model_data_manager.data_information["source_wsi"] == wsi_id]
                     modified_polygons_group = segmentation_masks[wsi_group]
 
                     wsi_information = model_data_manager.data_information
@@ -127,34 +190,54 @@ if __name__ == '__main__':
                         polygon_mask = np.array(polygon["inner_mask"], dtype=np.uint8)
                         polygon_boundary_mask = np.array(polygon["boundary_mask"], dtype=np.uint8) * 2
 
-                        x1, x2 = polygon_top_left_x, polygon_top_left_x + polygon_mask.shape[1]
-                        y1, y2 = polygon_top_left_y, polygon_top_left_y + polygon_mask.shape[0]
+                        # Fix the boundary problem of dataset 2.
+                        boundary_clearance = 16 # how many boundary pixels to ignore
+                        if polygon_type == "blood_vessel":
+                            neighborhood_tiles = wsi_tiles.loc[(polygon_top_left_x - boundary_clearance - 512 < wsi_tiles["i"]) &
+                                            (wsi_tiles["i"] < polygon_top_left_x + boundary_clearance + 512) &
+                                            (polygon_top_left_y - boundary_clearance - 512 < wsi_tiles["j"]) &
+                                            (wsi_tiles["j"] < polygon_top_left_y + boundary_clearance + 512) &
+                                            (wsi_tiles["dataset"] != 1)].index
 
-                        mask_x1, mask_x2 = 0, polygon_mask.shape[1]
-                        mask_y1, mask_y2 = 0, polygon_mask.shape[0]
+                            clearance_top_left_x = polygon_top_left_x - boundary_clearance
+                            clearance_top_left_y = polygon_top_left_y - boundary_clearance
+                            clearance_mask = np.zeros((polygon_mask.shape[0] + boundary_clearance * 2,
+                                                       polygon_mask.shape[0] + boundary_clearance * 2), dtype=np.uint8)
 
-                        if x1 < 0:
-                            mask_x1 = -x1
-                            x1 = 0
-                        if x2 > width:
-                            mask_x2 = polygon_mask.shape[1] - (x2 - width)
-                            x2 = width
-                        if y1 < 0:
-                            mask_y1 = -y1
-                            y1 = 0
-                        if y2 > height:
-                            mask_y2 = polygon_mask.shape[0] - (y2 - height)
-                            y2 = height
+                            central_mask = np.zeros((512 + 2 * boundary_clearance, 512 + 2 * boundary_clearance), dtype=np.uint8)
+                            central_mask[boundary_clearance:-boundary_clearance, boundary_clearance:-boundary_clearance] = 1
 
+                            # Compute the pixels we have to ignore
+                            for tile_id in neighborhood_tiles:
+                                neighborhood_problem_mask = np.zeros((512 + 2 * boundary_clearance, 512 + 2 * boundary_clearance), dtype=np.uint8)
+                                relative_mask_set(neighborhood_problem_mask, wsi_tiles.loc[tile_id]["i"] - boundary_clearance,
+                                                  wsi_tiles.loc[tile_id]["j"] - boundary_clearance, polygon_boundary_mask // 2, polygon_top_left_x, polygon_top_left_y)
+                                neighborhood_expanded_problem_mask = cv2.dilate(neighborhood_problem_mask, kernel, iterations=boundary_clearance, borderType=cv2.BORDER_CONSTANT, borderValue=0)
+
+                                neighborhood_problem_mask = neighborhood_problem_mask * (1 - central_mask) +\
+                                                            neighborhood_expanded_problem_mask * central_mask
+
+                                relative_mask_set(clearance_mask, clearance_top_left_x, clearance_top_left_y, neighborhood_problem_mask,
+                                                  wsi_tiles.loc[tile_id]["i"] - boundary_clearance, wsi_tiles.loc[tile_id]["j"] - boundary_clearance)
+
+                                del neighborhood_problem_mask, neighborhood_expanded_problem_mask
+                            del central_mask
+                            gc.collect()
+
+                            relative_mask_set(clearance_mask, clearance_top_left_x, clearance_top_left_y, 1 - polygon_mask, polygon_top_left_x, polygon_top_left_y,
+                                              np.minimum)
+                            relative_mask_set(polygon_boundary_mask, polygon_top_left_x, polygon_top_left_y, 1 - clearance_mask, clearance_top_left_x, clearance_top_left_y,
+                                              np.minimum)
+                            assign_mask(combined_mask_unknown, clearance_mask, clearance_top_left_x, clearance_top_left_y)
+
+
+                        # Assignment of masks
                         if polygon_type == "unsure":
-                            combined_mask_unknown[y1:y2, x1:x2] = np.maximum(combined_mask_unknown[y1:y2, x1:x2], polygon_mask[mask_y1:mask_y2, mask_x1:mask_x2])
-                            combined_mask_unknown[y1:y2, x1:x2] = np.maximum(combined_mask_unknown[y1:y2, x1:x2], polygon_boundary_mask[mask_y1:mask_y2, mask_x1:mask_x2])
+                            assign_mask(combined_mask_unknown, np.maximum(polygon_mask, polygon_boundary_mask), polygon_top_left_x, polygon_top_left_y)
                         elif polygon_type == "glomerulus":
-                            combined_mask_glomerulus[y1:y2, x1:x2] = np.maximum(combined_mask_glomerulus[y1:y2, x1:x2], polygon_mask[mask_y1:mask_y2, mask_x1:mask_x2])
-                            combined_mask_glomerulus[y1:y2, x1:x2] = np.maximum(combined_mask_glomerulus[y1:y2, x1:x2], polygon_boundary_mask[mask_y1:mask_y2, mask_x1:mask_x2])
+                            assign_mask(combined_mask_glomerulus, np.maximum(polygon_mask, polygon_boundary_mask), polygon_top_left_x, polygon_top_left_y)
                         elif polygon_type == "blood_vessel":
-                            combined_mask_blood_vessel[y1:y2, x1:x2] = np.maximum(combined_mask_blood_vessel[y1:y2, x1:x2], polygon_mask[mask_y1:mask_y2, mask_x1:mask_x2])
-                            combined_mask_blood_vessel[y1:y2, x1:x2] = np.maximum(combined_mask_blood_vessel[y1:y2, x1:x2], polygon_boundary_mask[mask_y1:mask_y2, mask_x1:mask_x2])
+                            assign_mask(combined_mask_blood_vessel, np.maximum(polygon_mask, polygon_boundary_mask), polygon_top_left_x, polygon_top_left_y)
                         else:
                             raise ValueError("Unknown polygon type: {}".format(polygon_type))
 
