@@ -200,9 +200,7 @@ def training_step(train_history=None):
                         false_positive_per_output[k] += ((deep_class_prediction > 0) & (
                                 train_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
 
-                        del deep_class_prediction, bool_mask
-                        if mixup > 0.0:
-                            del train_image_ground_truth_deep_class
+                        del deep_class_prediction, bool_mask, train_image_ground_truth_deep_class
 
                     # compute final result metrics
                     pred_labels = torch.argmax(result, dim=1)
@@ -269,9 +267,7 @@ def training_step(train_history=None):
                             (pred_labels_class != seg_ps) & (
                                         train_image_ground_truth_batch_ev == seg_ps) & bool_mask).item())
 
-                    del pred_labels, pred_labels_confidence, pred_labels_class, bool_mask
-                    if mixup > 0.0:
-                        del train_image_ground_truth_batch_ev
+                    del pred_labels, pred_labels_confidence, pred_labels_class, bool_mask, train_image_ground_truth_batch_ev
 
             trained += length
 
@@ -747,7 +743,7 @@ if __name__ == "__main__":
                             true_positive_per_output[k] += ((deep_class_prediction > 0) & (test_image_ground_truth_deep_class > 0) & bool_mask).sum().item()
                             false_positive_per_output[k] += ((deep_class_prediction > 0) & (test_image_ground_truth_deep_class == 0) & bool_mask).sum().item()
 
-                            del bool_mask, deep_class_prediction
+                            del bool_mask, deep_class_prediction, test_image_ground_truth_deep_class
 
                         if use_focal_loss:
                             ce_res = focal_loss(result, test_image_ground_truth_batch, one_hot_ground_truth=mixup > 0.0)
