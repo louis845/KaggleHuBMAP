@@ -22,6 +22,7 @@ import model_data_manager
 import model_unet_base
 import model_unet_attention
 import image_wsi_sampling
+import logging_memory_utils
 
 def compute_confidence_class(result: torch.Tensor):
     with torch.no_grad():
@@ -404,6 +405,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     model_dir, dataset_loader, training_entries, validation_entries, prev_model_checkpoint_dir, extra_info, train_subdata, val_subdata = model_data_manager.model_get_argparse_arguments(args, return_subdata_name=True)
+    memory_logger = logging_memory_utils.obtain_memory_logger(model_dir)
     assert type(training_entries) == list
     assert type(validation_entries) == list
 
@@ -656,6 +658,8 @@ if __name__ == "__main__":
                 val_sampler.request_load_sample(list(batch_indices), augmentation=False, random_location=False)
 
                 tested += len(batch_indices)
+
+    memory_logger.log("CUDA memory before training:")
     try:
         if use_async_sampling != 0:
             async_request_images_train() # preload the training samples
@@ -670,12 +674,14 @@ if __name__ == "__main__":
             print()
             for extra_step in range(num_extra_steps):
                 training_step(None)
+                memory_logger.log("CUDA memory after extra step {} in epoch {}".format(extra_step, epoch))
 
             # ----------------------------------------- Main training step -----------------------------------------
             print()
             print("Training.....")
             print()
             training_step(train_history)
+            memory_logger.log("CUDA memory after training step in epoch {}".format(epoch))
 
             if use_async_sampling != 0:
                 async_request_images_train() # request preloading training images for next epoch
@@ -949,10 +955,14 @@ if __name__ == "__main__":
             gc.collect()
             torch.cuda.empty_cache()
 
+            memory_logger.log("CUDA memory after validation in epoch {}".format(epoch))
+
             # Save the model and optimizer
             if epoch % epochs_per_save == 0 and epoch > 0:
                 torch.save(model.state_dict(), os.path.join(model_dir, "model_epoch{}.pt".format(epoch)))
                 torch.save(optimizer.state_dict(), os.path.join(model_dir, "optimizer_epoch{}.pt".format(epoch)))
+
+                memory_logger.log("CUDA memory after saving in epoch {}".format(epoch))
 
         print("Training Complete")
 
@@ -1060,3 +1070,5 @@ if __name__ == "__main__":
         if use_async_sampling != 0:
             train_sampler.terminate()
             val_sampler.terminate()
+
+    memory_logger.close()
