@@ -370,7 +370,7 @@ def training_step(train_history=None):
                             true_positive_class_class[seg_class] + false_negative_class_class[seg_class]
                     ))
     gc.collect()
-    torch.cuda.empty_cache()
+    #torch.cuda.empty_cache()
 
 def validation_step(train_history):
     with torch.no_grad():
@@ -633,7 +633,7 @@ def validation_step(train_history):
                             true_positive_class_class[seg_class] + false_negative_class_class[seg_class]))
 
     gc.collect()
-    torch.cuda.empty_cache()
+    #torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
@@ -733,7 +733,7 @@ if __name__ == "__main__":
                                                squeeze_excitation=args.use_squeeze_excitation, bottleneck_expansion=args.bottleneck_expansion,
                                                res_conv_blocks=blocks, use_initial_conv=args.use_initial_conv).to(device=config.device)
 
-    single_training_step_compile = torch.compile(single_training_step)
+    single_training_step_compile = single_training_step#torch.compile(single_training_step)
 
     if args.optimizer.lower() == "adam":
         optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.999))
@@ -1006,7 +1006,7 @@ if __name__ == "__main__":
             ctime = time.time()
 
             gc.collect()
-            torch.cuda.empty_cache()
+            #torch.cuda.empty_cache()
 
             memory_logger.log("CUDA memory after validation in epoch {}".format(epoch))
 
