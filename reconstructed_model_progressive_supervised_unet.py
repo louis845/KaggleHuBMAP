@@ -118,11 +118,16 @@ def training_step(train_history=None):
         if mixup > 0.0:
             training_entries_shuffle2 = rng.permutation(training_entries)
             if extra_training_entries is not None:
+                extra1_size = num_extra_trains // 2
+                extra2_size = num_extra_trains - extra1_size
                 training_entries_shuffle = np.concatenate((training_entries_shuffle,
                                                            rng.choice(extra_training_entries, size=num_extra_trains,
                                                                       replace=False)))
                 training_entries_shuffle2 = np.concatenate((training_entries_shuffle2,
-                                                            rng.choice(training_entries, size=num_extra_trains,
+                                                            rng.choice(training_entries, size=extra1_size,
+                                                                       replace=False)))
+                training_entries_shuffle2 = np.concatenate((training_entries_shuffle2,
+                                                            rng.choice(extra_training_entries, size=extra2_size,
                                                                        replace=False)))
 
                 perm = rng.permutation(np.arange(len(training_entries_shuffle)))
@@ -878,10 +883,14 @@ if __name__ == "__main__":
                 training_entries_shuffle = rng.permutation(training_entries)
                 training_entries_shuffle2 = rng.permutation(training_entries)
                 if extra_training_entries is not None:
+                    extra1_size = num_extra_trains // 2
+                    extra2_size = num_extra_trains - extra1_size
                     training_entries_shuffle = np.concatenate((training_entries_shuffle,
                                                                rng.choice(extra_training_entries, size=num_extra_trains, replace=False)))
                     training_entries_shuffle2 = np.concatenate((training_entries_shuffle2,
-                                                                rng.choice(training_entries, size=num_extra_trains, replace=False)))
+                                                                rng.choice(training_entries, size=extra1_size, replace=False)))
+                    training_entries_shuffle2 = np.concatenate((training_entries_shuffle2,
+                                                                rng.choice(extra_training_entries, size=extra2_size, replace=False)))
 
                     perm = rng.permutation(np.arange(len(training_entries_shuffle)))
                     training_entries_shuffle = training_entries_shuffle[perm]
