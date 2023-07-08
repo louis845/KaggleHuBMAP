@@ -6,17 +6,21 @@ class CudaMemoryLogger:
     def __init__(self, folder):
         # open file in folder/cuda_mem_log.txt
         self.file = open(os.path.join(folder, "cuda_mem_log.txt"), "w")
+        self.closed = False
 
     def log(self, msg):
-        self.file.write("========================================\n")
-        self.file.write("Time: " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()) + "\n")
-        self.file.write(msg + "\n")
-        self.file.write(torch.cuda.memory_summary())
-        self.file.flush()
+        if not self.closed:
+            self.file.write("========================================\n")
+            self.file.write("Time: " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()) + "\n")
+            self.file.write(msg + "\n")
+            self.file.write(torch.cuda.memory_summary())
+            self.file.flush()
 
     def close(self):
-        self.file.flush()
-        self.file.close()
+        if not self.closed:
+            self.file.flush()
+            self.file.close()
+            self.closed = True
 
     def __del__(self):
         self.close()
