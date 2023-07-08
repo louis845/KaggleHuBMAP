@@ -454,7 +454,7 @@ def validation_step(train_history):
                     del bool_mask, deep_class_prediction, test_image_ground_truth_deep_class
 
                 if use_focal_loss:
-                    ce_res = focal_loss(result, test_image_ground_truth_batch, one_hot_ground_truth=mixup > 0.0)
+                    ce_res = focal_loss(result, test_image_ground_truth_batch, one_hot_ground_truth=False)
                 else:
                     ce_res = torch.nn.functional.cross_entropy(result, test_image_ground_truth_batch, reduction="none",
                                                                weight=class_weights)
