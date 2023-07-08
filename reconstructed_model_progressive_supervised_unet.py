@@ -426,7 +426,7 @@ def validation_step(train_history):
 
                     if use_focal_loss:
                         ce_res = focal_loss(deep_outputs[k], test_image_ground_truth_deep[pyr_height - 2 - k],
-                                            one_hot_ground_truth=mixup > 0.0)
+                                            one_hot_ground_truth=False)
                     else:
                         ce_res = torch.nn.functional.cross_entropy(deep_outputs[k],
                                                                    test_image_ground_truth_deep[pyr_height - 2 - k],
