@@ -230,7 +230,7 @@ if __name__ == '__main__':
 
                             relative_mask_set(clearance_mask, clearance_top_left_x, clearance_top_left_y, 1 - polygon_mask, polygon_top_left_x, polygon_top_left_y,
                                               np.minimum)
-                            relative_mask_set(polygon_boundary_mask, polygon_top_left_x, polygon_top_left_y, 1 - clearance_mask, clearance_top_left_x, clearance_top_left_y,
+                            relative_mask_set(polygon_boundary_mask, polygon_top_left_x, polygon_top_left_y, (1 - clearance_mask) * 2, clearance_top_left_x, clearance_top_left_y,
                                               np.minimum)
                             assign_mask(combined_mask_unknown, clearance_mask, clearance_top_left_x, clearance_top_left_y)
 
