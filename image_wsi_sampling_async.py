@@ -302,7 +302,10 @@ def get_image_sampler(subdata_name: str, image_width=1024, batch_size: int=1, sa
 
 def generate_image_example(sampler: MultipleImageSamplerAsync, tile: str, num: int) -> float:
     ctime = time.time()
-    image_comb, ground_truth, ground_truth_mask = sampler.get_image(device=config.device)
+    image_comb, ground_truth, ground_truth_mask = sampler.get_samples(device=config.device, length=1)
+    image_comb = image_comb[0, ...]
+    ground_truth = ground_truth[0, ...]
+    ground_truth_mask = ground_truth_mask[0, ...]
     ctime = time.time() - ctime
 
     image = image_comb[:3, ...].detach().cpu().numpy().transpose(1, 2, 0).astype(np.uint8)
@@ -343,12 +346,13 @@ if __name__ == "__main__":
     #generate_masks_from_subdata("dataset1_regional_split1")
     #generate_masks_from_subdata("dataset1_regional_split2")
     torch.multiprocessing.set_start_method("spawn")
-    sampler = get_image_sampler("dataset1_regional_split1")
+    sampler = get_image_sampler("dataset1_regional_split1", sampling_type="batch_random_image")
 
     tiles = ["5ac25a1e40dd", "39b8aafd630b", "8e90e6189c6b", "f45a29109ff5"]
 
     for tile in tiles:
-        sampler.request_load_image([tile] * 10)
+        for k in range(10):
+            sampler.request_load_sample([tile], augmentation=False, random_location=False)
 
     all_time_elapsed = []
     for tile in tiles:
