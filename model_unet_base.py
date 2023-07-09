@@ -39,10 +39,10 @@ class AtrousConv(torch.nn.Module):
 
         self.atrous_convs = torch.nn.ModuleList()
         for k in range(0, num_atrous_blocks):
-            self.atrous_convs.append(torch.nn.Conv2d(out_channels, 4 * out_channels // num_atrous_blocks, 3, bias=False, padding="same", padding_mode="replicate", dilation=(1 + 3 * k)))
+            self.atrous_convs.append(torch.nn.Conv2d(out_channels, 2 * out_channels // num_atrous_blocks, 3, bias=False, padding="same", padding_mode="replicate", dilation=(1 + 3 * k)))
 
         if use_batch_norm:
-            self.batchnorm_atrous = torch.nn.GroupNorm(num_groups=4 * out_channels, num_channels=4 * out_channels) # instance norm
+            self.batchnorm_atrous = torch.nn.GroupNorm(num_groups=2 * out_channels, num_channels=2 * out_channels) # instance norm
         self.elu_atrous = torch.nn.ReLU(inplace=True)
 
         self.use_batch_norm = use_batch_norm
@@ -241,7 +241,7 @@ class UNetEndClassifier(torch.nn.Module):
             for i in range(pyr_height - 1 - num_deep_multiclasses, pyr_height - 1):
                 self.outconv_deep.append(torch.nn.Conv2d(bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i - 1), num_classes + 1, 1, bias=True))
 
-        outconv_in = (4 * bottleneck_expansion * hidden_channels) if use_atrous_conv else (bottleneck_expansion * hidden_channels)
+        outconv_in = (2 * bottleneck_expansion * hidden_channels) if use_atrous_conv else (bottleneck_expansion * hidden_channels)
         if num_classes > 1:
             self.outconv = torch.nn.Conv2d(outconv_in, num_classes + 1, 1, bias=True)
         else:
