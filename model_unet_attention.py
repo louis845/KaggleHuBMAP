@@ -40,10 +40,12 @@ class UNetEndClassifier(torch.nn.Module):
                 self.outconv_deep.append(torch.nn.Conv2d(bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i - 1), 1, 1, bias=True))
             for i in range(pyr_height - 1 - num_deep_multiclasses, pyr_height - 1):
                 self.outconv_deep.append(torch.nn.Conv2d(bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i - 1), num_classes + 1, 1, bias=True))
+
+        outconv_in = (4 * bottleneck_expansion * hidden_channels) if use_atrous_conv else (bottleneck_expansion * hidden_channels)
         if num_classes > 1:
-            self.outconv = torch.nn.Conv2d(bottleneck_expansion * hidden_channels, num_classes + 1, 1, bias=True)
+            self.outconv = torch.nn.Conv2d(outconv_in, num_classes + 1, 1, bias=True)
         else:
-            self.outconv = torch.nn.Conv2d(bottleneck_expansion * hidden_channels, 1, 1, bias=True)
+            self.outconv = torch.nn.Conv2d(outconv_in, 1, 1, bias=True)
         self.sigmoid = torch.nn.Sigmoid()
 
         self.num_classes = num_classes

@@ -28,34 +28,36 @@ class Conv(torch.nn.Module):
         return x
 
 class AtrousConv(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, use_batch_norm=False, num_atrous_blocks=4):
+    def __init__(self, in_channels, out_channels, use_batch_norm=False, num_atrous_blocks=8):
         super(AtrousConv, self).__init__()
+
+        self.conv_in = torch.nn.Conv2d(in_channels, out_channels, 3, bias=False, padding="same", padding_mode="replicate")
+        if use_batch_norm:
+            self.batchnorm_in = torch.nn.GroupNorm(num_groups=out_channels,
+                                                        num_channels=out_channels)  # instance norm
+        self.elu_in = torch.nn.ReLU(inplace=True)
 
         self.atrous_convs = torch.nn.ModuleList()
         for k in range(0, num_atrous_blocks):
-            self.atrous_convs.append(torch.nn.Conv2d(in_channels, 2 * out_channels // num_atrous_blocks, 3, bias=False, padding="same", padding_mode="replicate", dilation=(1 + 4 * k)))
+            self.atrous_convs.append(torch.nn.Conv2d(out_channels, 4 * out_channels // num_atrous_blocks, 3, bias=False, padding="same", padding_mode="replicate", dilation=(1 + 3 * k)))
 
         if use_batch_norm:
-            self.batchnorm_atrous = torch.nn.GroupNorm(num_groups=2 * out_channels, num_channels=2 * out_channels) # instance norm
+            self.batchnorm_atrous = torch.nn.GroupNorm(num_groups=4 * out_channels, num_channels=4 * out_channels) # instance norm
         self.elu_atrous = torch.nn.ReLU(inplace=True)
-
-        self.conv_project = torch.nn.Conv2d(2 * out_channels, out_channels, 1, bias=False, padding="same", padding_mode="replicate")
-        if use_batch_norm:
-            self.batchnorm_project = torch.nn.GroupNorm(num_groups=out_channels, num_channels=out_channels) # instance norm
-        self.elu_project = torch.nn.ReLU(inplace=True)
 
         self.use_batch_norm = use_batch_norm
         self.num_atrous_blocks = num_atrous_blocks
 
     def forward(self, x):
+        x = self.conv_in(x)
+        if self.use_batch_norm:
+            x = self.batchnorm_in(x)
+        x = self.elu_in(x)
+
         x = torch.cat([self.atrous_convs[k](x) for k in range(self.num_atrous_blocks)], dim=1)
         if self.use_batch_norm:
             x = self.batchnorm_atrous(x)
         x = self.elu_atrous(x)
-        x = self.conv_project(x)
-        if self.use_batch_norm:
-            x = self.batchnorm_project(x)
-        x = self.elu_project(x)
         return x
 
 class ResConvBlock(torch.nn.Module):
@@ -239,10 +241,11 @@ class UNetEndClassifier(torch.nn.Module):
             for i in range(pyr_height - 1 - num_deep_multiclasses, pyr_height - 1):
                 self.outconv_deep.append(torch.nn.Conv2d(bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i - 1), num_classes + 1, 1, bias=True))
 
+        outconv_in = (4 * bottleneck_expansion * hidden_channels) if use_atrous_conv else (bottleneck_expansion * hidden_channels)
         if num_classes > 1:
-            self.outconv = torch.nn.Conv2d(bottleneck_expansion * hidden_channels, num_classes + 1, 1, bias=True)
+            self.outconv = torch.nn.Conv2d(outconv_in, num_classes + 1, 1, bias=True)
         else:
-            self.outconv = torch.nn.Conv2d(bottleneck_expansion * hidden_channels, 1, 1, bias=True)
+            self.outconv = torch.nn.Conv2d(outconv_in, 1, 1, bias=True)
         self.sigmoid = torch.nn.Sigmoid()
 
         self.num_classes = num_classes
