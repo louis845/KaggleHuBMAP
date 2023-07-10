@@ -755,8 +755,8 @@ if __name__ == "__main__":
         model_checkpoint_path = os.path.join(prev_model_checkpoint_dir, "model.pt")
         optimizer_checkpoint_path = os.path.join(prev_model_checkpoint_dir, "optimizer.pt")
 
-        model.load_state_dict(torch.load(model_checkpoint_path))
-        optimizer.load_state_dict(torch.load(optimizer_checkpoint_path))
+        model.load_state_dict(torch.load(model_checkpoint_path, map_location="cpu"))
+        optimizer.load_state_dict(torch.load(optimizer_checkpoint_path, map_location="cpu"))
 
         for g in optimizer.param_groups:
             g['lr'] = args.learning_rate
