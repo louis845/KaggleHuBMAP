@@ -761,6 +761,9 @@ if __name__ == "__main__":
         for g in optimizer.param_groups:
             g['lr'] = args.learning_rate
 
+        gc.collect()
+        torch.cuda.empty_cache()
+
     num_epochs = args.epochs
     batch_size = args.batch_size
     augmentation = args.augmentation
