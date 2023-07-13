@@ -389,6 +389,29 @@ if __name__ == "__main__":
             print("{:.4f} (Precision {} Val)".format(precision_classes_val[seg_class], seg_class))
             print("{:.4f} (Recall {} Val)".format(recall_classes_val[seg_class], seg_class))
 
+        # Write the above prints to a file
+        with open(os.path.join(output_data_writer.data_folder, "results.txt"), "w") as f:
+            f.write("{:.4f} (Accuracy)\n".format(accuracy))
+            f.write("{:.4f} (Precision)\n".format(precision))
+            f.write("{:.4f} (Recall)\n".format(recall))
+            f.write("{:.4f} (Accuracy Train)\n".format(accuracy_train))
+            f.write("{:.4f} (Precision Train)\n".format(precision_train))
+            f.write("{:.4f} (Recall Train)\n".format(recall_train))
+            f.write("{:.4f} (Accuracy Val)\n".format(accuracy_val))
+            f.write("{:.4f} (Precision Val)\n".format(precision_val))
+            f.write("{:.4f} (Recall Val)\n".format(recall_val))
+            for seg_class in classes:
+                f.write("--------------- {} ---------------\n".format(seg_class))
+                f.write("{:.4f} (Accuracy {})\n".format(accuracy_classes[seg_class], seg_class))
+                f.write("{:.4f} (Precision {})\n".format(precision_classes[seg_class], seg_class))
+                f.write("{:.4f} (Recall {})\n".format(recall_classes[seg_class], seg_class))
+                f.write("{:.4f} (Accuracy {} Train)\n".format(accuracy_classes_train[seg_class], seg_class))
+                f.write("{:.4f} (Precision {} Train)\n".format(precision_classes_train[seg_class], seg_class))
+                f.write("{:.4f} (Recall {} Train)\n".format(recall_classes_train[seg_class], seg_class))
+                f.write("{:.4f} (Accuracy {} Val)\n".format(accuracy_classes_val[seg_class], seg_class))
+                f.write("{:.4f} (Precision {} Val)\n".format(precision_classes_val[seg_class], seg_class))
+                f.write("{:.4f} (Recall {} Val)\n".format(recall_classes_val[seg_class], seg_class))
+
 
     input_data_loader.close()
     output_data_writer.close()

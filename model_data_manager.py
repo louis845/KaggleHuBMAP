@@ -79,6 +79,7 @@ class DatasetDataWriter():
     def __init__(self, dataset_name):
         self.dataset_name = dataset_name
         self.data_store = h5py.File(os.path.join(transformed_data_dir, dataset_name, "data.hdf5"), "w")
+        self.data_folder = os.path.join(transformed_data_dir, dataset_name)
 
     def write_image_data(self, entry_name, image_data):
         if "image_data" not in self.data_store:
