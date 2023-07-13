@@ -42,6 +42,19 @@ def focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_hot_ground_
 
     return torch.sum((softmax[:, 1:, :, :] - ground_truth_one_hot[:, 1:, :, :]) ** 2, dim=1) * cross_entropy
 
+def composite_focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_hot_ground_truth:bool):
+    ground_truth_one_hot = ground_truth if one_hot_ground_truth else torch.nn.functional.one_hot(ground_truth, num_classes=3).permute(0, 3, 1, 2).to(torch.float32)
+    with torch.no_grad():
+        ground_truth_other = torch.stack([ground_truth_one_hot[:, 0, :, :] + ground_truth_one_hot[:, 1, :, :], ground_truth_one_hot[:, 2, :, :]], dim=1)
+
+    cross_entropy = torch.nn.functional.cross_entropy(result, ground_truth, reduction="none", weight=class_weights)
+    cross_entropy_cp = torch.nn.functional.cross_entropy(result[:, 1:, :, :], ground_truth_other, reduction="none", weight=class_weights_composite)
+    softmax = torch.softmax(result, dim=1)
+    softmax_cp = torch.softmax(result[:, 1:, :, :], dim=1)
+
+    return torch.sum((softmax - ground_truth_one_hot) ** 2, dim=1) * cross_entropy +\
+        torch.sum((softmax_cp - ground_truth_other) ** 2, dim=1) * cross_entropy_cp
+
 def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image_ground_truth_batch_, train_image_ground_truth_mask_batch_,
                          train_image_ground_truth_deep_, train_image_ground_truth_mask_deep_, use_amp_=False, scaler_=None):
     mixup_used = (mixup > 0.0)
@@ -54,6 +67,8 @@ def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image
         loss = 0.0
         for k in range(pyr_height - 2, -1, -1):
             multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
+            if (k > 0) and use_suppressed_deepsupervision:
+                multiply_scale_factor = 0.0
 
             if use_focal_loss:
                 ce_res = focal_loss(deep_outputs[k], train_image_ground_truth_deep_[pyr_height - 2 - k],
@@ -67,7 +82,9 @@ def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image
 
             total_loss_per_outputs[k] = k_loss.item()
 
-        if use_focal_loss:
+        if use_composite_focal_loss:
+            ce_res = composite_focal_loss(result, train_image_ground_truth_batch_, one_hot_ground_truth=mixup_used)
+        elif use_focal_loss:
             ce_res = focal_loss(result, train_image_ground_truth_batch_, one_hot_ground_truth=mixup_used)
         else:
             ce_res = torch.nn.functional.cross_entropy(result, train_image_ground_truth_batch_, reduction="none",
@@ -423,6 +440,8 @@ def validation_step(train_history):
                 loss = 0.0
                 for k in range(pyr_height - 2, -1, -1):
                     multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
+                    if (k > 0) and use_suppressed_deepsupervision:
+                        multiply_scale_factor = 0.0
 
                     if use_focal_loss:
                         ce_res = focal_loss(deep_outputs[k], test_image_ground_truth_deep[pyr_height - 2 - k],
@@ -453,7 +472,9 @@ def validation_step(train_history):
 
                     del bool_mask, deep_class_prediction, test_image_ground_truth_deep_class
 
-                if use_focal_loss:
+                if use_composite_focal_loss:
+                    ce_res = composite_focal_loss(result, test_image_ground_truth_batch, one_hot_ground_truth=False)
+                elif use_focal_loss:
                     ce_res = focal_loss(result, test_image_ground_truth_batch, one_hot_ground_truth=False)
                 else:
                     ce_res = torch.nn.functional.cross_entropy(result, test_image_ground_truth_batch, reduction="none",
@@ -653,9 +674,11 @@ if __name__ == "__main__":
     parser.add_argument("--use_res_conv", action="store_true", help="Whether to use deeper residual convolutional networks. Default False.")
     parser.add_argument("--use_atrous_conv", action="store_true", help="Whether to use atrous convolutional networks. Default False.")
     parser.add_argument("--use_focal_loss", action="store_true", help="Whether to use focal loss. Default False.")
+    parser.add_argument("--use_composite_focal_loss", action="store_true", help="Whether to use composite focal loss. Default False.")
     parser.add_argument("--use_amp", action="store_true", help="Whether to use automatic mixed precision. Default False.")
     parser.add_argument("--use_squeeze_excitation", action="store_true", help="Whether to use squeeze and excitation. Default False.")
     parser.add_argument("--use_initial_conv", action="store_true", help="Whether to use the initial 7x7 kernel convolution. Default False.")
+    parser.add_argument("--use_suppressed_deepsupervision", action="store_true", help="Whether to use suppressed deep supervision. Default False.")
     parser.add_argument("--hidden_channels", type=int, default=64, help="Number of hidden channels to use. Default 64.")
     parser.add_argument("--hidden_blocks", type=int, nargs="+", default=[2, 3, 4, 6, 6, 7, 7], help="Number of hidden blocks for ResNets. Ignored if not resnet.")
     parser.add_argument("--bottleneck_expansion", type=int, default=1, help="The expansion factor of the bottleneck. Default 1.")
@@ -769,6 +792,10 @@ if __name__ == "__main__":
     pyr_height = args.pyramid_height
     deep_exponent_base = args.deep_exponent_base
     use_focal_loss = args.use_focal_loss
+    use_composite_focal_loss = args.use_composite_focal_loss
+    use_suppressed_deepsupervision = args.use_suppressed_deepsupervision
+
+    assert not (use_focal_loss and use_composite_focal_loss), "You cannot use both focal loss and composite focal loss."
 
     model_config = {
         "model": "reconstructed_model_progressive_supervised_unet",
@@ -782,9 +809,11 @@ if __name__ == "__main__":
         "use_res_conv": args.use_res_conv,
         "use_atrous_conv": args.use_atrous_conv,
         "use_focal_loss": args.use_focal_loss,
+        "use_composite_focal_loss": args.use_composite_focal_loss,
         "use_amp": args.use_amp,
         "use_squeeze_excitation": args.use_squeeze_excitation,
         "use_initial_conv": args.use_initial_conv,
+        "use_suppressed_deepsupervision": args.use_suppressed_deepsupervision,
         "hidden_channels": args.hidden_channels,
         "hidden_blocks": args.hidden_blocks,
         "bottleneck_expansion": args.bottleneck_expansion,
@@ -831,6 +860,7 @@ if __name__ == "__main__":
     print("Using class weights:")
     classes = ["blood_vessel", "boundary"]
     class_weights = [5.0, 5.0]
+    class_weights_composite = [2.0, 8.0]
     num_classes = 2
     for k in range(len(classes)):
         seg_class = classes[k]
@@ -854,9 +884,10 @@ if __name__ == "__main__":
         train_history["val_class_precision_{}".format(seg_class)] = []
         train_history["class_recall_{}".format(seg_class)] = []
         train_history["val_class_recall_{}".format(seg_class)] = []
-        print("Class {}: {}".format(seg_class, class_weights[k]))
+        print("Class {}: {}, {}".format(seg_class, class_weights[k], class_weights_composite[k]))
 
     class_weights = torch.tensor([1.0] + class_weights, dtype=torch.float32, device=config.device)
+    class_weights_composite = torch.tensor(class_weights_composite, dtype=torch.float32, device=config.device)
 
     # Initialize image sampler here
     if use_async_sampling == 0:
