@@ -46,6 +46,7 @@ def composite_focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_h
     ground_truth_one_hot = ground_truth if one_hot_ground_truth else torch.nn.functional.one_hot(ground_truth, num_classes=3).permute(0, 3, 1, 2).to(torch.float32)
     with torch.no_grad():
         ground_truth_other = torch.stack([ground_truth_one_hot[:, 0, :, :] + ground_truth_one_hot[:, 1, :, :], ground_truth_one_hot[:, 2, :, :]], dim=1)
+        non_backgroundness = 1 - ground_truth_one_hot[:, 0, :, :]
 
     cross_entropy = torch.nn.functional.cross_entropy(result, ground_truth, reduction="none", weight=class_weights)
     cross_entropy_cp = torch.nn.functional.cross_entropy(result[:, 1:, :, :], ground_truth_other, reduction="none", weight=class_weights_composite)
@@ -53,7 +54,7 @@ def composite_focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_h
     softmax_cp = torch.softmax(result[:, 1:, :, :], dim=1)
 
     return torch.sum((softmax - ground_truth_one_hot) ** 2, dim=1) * cross_entropy +\
-        torch.sum((softmax_cp - ground_truth_other) ** 2, dim=1) * cross_entropy_cp
+        non_backgroundness * torch.sum((softmax_cp - ground_truth_other) ** 2, dim=1) * cross_entropy_cp
 
 def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image_ground_truth_batch_, train_image_ground_truth_mask_batch_,
                          train_image_ground_truth_deep_, train_image_ground_truth_mask_deep_, use_amp_=False, scaler_=None):
