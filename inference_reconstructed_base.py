@@ -87,11 +87,11 @@ def initialize_region_cache():
 class Composite1024To512ImageInference:
     """Helper class to input a 1024x1024 image, and do inference on the center 512x512 region."""
 
-    CENTER = 0
-    TOP_LEFT = 1
-    TOP_RIGHT = 2
-    BOTTOM_LEFT = 3
-    BOTTOM_RIGHT = 4
+    CENTER, CENTER_STR = 0, "center"
+    TOP_LEFT, TOP_LEFT_STR = 1, "top_left"
+    TOP_RIGHT, TOP_RIGHT_STR = 2, "top_right"
+    BOTTOM_LEFT, BOTTOM_LEFT_STR = 3, "bottom_left"
+    BOTTOM_RIGHT, BOTTOM_RIGHT_STR = 4, "bottom_right"
 
     def __init__(self):
         self.image_loaded = False
@@ -116,19 +116,19 @@ class Composite1024To512ImageInference:
 
         # self.image is a 1024x1024 image, and return a 768x768 subimage
         if location == self.CENTER:
-            return torch.tensor(np.concatenate(self.image[128:-128, 128:-128, :], np.expand_dims(region_mask[128:-128, 128:-128], axis=-1), axis=-1),
+            return torch.tensor(np.concatenate([self.image[128:-128, 128:-128, :], np.expand_dims(region_mask[128:-128, 128:-128], axis=-1)], axis=-1),
                                 dtype=torch.float32, device=config.device).permute(2, 0, 1)
         elif location == self.TOP_LEFT:
-            return torch.tensor(np.concatenate(self.image[:768, :768, :], np.expand_dims(region_mask[:768, :768], axis=-1), axis=-1),
+            return torch.tensor(np.concatenate([self.image[:768, :768, :], np.expand_dims(region_mask[:768, :768], axis=-1)], axis=-1),
                                 dtype=torch.float32, device=config.device).permute(2, 0, 1)
         elif location == self.TOP_RIGHT:
-            return torch.tensor(np.concatenate(self.image[:768, -768:, :], np.expand_dims(region_mask[:768, -768:], axis=-1), axis=-1),
+            return torch.tensor(np.concatenate([self.image[:768, -768:, :], np.expand_dims(region_mask[:768, -768:], axis=-1)], axis=-1),
                                 dtype=torch.float32, device=config.device).permute(2, 0, 1)
         elif location == self.BOTTOM_LEFT:
-            return torch.tensor(np.concatenate(self.image[-768:, :768, :], np.expand_dims(region_mask[-768:, :768], axis=-1), axis=-1),
+            return torch.tensor(np.concatenate([self.image[-768:, :768, :], np.expand_dims(region_mask[-768:, :768], axis=-1)], axis=-1),
                                 dtype=torch.float32, device=config.device).permute(2, 0, 1)
         elif location == self.BOTTOM_RIGHT:
-            return torch.tensor(np.concatenate(self.image[-768:, -768:, :], np.expand_dims(region_mask[-768:, -768:], axis=-1), axis=-1),
+            return torch.tensor(np.concatenate([self.image[-768:, -768:, :], np.expand_dims(region_mask[-768:, -768:], axis=-1)], axis=-1),
                                 dtype=torch.float32, device=config.device).permute(2, 0, 1)
 
     def has_region_information(self, location: int):
@@ -166,23 +166,23 @@ class Composite1024To512ImageInference:
             "logits must be of shape (512, 512, 3, k)"
 
         if location == self.CENTER:
-            self.logits["center"] = logits.detach().cpu().numpy()
+            self.logits[self.CENTER_STR] = logits.detach().cpu().numpy()
             self.logits_obtained = True
         elif location == self.TOP_LEFT:
-            self.logits["top_left"] = logits[128:, 128:, ...].detach().cpu().numpy()
+            self.logits[self.TOP_LEFT_STR] = logits[128:, 128:, ...].detach().cpu().numpy()
         elif location == self.TOP_RIGHT:
-            self.logits["top_right"] = logits[128:, :-128, ...].detach().cpu().numpy()
+            self.logits[self.TOP_RIGHT_STR] = logits[128:, :-128, ...].detach().cpu().numpy()
         elif location == self.BOTTOM_LEFT:
-            self.logits["bottom_left"] = logits[:-128, 128:, ...].detach().cpu().numpy()
+            self.logits[self.BOTTOM_LEFT_STR] = logits[:-128, 128:, ...].detach().cpu().numpy()
         elif location == self.BOTTOM_RIGHT:
-            self.logits["bottom_right"] = logits[:-128, :-128, ...].detach().cpu().numpy()
+            self.logits[self.BOTTOM_RIGHT_STR] = logits[:-128, :-128, ...].detach().cpu().numpy()
 
     def store_logits_to_hdf(self, group: h5py.Group):
         if not self.logits_obtained:
             raise ValueError("Logits not obtained. Run inference first!")
         subgroup = group.create_group(self.tile_id)
         for key in self.logits:
-            subgroup.create_dataset(key, data=self.logits[key])
+            subgroup.create_dataset(key, data=self.logits[key], compression="gzip", compression_opts=9)
 
     def load_logits_from_hdf(self, group: h5py.Group, tile_id: str):
         self.tile_id = tile_id
@@ -201,7 +201,7 @@ class Composite1024To512ImageInference:
         """
         if not self.logits_obtained:
             raise ValueError("Logits not obtained. Run inference first!")
-        if "center" not in self.logits:
+        if self.CENTER_STR not in self.logits:
             raise ValueError("ERROR: Center logits not obtained.")
 
         instances_array = np.zeros(shape=(4, 4), dtype=np.int32) # how many logit predictions in each 128x128 square in 512x512 region.
@@ -209,7 +209,7 @@ class Composite1024To512ImageInference:
 
         # fill in the 512x512 square with logits
         for key in self.logits:
-            if key == "center":
+            if key == self.CENTER_STR:
                 if experts_only:
                     for y in range(1, 3):
                         for x in range(1, 3):
@@ -222,7 +222,7 @@ class Composite1024To512ImageInference:
                             instances_array[y, x] += 1
                             stacked_instances_array[y, x].append(self.logits[key][128 * y:128 * (y + 1),
                                                                  128 * x:128 * (x + 1), ...])
-            if key == "top_left":
+            if key == self.TOP_LEFT_STR:
                 if experts_only:
                     for y in range(0, 2):
                         for x in range(0, 2):
@@ -235,7 +235,7 @@ class Composite1024To512ImageInference:
                             instances_array[y, x] += 1
                             stacked_instances_array[y, x].append(self.logits[key][128 * y:128 * (y + 1),
                                                                  128 * x:128 * (x + 1), ...])
-            if key == "top_right":
+            if key == self.TOP_RIGHT_STR:
                 if experts_only:
                     for y in range(0, 2):
                         for x in range(1, 3):
@@ -248,7 +248,7 @@ class Composite1024To512ImageInference:
                             instances_array[y, x + 1] += 1
                             stacked_instances_array[y, x + 1].append(self.logits[key][128 * y:128 * (y + 1),
                                                                      128 * x:128 * (x + 1), ...])
-            if key == "bottom_left":
+            if key == self.BOTTOM_LEFT_STR:
                 if experts_only:
                     for y in range(1, 3):
                         for x in range(0, 2):
@@ -261,7 +261,7 @@ class Composite1024To512ImageInference:
                             instances_array[y + 1, x] += 1
                             stacked_instances_array[y + 1, x].append(self.logits[key][128 * y:128 * (y + 1),
                                                                      128 * x:128 * (x + 1), ...])
-            if key == "bottom_right":
+            if key == self.BOTTOM_RIGHT_STR:
                 if experts_only:
                     for y in range(1, 3):
                         for x in range(1, 3):
@@ -278,7 +278,7 @@ class Composite1024To512ImageInference:
         for y in range(0, 4):
             for x in range(0, 4):
                 if instances_array[y, x] == 0:
-                    stacked_instances_array[y, x].append(self.logits["center"][128 * y:128 * (y + 1),
+                    stacked_instances_array[y, x].append(self.logits[self.CENTER_STR][128 * y:128 * (y + 1),
                                                                 128 * x:128 * (x + 1), ...])
 
         # compute the prediction class now
