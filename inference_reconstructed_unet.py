@@ -1,4 +1,4 @@
-"""Inference of a model on a dataset. The model here is trained with model_simple_unet.py"""
+"""Inference of a model on a dataset. The model here is trained with reconstructed_model_progressive_supervised_unet.py"""
 
 import gc
 import os

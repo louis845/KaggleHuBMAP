@@ -93,6 +93,8 @@ class Composite1024To512ImageInference:
     BOTTOM_LEFT, BOTTOM_LEFT_STR = 3, "bottom_left"
     BOTTOM_RIGHT, BOTTOM_RIGHT_STR = 4, "bottom_right"
 
+    LOCATIONS = [CENTER, TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT]
+
     def __init__(self):
         self.image_loaded = False
         self.image = None
@@ -102,7 +104,7 @@ class Composite1024To512ImageInference:
         self.logits_obtained = False
         self.logits = {}
 
-    def load_image(self, tile_id: str):
+    def load_image(self, tile_id: str) -> None:
         self.image, self.region_mask = load_image(tile_id, image_size=1024)
         self.image_loaded = True
         self.tile_id = tile_id
