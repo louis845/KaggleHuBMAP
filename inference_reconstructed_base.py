@@ -116,19 +116,19 @@ class Composite1024To512ImageInference:
 
         # self.image is a 1024x1024 image, and return a 768x768 subimage
         if location == self.CENTER:
-            return torch.tensor(np.concatenate([self.image[128:-128, 128:-128, :], np.expand_dims(region_mask[128:-128, 128:-128], axis=-1)], axis=-1),
+            return torch.tensor(np.concatenate([self.image[128:-128, 128:-128, :], np.expand_dims(self.region_mask[128:-128, 128:-128], axis=-1)], axis=-1),
                                 dtype=torch.float32, device=config.device).permute(2, 0, 1)
         elif location == self.TOP_LEFT:
-            return torch.tensor(np.concatenate([self.image[:768, :768, :], np.expand_dims(region_mask[:768, :768], axis=-1)], axis=-1),
+            return torch.tensor(np.concatenate([self.image[:768, :768, :], np.expand_dims(self.region_mask[:768, :768], axis=-1)], axis=-1),
                                 dtype=torch.float32, device=config.device).permute(2, 0, 1)
         elif location == self.TOP_RIGHT:
-            return torch.tensor(np.concatenate([self.image[:768, -768:, :], np.expand_dims(region_mask[:768, -768:], axis=-1)], axis=-1),
+            return torch.tensor(np.concatenate([self.image[:768, -768:, :], np.expand_dims(self.region_mask[:768, -768:], axis=-1)], axis=-1),
                                 dtype=torch.float32, device=config.device).permute(2, 0, 1)
         elif location == self.BOTTOM_LEFT:
-            return torch.tensor(np.concatenate([self.image[-768:, :768, :], np.expand_dims(region_mask[-768:, :768], axis=-1)], axis=-1),
+            return torch.tensor(np.concatenate([self.image[-768:, :768, :], np.expand_dims(self.region_mask[-768:, :768], axis=-1)], axis=-1),
                                 dtype=torch.float32, device=config.device).permute(2, 0, 1)
         elif location == self.BOTTOM_RIGHT:
-            return torch.tensor(np.concatenate([self.image[-768:, -768:, :], np.expand_dims(region_mask[-768:, -768:], axis=-1)], axis=-1),
+            return torch.tensor(np.concatenate([self.image[-768:, -768:, :], np.expand_dims(self.region_mask[-768:, -768:], axis=-1)], axis=-1),
                                 dtype=torch.float32, device=config.device).permute(2, 0, 1)
 
     def has_region_information(self, location: int):
