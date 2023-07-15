@@ -44,8 +44,14 @@ def check_tile_id(tile_id):
 
     blood_vessel_gt = loader.get_segmentation_mask(tile_id, "blood_vessel")
 
+    imgref = inference_reconstructed_base.Composite1024To512ImageInference()
+    imgref.load_image(tile_id)
+    combined_torch3 = imgref.get_combined_image(inference_reconstructed_base.Composite1024To512ImageInference.CENTER)
+
     assert combined_torch.shape == combined_torch2.shape
     assert torch.allclose(combined_torch, combined_torch2)
+    assert torch.allclose(combined_torch, combined_torch3)
+
 def display_tile(tile_id):
     combined_torch = inference_reconstructed_base.load_combined(tile_id)
     if isinstance(combined_sampler, image_wsi_sampling.MultipleImageSampler):
