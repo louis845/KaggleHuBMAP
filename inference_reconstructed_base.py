@@ -315,10 +315,12 @@ class Composite1024To512ImageInference:
 
 # now these functions help getting the instance masks from the 512 x 512 x 3 logits
 kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+large_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 def get_instance_masks(logits: torch.Tensor):
     assert logits.shape == (512, 512, 3)
 
     boundary = ((1 - torch.argmax(logits[..., 1:], dim=-1)) * 255).cpu().numpy().astype(np.uint8) # 0 for boundary, 255 for non-boundary
+    #boundary = cv2.morphologyEx(boundary, cv2.MORPH_OPEN, large_kernel)
     # get connected components
     num_labels, labels_im = cv2.connectedComponents(boundary, connectivity=4)
 
@@ -330,16 +332,17 @@ def get_instance_masks(logits: torch.Tensor):
         mask[labels_im == label] = 255
         mask = cv2.dilate(mask, kernel, iterations=4)
 
+        # compute score
+        bool_mask = (mask // 255).astype(bool)
+        score = 1 - logits[..., 0][torch.tensor(bool_mask, dtype=torch.bool, device=config.device)].median().item()
+
         # ensure not too big
-        if np.sum(mask) > 60000:
+        if np.sum(bool_mask) > 60000:
             continue
         # ensure no holes
         num_components, _ = cv2.connectedComponents(255 - mask, connectivity=4)
         if num_components > 2:
             continue
-        # compute score
-        bool_mask = (mask // 255).astype(bool)
-        score = logits[..., 0][torch.tensor(bool_mask, dtype=torch.bool, device=config.device)].median().item()
         masks.append({"mask": bool_mask, "score": score})
     return masks
 
@@ -349,9 +352,11 @@ def get_image_from_instances(masks: list[dict[str, np.ndarray]]):
     for k in range(num_masks):
         mask = masks[k]["mask"]
         score = masks[k]["score"]
+        interior_mask = cv2.erode(mask.astype(np.uint8) * 255, kernel, iterations=2)
         image[mask, 0] = int(k * 255.0 / num_masks)
         image[mask, 1] = 255
-        image[mask, 2] = int(score * 255)
+        image[mask, 2] = 255
+        image[(interior_mask / 255).astype(bool), 2] = int(score * 255)
     image = cv2.cvtColor(image, cv2.COLOR_HSV2RGB)
     return image
 

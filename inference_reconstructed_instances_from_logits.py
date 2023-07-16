@@ -30,7 +30,7 @@ if __name__ == "__main__":
     logits_group = input_data_loader.data_store["logits"]  # type: h5py.Group
     reduction_logit_average = args.reduction_logit_average
     experts_only = args.experts_only
-    print("Computing now. Prediction type: {}    Reduction logit average: {}    Experts only: {}".format(args.prediction_type, reduction_logit_average, experts_only))
+    print("Computing now. Reduction logit average: {}    Experts only: {}".format(reduction_logit_average, experts_only))
     with tqdm.tqdm(total=len(subdata_entries)) as pbar:
         while computed < len(subdata_entries):
             tile_id = subdata_entries[computed]
