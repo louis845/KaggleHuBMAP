@@ -152,3 +152,4 @@ if __name__ == "__main__":
                 ctime = time.time()
 
     print("Inference Complete")
+    hdf5_file.close()
