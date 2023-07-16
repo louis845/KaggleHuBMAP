@@ -93,7 +93,7 @@ def full_array(shape):
     return arr
 
 class Composite1024To512ImageInference:
-    """Helper class to input a 1024x1024 image, and do inference on the center 512x512 region."""
+    """Helper class to input a 1024x1024 image, and do inference on the center 512x512 region. Gets an (512, 512, 3) array of logits"""
 
     CENTER, CENTER_STR = 0, "center"
     TOP_LEFT, TOP_LEFT_STR = 1, "top_left"
@@ -312,6 +312,48 @@ class Composite1024To512ImageInference:
         if self.image_loaded:
             del self.image, self.region_mask
             self.logits.clear()
+
+# now these functions help getting the instance masks from the 512 x 512 x 3 logits
+kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+def get_instance_masks(logits: torch.Tensor):
+    assert logits.shape == (512, 512, 3)
+
+    boundary = ((1 - torch.argmax(logits[..., 1:], dim=-1)) * 255).cpu().numpy().astype(np.uint8) # 0 for boundary, 255 for non-boundary
+    # get connected components
+    num_labels, labels_im = cv2.connectedComponents(boundary, connectivity=4)
+
+    masks = []
+
+    # we get the masks now. we also need to clean the labels
+    for label in range(1, num_labels):
+        mask = np.zeros((512, 512), dtype=np.uint8)
+        mask[labels_im == label] = 255
+        mask = cv2.dilate(mask, kernel, iterations=4)
+
+        # ensure not too big
+        if np.sum(mask) > 60000:
+            continue
+        # ensure no holes
+        num_components, _ = cv2.connectedComponents(255 - mask, connectivity=4)
+        if num_components > 2:
+            continue
+        # compute score
+        bool_mask = (mask // 255).astype(bool)
+        score = logits[..., 0][torch.tensor(bool_mask, dtype=torch.bool, device=config.device)].median().item()
+        masks.append({"mask": bool_mask, "score": score})
+    return masks
+
+def get_image_from_instances(masks: list[dict[str, np.ndarray]]):
+    image = np.zeros((512, 512, 3), dtype=np.uint8) # hsv image
+    num_masks = len(masks)
+    for k in range(num_masks):
+        mask = masks[k]["mask"]
+        score = masks[k]["score"]
+        image[mask, 0] = int(k * 255.0 / num_masks)
+        image[mask, 1] = 255
+        image[mask, 2] = int(score * 255)
+    image = cv2.cvtColor(image, cv2.COLOR_HSV2RGB)
+    return image
 
 if __name__ == "__main__":
     image, region_mask = load_image("0033bbc76b6b")
