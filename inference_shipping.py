@@ -123,7 +123,7 @@ if __name__ == "__main__":
 
     image_radius = 384
 
-    inference_data = [tile_id[:-4] for tile_id in os.listdir(config.input_data_path)]
+    inference_data = [tile_id[:-4] for tile_id in os.listdir(os.path.join(config.input_data_path, "test"))]
     hdf5_file = h5py.File(args.out_hdf5_file, mode="w")
 
     print("Computing the masks now...")
