@@ -1,17 +1,11 @@
 """Inference of a model on a dataset. The model here is trained with reconstructed_model_progressive_supervised_unet.py"""
 
 import gc
-import os
 import time
 import argparse
 
-import config
-
-import cv2
-import numpy as np
 import tqdm
 
-import torch
 import torch.nn
 
 import model_data_manager
