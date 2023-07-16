@@ -75,13 +75,16 @@ if __name__ == "__main__":
     parser.add_argument("--experts_only", action="store_true",
                         help="Whether to only use \"expert\" prediction. Default False.")
 
-    model_data_manager.transform_add_argparse_arguments(parser)
+    model_data_manager.transform_add_argparse_arguments(parser, requires_model=False)
 
     args = parser.parse_args()
 
     assert args.prediction_type in ["argmax", "confidence", "noconfidence", "levels"], "Invalid prediction type"
 
-    input_data_loader, output_data_writer, model_path, subdata_entries, train_subdata_entries, val_subdata_entries = model_data_manager.transform_get_argparse_arguments(args)
+    input_data_loader, output_data_writer, model_path, subdata_entries, train_subdata_entries, val_subdata_entries = model_data_manager.transform_get_argparse_arguments(args, requires_model=False)
+
+    assert input_data_loader.data_store is not None, "You must specify an input data which stores the logits, by the argument --original_data_name"
+
     classes = ["blood_vessel", "boundary"]
     class_weights = [1.0, 1.0]
     num_classes = 2
@@ -119,7 +122,7 @@ if __name__ == "__main__":
             false_negative_classes_val[seg_class] = 0.0
 
     image_radius = 384
-    logits_group = input_data_loader["logits"]  # type: h5py.Group
+    logits_group = input_data_loader.data_store["logits"]  # type: h5py.Group
     reduction_logit_average = args.reduction_logit_average
     experts_only = args.experts_only
     print("Computing now. Prediction type: {}    Reduction logit average: {}    Experts only: {}".format(args.prediction_type, reduction_logit_average, experts_only))
