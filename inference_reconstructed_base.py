@@ -84,6 +84,14 @@ def initialize_region_cache():
     if static_768_region_cache is None:
         static_768_region_cache = torch.zeros(size=(512, 512), dtype=torch.bool, device=config.device)
 
+def full_array(shape):
+    assert len(shape) == 2, "shape must be 2-dimensional"
+    arr = np.empty(shape=shape, dtype="object")
+    for i in range(shape[0]):
+        for j in range(shape[1]):
+            arr[i, j] = []
+    return arr
+
 class Composite1024To512ImageInference:
     """Helper class to input a 1024x1024 image, and do inference on the center 512x512 region."""
 
@@ -195,11 +203,12 @@ class Composite1024To512ImageInference:
 
     def obtain_predictions(self, reduction_logit_average: bool=True, experts_only: bool=False):
         """
-        Obtain the predictions for the center 512x512 region of the 1024x1024 image.
+        Obtain the predictions (softmax probas) for the center 512x512 region of the 1024x1024 image.
         :param reduction_logit_average: if True, the reduction is done by first averaging the logits and computing the softmax
                 Otherwise, the reduction is done by computing the softmax for each logit and then averaging
         :param experts_only: if True, only the experts are used for the prediction, if they are available.
                 Experts predictions mean the center 256x256 region for the 768x768 image (as opposed to larger 512x512 region).
+        :return a torch tensor of shape (512, 512, 3), containing softmax values for each pixel.
         """
         if not self.logits_obtained:
             raise ValueError("Logits not obtained. Run inference first!")
@@ -207,7 +216,7 @@ class Composite1024To512ImageInference:
             raise ValueError("ERROR: Center logits not obtained.")
 
         instances_array = np.zeros(shape=(4, 4), dtype=np.int32) # how many logit predictions in each 128x128 square in 512x512 region.
-        stacked_instances_array = np.full(shape=(4, 4), dtype="object", fill_value=[])
+        stacked_instances_array = full_array(shape=(4, 4))
 
         # fill in the 512x512 square with logits
         for key in self.logits:

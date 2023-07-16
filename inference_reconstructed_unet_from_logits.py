@@ -56,13 +56,13 @@ def get_predictions(result: torch.Tensor, predictions_type: str = "argmax"):
     if predictions_type == "argmax":
         return result.argmax(dim=1)
     elif predictions_type == "confidence":
-        softmax = torch.softmax(result, dim=1)
+        softmax = result
         # (confidence level at least 0.5)
         return (softmax[:, 0, ...] <= 0.5) * (torch.argmax(result[:, 1:, ...], dim=1) + 1)
     elif predictions_type == "noconfidence":
         return torch.argmax(result[:, 1:, ...], dim=1) + 1
     else:
-        softmax = torch.softmax(result, dim=1)
+        softmax = result
         return 1 - softmax[:, 0, ...]
 
 
@@ -129,13 +129,13 @@ if __name__ == "__main__":
     with tqdm.tqdm(total=len(subdata_entries)) as pbar:
         while computed < len(subdata_entries):
             tile_id = subdata_entries[computed]
+            compute_end = computed + 1
             # Get logits from computed input data
             with torch.no_grad():
-                compute_end = computed + 1
 
                 img_helper = inference_reconstructed_base.Composite1024To512ImageInference()
                 img_helper.load_logits_from_hdf(logits_group, tile_id)
-                result = img_helper.obtain_predictions(reduction_logit_average, experts_only)
+                result = img_helper.obtain_predictions(reduction_logit_average, experts_only).permute(2, 0, 1).unsqueeze(0)
 
                 pred_type = get_predictions(result, args.prediction_type)
                 if args.prediction_type == "levels":
