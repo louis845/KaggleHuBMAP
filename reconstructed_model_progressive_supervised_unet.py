@@ -27,8 +27,7 @@ import logging_memory_utils
 def compute_confidence_class(result: torch.Tensor):
     with torch.no_grad():
         if use_separated_focal_loss:
-            sigmoid = torch.sigmoid(result[:, 0, ...])
-            return (sigmoid <= 0.5) * (torch.argmax(result[:, 1:, ...], dim=1) + 1)
+            return (result[:, 0, ...] <= 0.0) * (torch.argmax(result[:, 1:, ...], dim=1) + 1)
         else:
             softmax = torch.softmax(result, dim=1)
             # (confidence level at least 0.5)
