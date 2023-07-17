@@ -895,7 +895,7 @@ if __name__ == "__main__":
     print("Using class weights:")
     classes = ["blood_vessel", "boundary"]
     class_weights = [5.0, 5.0]
-    class_weights_composite = [2.0, 8.0]
+    class_weights_composite = [1.0, 10.0]
     num_classes = 2
     for k in range(len(classes)):
         seg_class = classes[k]
