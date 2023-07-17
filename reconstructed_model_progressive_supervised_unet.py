@@ -26,9 +26,13 @@ import logging_memory_utils
 
 def compute_confidence_class(result: torch.Tensor):
     with torch.no_grad():
-        softmax = torch.softmax(result, dim=1)
-        # (confidence level at least 0.5)
-        return (softmax[:, 0, ...] <= 0.5) * (torch.argmax(result[:, 1:, ...], dim=1) + 1)
+        if use_separated_focal_loss:
+            sigmoid = torch.sigmoid(result[:, 0, ...])
+            return (sigmoid <= 0.5) * (torch.argmax(result[:, 1:, ...], dim=1) + 1)
+        else:
+            softmax = torch.softmax(result, dim=1)
+            # (confidence level at least 0.5)
+            return (softmax[:, 0, ...] <= 0.5) * (torch.argmax(result[:, 1:, ...], dim=1) + 1)
 
 def compute_class_no_confidence(result: torch.Tensor):
     with torch.no_grad():
@@ -55,6 +59,19 @@ def composite_focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_h
 
     return torch.sum((softmax - ground_truth_one_hot) ** 2, dim=1) * cross_entropy +\
         non_backgroundness * torch.sum((softmax_cp - ground_truth_other) ** 2, dim=1) * cross_entropy_cp
+
+def separated_focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_hot_ground_truth:bool):
+    ground_truth_one_hot = ground_truth if one_hot_ground_truth else torch.nn.functional.one_hot(ground_truth, num_classes=3).permute(0, 3, 1, 2).to(torch.float32)
+    with torch.no_grad():
+        ground_truth_other = torch.stack([ground_truth_one_hot[:, 0, :, :] + ground_truth_one_hot[:, 1, :, :], ground_truth_one_hot[:, 2, :, :]], dim=1)
+
+    binary_ce = torch.nn.functional.binary_cross_entropy_with_logits(result[:, 0, :, :], ground_truth_one_hot[:, 0, :, :], reduction="none", pos_weight=(1 / class_weights))
+    cross_entropy_boundary = torch.nn.functional.cross_entropy(result[:, 1:, :, :], ground_truth_other, reduction="none", weight=class_weights_composite)
+    sigmoid = torch.sigmoid(result[:, 0, :, :])
+    softmax = torch.softmax(result[:, 1:, :, :], dim=1)
+
+    return class_weights * ((sigmoid - ground_truth_one_hot[:, 0, :, :]) ** 2) * binary_ce +\
+            torch.sum((softmax - ground_truth_other) ** 2, dim=1) * cross_entropy_boundary
 
 def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image_ground_truth_batch_, train_image_ground_truth_mask_batch_,
                          train_image_ground_truth_deep_, train_image_ground_truth_mask_deep_, use_amp_=False, scaler_=None):
@@ -83,7 +100,9 @@ def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image
 
             total_loss_per_outputs[k] = k_loss.item()
 
-        if use_composite_focal_loss:
+        if use_separated_focal_loss:
+            ce_res = separated_focal_loss(result, train_image_ground_truth_batch_, one_hot_ground_truth=mixup_used)
+        elif use_composite_focal_loss:
             ce_res = composite_focal_loss(result, train_image_ground_truth_batch_, one_hot_ground_truth=mixup_used)
         elif use_focal_loss:
             ce_res = focal_loss(result, train_image_ground_truth_batch_, one_hot_ground_truth=mixup_used)
@@ -473,7 +492,9 @@ def validation_step(train_history):
 
                     del bool_mask, deep_class_prediction, test_image_ground_truth_deep_class
 
-                if use_composite_focal_loss:
+                if use_separated_focal_loss:
+                    ce_res = separated_focal_loss(result, test_image_ground_truth_batch, one_hot_ground_truth=False)
+                elif use_composite_focal_loss:
                     ce_res = composite_focal_loss(result, test_image_ground_truth_batch, one_hot_ground_truth=False)
                 elif use_focal_loss:
                     ce_res = focal_loss(result, test_image_ground_truth_batch, one_hot_ground_truth=False)
@@ -669,6 +690,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size to use. Default 1.")
     parser.add_argument("--augmentation", action="store_true", help="Whether to use data augmentation. Default False.")
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate to use. Default 1e-5.")
+    parser.add_argument("--momentum", type=float, default=0.9, help="Momentum to use. Default 0.9. This would be the momentum for SGD, and beta1 for Adam.")
     parser.add_argument("--optimizer", type=str, default="adam", help="Which optimizer to use. Available options: adam, sgd. Default adam.")
     parser.add_argument("--epochs_per_save", type=int, default=2, help="Number of epochs between saves. Default 2.")
     parser.add_argument("--use_batch_norm", action="store_true", help="Whether to use batch normalization. Default False.")
@@ -676,6 +698,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_atrous_conv", action="store_true", help="Whether to use atrous convolutional networks. Default False.")
     parser.add_argument("--use_focal_loss", action="store_true", help="Whether to use focal loss. Default False.")
     parser.add_argument("--use_composite_focal_loss", action="store_true", help="Whether to use composite focal loss. Default False.")
+    parser.add_argument("--use_separated_focal_loss", action="store_true", help="Whether to use separated focal loss. Default False.")
     parser.add_argument("--use_amp", action="store_true", help="Whether to use automatic mixed precision. Default False.")
     parser.add_argument("--use_squeeze_excitation", action="store_true", help="Whether to use squeeze and excitation. Default False.")
     parser.add_argument("--use_initial_conv", action="store_true", help="Whether to use the initial 7x7 kernel convolution. Default False.")
@@ -729,7 +752,6 @@ if __name__ == "__main__":
         total_training_len += num_extra_trains
 
 
-
     training_entries = np.array(training_entries, dtype=object)
     validation_entries = np.array(validation_entries, dtype=object)
     mixup = args.mixup
@@ -738,6 +760,25 @@ if __name__ == "__main__":
     num_extra_steps = args.num_extra_steps
     use_amp = args.use_amp
     blocks = args.hidden_blocks
+
+
+    num_epochs = args.epochs
+    batch_size = args.batch_size
+    augmentation = args.augmentation
+    epochs_per_save = args.epochs_per_save
+    image_pixels_round = 2 ** args.pyramid_height
+    pyr_height = args.pyramid_height
+    deep_exponent_base = args.deep_exponent_base
+    use_focal_loss = args.use_focal_loss
+    use_composite_focal_loss = args.use_composite_focal_loss
+    use_separated_focal_loss = args.use_separated_focal_loss
+    use_suppressed_deepsupervision = args.use_suppressed_deepsupervision
+
+    assert not (use_focal_loss and use_composite_focal_loss), "You cannot use both focal loss and composite focal loss."
+    assert not (use_focal_loss and use_separated_focal_loss), "You cannot use both focal loss and separated focal loss."
+    assert not (use_composite_focal_loss and use_separated_focal_loss), "You cannot use both composite focal loss and separated focal loss."
+    assert (not use_separated_focal_loss) or args.use_atrous_conv, "You can only use separated focal loss with atrous convolutions."
+
 
     assert type(blocks) == list, "Blocks must be a list."
     for k in blocks:
@@ -750,27 +791,29 @@ if __name__ == "__main__":
         model = model_unet_attention.UNetClassifier(num_classes=2, num_deep_multiclasses=args.pyramid_height - 1,
                                                     hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                     use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
-                                                    in_channels=4, use_atrous_conv=args.use_atrous_conv,
+                                                    in_channels=4, use_atrous_conv=args.use_atrous_conv, atrous_outconv_split=use_separated_focal_loss,
                                                     deep_supervision=True, squeeze_excitation=args.use_squeeze_excitation,
                                                     bottleneck_expansion=args.bottleneck_expansion,
                                                     res_conv_blocks=blocks, use_initial_conv=args.use_initial_conv).to(device=config.device)
     else:
         model = model_unet_base.UNetClassifier(num_classes=2, num_deep_multiclasses=args.pyramid_height - 1,
                                                 hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
-                                               use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
-                                               in_channels=4, use_atrous_conv=args.use_atrous_conv, deep_supervision=True,
+                                               use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height, deep_supervision=True,
+                                               in_channels=4, use_atrous_conv=args.use_atrous_conv, atrous_outconv_split=use_separated_focal_loss,
                                                squeeze_excitation=args.use_squeeze_excitation, bottleneck_expansion=args.bottleneck_expansion,
                                                res_conv_blocks=blocks, use_initial_conv=args.use_initial_conv).to(device=config.device)
 
     single_training_step_compile = single_training_step#torch.compile(single_training_step)
 
+    momentum = args.momentum
     if args.optimizer.lower() == "adam":
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.999))
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, betas=(momentum, 0.999))
     elif args.optimizer.lower() == "sgd":
-        optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, momentum=0.99)
+        optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, momentum=momentum)
     else:
         print("Invalid optimizer. The available options are: adam, sgd.")
         exit(1)
+    print("Using optimizer {} with learning rate {} and momentum {}.".format(args.optimizer, args.learning_rate, momentum))
 
     if use_amp:
         scaler = torch.cuda.amp.GradScaler()
@@ -788,25 +831,13 @@ if __name__ == "__main__":
         gc.collect()
         torch.cuda.empty_cache()
 
-    num_epochs = args.epochs
-    batch_size = args.batch_size
-    augmentation = args.augmentation
-    epochs_per_save = args.epochs_per_save
-    image_pixels_round = 2 ** args.pyramid_height
-    pyr_height = args.pyramid_height
-    deep_exponent_base = args.deep_exponent_base
-    use_focal_loss = args.use_focal_loss
-    use_composite_focal_loss = args.use_composite_focal_loss
-    use_suppressed_deepsupervision = args.use_suppressed_deepsupervision
-
-    assert not (use_focal_loss and use_composite_focal_loss), "You cannot use both focal loss and composite focal loss."
-
     model_config = {
         "model": "reconstructed_model_progressive_supervised_unet",
         "epochs": num_epochs,
         "batch_size": batch_size,
         "augmentation": augmentation,
         "learning_rate": args.learning_rate,
+        "momentum": momentum,
         "optimizer": args.optimizer,
         "epochs_per_save": epochs_per_save,
         "use_batch_norm": args.use_batch_norm,
@@ -814,6 +845,7 @@ if __name__ == "__main__":
         "use_atrous_conv": args.use_atrous_conv,
         "use_focal_loss": args.use_focal_loss,
         "use_composite_focal_loss": args.use_composite_focal_loss,
+        "use_separated_focal_loss": args.use_separated_focal_loss,
         "use_amp": args.use_amp,
         "use_squeeze_excitation": args.use_squeeze_excitation,
         "use_initial_conv": args.use_initial_conv,
@@ -890,7 +922,10 @@ if __name__ == "__main__":
         train_history["val_class_recall_{}".format(seg_class)] = []
         print("Class {}: {}, {}".format(seg_class, class_weights[k], class_weights_composite[k]))
 
-    class_weights = torch.tensor([1.0] + class_weights, dtype=torch.float32, device=config.device)
+    if use_separated_focal_loss:
+        class_weights = torch.tensor(class_weights[0], dtype=torch.float32, device=config.device)
+    else:
+        class_weights = torch.tensor([1.0] + class_weights, dtype=torch.float32, device=config.device)
     class_weights_composite = torch.tensor(class_weights_composite, dtype=torch.float32, device=config.device)
 
     # Initialize image sampler here

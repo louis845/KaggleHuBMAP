@@ -28,7 +28,7 @@ class Conv(torch.nn.Module):
         return x
 
 class AtrousConv(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, use_batch_norm=False, num_atrous_blocks=8):
+    def __init__(self, in_channels, out_channels, use_batch_norm=False, num_atrous_blocks=8, output_intermediate=False):
         super(AtrousConv, self).__init__()
 
         self.conv_in = torch.nn.Conv2d(in_channels, out_channels, 3, bias=False, padding="same", padding_mode="replicate")
@@ -47,17 +47,21 @@ class AtrousConv(torch.nn.Module):
 
         self.use_batch_norm = use_batch_norm
         self.num_atrous_blocks = num_atrous_blocks
+        self.output_intermediate = output_intermediate
 
     def forward(self, x):
         x = self.conv_in(x)
         if self.use_batch_norm:
             x = self.batchnorm_in(x)
-        x = self.elu_in(x)
+        x_mid = self.elu_in(x)
 
-        x = torch.cat([self.atrous_convs[k](x) for k in range(self.num_atrous_blocks)], dim=1)
+        x = torch.cat([self.atrous_convs[k](x_mid) for k in range(self.num_atrous_blocks)], dim=1)
         if self.use_batch_norm:
             x = self.batchnorm_atrous(x)
         x = self.elu_atrous(x)
+
+        if self.output_intermediate:
+            return x, x_mid
         return x
 
 class ResConvBlock(torch.nn.Module):
@@ -215,7 +219,7 @@ class UNetBackbone(torch.nn.Module):
         return ret
 
 class UNetEndClassifier(torch.nn.Module):
-    def __init__(self, hidden_channels, use_batch_norm=False, use_atrous_conv=False, pyr_height=4, deep_supervision=False, num_classes=1, num_deep_multiclasses=0, bottleneck_expansion=1):
+    def __init__(self, hidden_channels, use_batch_norm=False, use_atrous_conv=False, atrous_outconv_split=False, pyr_height=4, deep_supervision=False, num_classes=1, num_deep_multiclasses=0, bottleneck_expansion=1):
         """
         Note that num_deep_multiclasses are used only if deep_supervision is True
         """
@@ -225,7 +229,7 @@ class UNetEndClassifier(torch.nn.Module):
         self.conv_up_transpose = torch.nn.ModuleList()
         for i in range(pyr_height):
             if (i == pyr_height - 1) and use_atrous_conv:
-                self.conv_up.append(AtrousConv(bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i), bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i - 1), use_batch_norm=use_batch_norm))
+                self.conv_up.append(AtrousConv(bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i), bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i - 1), use_batch_norm=use_batch_norm, output_intermediate=atrous_outconv_split))
             else:
                 self.conv_up.append(Conv(bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i), bottleneck_expansion * hidden_channels * 2 ** (pyr_height - i - 1), use_batch_norm=use_batch_norm))
 
@@ -243,13 +247,18 @@ class UNetEndClassifier(torch.nn.Module):
 
         outconv_in = (2 * bottleneck_expansion * hidden_channels) if use_atrous_conv else (bottleneck_expansion * hidden_channels)
         if num_classes > 1:
-            self.outconv = torch.nn.Conv2d(outconv_in, num_classes + 1, 1, bias=True)
+            if atrous_outconv_split:
+                self.outconv_mid = torch.nn.Conv2d(bottleneck_expansion * hidden_channels, 1, 1, bias=True)
+                self.outconv = torch.nn.Conv2d(outconv_in, num_classes, 1, bias=True)
+            else:
+                self.outconv = torch.nn.Conv2d(outconv_in, num_classes + 1, 1, bias=True)
         else:
             self.outconv = torch.nn.Conv2d(outconv_in, 1, 1, bias=True)
         self.sigmoid = torch.nn.Sigmoid()
 
         self.num_classes = num_classes
         self.num_deep_multiclasses = num_deep_multiclasses
+        self.atrous_outconv_split = atrous_outconv_split
 
         assert num_deep_multiclasses <= pyr_height - 1, "num_deep_multiclasses must be less than or equal to pyr_height - 1"
         assert (num_deep_multiclasses == 0) or (num_classes > 1), "num_classes must be greater than 1 if num_deep_multiclasses > 0"
@@ -269,7 +278,11 @@ class UNetEndClassifier(torch.nn.Module):
                     deep_outputs.append(self.outconv_deep[i](x))
 
         if self.num_classes > 1:
-            result = self.outconv(x)
+            if self.atrous_outconv_split:
+                x, x_mid = x
+                result = torch.cat([self.outconv_mid(x_mid), self.outconv(x)], dim=1)
+            else:
+                result = self.outconv(x)
         else:
             result = torch.squeeze(self.sigmoid(self.outconv(x)), dim=1)
         if self.deep_supervision:
@@ -278,12 +291,13 @@ class UNetEndClassifier(torch.nn.Module):
 
 class UNetClassifier(torch.nn.Module):
 
-    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, in_channels=3, use_atrous_conv=False, deep_supervision=False, num_classes=1, num_deep_multiclasses=0, res_conv_blocks=[2, 3, 4, 6, 10, 15, 15], bottleneck_expansion=1, squeeze_excitation=False, use_initial_conv=False):
+    def __init__(self, hidden_channels, use_batch_norm=False, use_res_conv=False, pyr_height=4, in_channels=3, use_atrous_conv=False, atrous_outconv_split=False, deep_supervision=False, num_classes=1, num_deep_multiclasses=0, res_conv_blocks=[2, 3, 4, 6, 10, 15, 15], bottleneck_expansion=1, squeeze_excitation=False, use_initial_conv=False):
         super(UNetClassifier, self).__init__()
         assert (bottleneck_expansion == 1) or use_res_conv, "residual convolutions must be used if bottleneck_expansion > 1"
         assert (not squeeze_excitation) or use_res_conv, "residual convolutions must be used if squeeze_excitation is True"
+        assert (not atrous_outconv_split) or (use_atrous_conv and (num_classes > 1)), "atrous_outconv_split can only be used if use_atrous_conv and num_classes > 1"
         self.backbone = UNetBackbone(in_channels, hidden_channels, use_batch_norm=use_batch_norm, use_res_conv=use_res_conv, pyr_height=pyr_height, res_conv_blocks=res_conv_blocks, bottleneck_expansion=bottleneck_expansion, squeeze_excitation=squeeze_excitation, use_initial_conv=use_initial_conv)
-        self.classifier = UNetEndClassifier(hidden_channels, use_batch_norm=use_batch_norm, use_atrous_conv=use_atrous_conv, pyr_height=pyr_height, deep_supervision=deep_supervision, num_classes=num_classes, num_deep_multiclasses=num_deep_multiclasses, bottleneck_expansion=bottleneck_expansion)
+        self.classifier = UNetEndClassifier(hidden_channels, use_batch_norm=use_batch_norm, use_atrous_conv=use_atrous_conv, atrous_outconv_split=atrous_outconv_split, pyr_height=pyr_height, deep_supervision=deep_supervision, num_classes=num_classes, num_deep_multiclasses=num_deep_multiclasses, bottleneck_expansion=bottleneck_expansion)
         self.pyr_height = pyr_height
 
     def forward(self, x):
