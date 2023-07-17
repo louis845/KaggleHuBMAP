@@ -89,6 +89,8 @@ if __name__ == "__main__":
     parser.add_argument("--pyramid_height", type=int, default=4, help="Number of pyramid levels to use. Default 4.")
     parser.add_argument("--unet_attention", action="store_true",
                         help="Whether to use attention in the U-Net. Default False. Cannot be used with unet_plus.")
+    parser.add_argument("--use_separated_background", action="store_true",
+                        help="Whether to use a separated outconv for background sigmoid. Default False. Must be used with atrous conv.")
 
     model_data_manager.transform_add_argparse_arguments(parser)
 
@@ -97,12 +99,13 @@ if __name__ == "__main__":
     input_data_loader, output_data_writer, model_path, subdata_entries, train_subdata_entries, val_subdata_entries = model_data_manager.transform_get_argparse_arguments(args)
 
     blocks = args.hidden_blocks
+    assert (not args.use_separated_background) or args.use_atrous_conv, "Must use atrous conv if using separated background"
     if args.unet_attention:
         model = model_unet_attention.UNetClassifier(num_classes=2, num_deep_multiclasses=args.pyramid_height - 1,
                                                     hidden_channels=args.hidden_channels,
                                                     use_batch_norm=args.use_batch_norm,
                                                     use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
-                                                    in_channels=4, use_atrous_conv=args.use_atrous_conv,
+                                                    in_channels=4, use_atrous_conv=args.use_atrous_conv, atrous_outconv_split=args.use_separated_background,
                                                     deep_supervision=True,
                                                     squeeze_excitation=args.use_squeeze_excitation,
                                                     bottleneck_expansion=args.bottleneck_expansion,
@@ -112,7 +115,7 @@ if __name__ == "__main__":
         model = model_unet_base.UNetClassifier(num_classes=2, num_deep_multiclasses=args.pyramid_height - 1,
                                                hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
-                                               in_channels=4, use_atrous_conv=args.use_atrous_conv,
+                                               in_channels=4, use_atrous_conv=args.use_atrous_conv, atrous_outconv_split=args.use_separated_background,
                                                deep_supervision=True,
                                                squeeze_excitation=args.use_squeeze_excitation,
                                                bottleneck_expansion=args.bottleneck_expansion,
