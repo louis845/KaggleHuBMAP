@@ -74,6 +74,7 @@ if __name__ == "__main__":
                         help="Whether to average the logits. Default False.")
     parser.add_argument("--experts_only", action="store_true",
                         help="Whether to only use \"expert\" prediction. Default False.")
+    parser.add_argument("--separated_logits", action="store_true", help="Whether to use separated logits. This is usually coupled with --use_separated_focal_loss in training script, and --use_separated_background in inference_reconstructed_logits.")
 
     model_data_manager.transform_add_argparse_arguments(parser, requires_model=False)
 
@@ -125,7 +126,8 @@ if __name__ == "__main__":
     logits_group = input_data_loader.data_store["logits"]  # type: h5py.Group
     reduction_logit_average = args.reduction_logit_average
     experts_only = args.experts_only
-    print("Computing now. Prediction type: {}    Reduction logit average: {}    Experts only: {}".format(args.prediction_type, reduction_logit_average, experts_only))
+    separated_logits = args.separated_logits
+    print("Computing now. Prediction type: {}    Reduction logit average: {}    Experts only: {}    Separated logits: {}".format(args.prediction_type, reduction_logit_average, experts_only, separated_logits))
     with tqdm.tqdm(total=len(subdata_entries)) as pbar:
         while computed < len(subdata_entries):
             tile_id = subdata_entries[computed]
@@ -135,7 +137,7 @@ if __name__ == "__main__":
 
                 img_helper = inference_reconstructed_base.Composite1024To512ImageInference()
                 img_helper.load_logits_from_hdf(logits_group, tile_id)
-                result = img_helper.obtain_predictions(reduction_logit_average, experts_only).permute(2, 0, 1).unsqueeze(0)
+                result = img_helper.obtain_predictions(reduction_logit_average, experts_only, separated_logits).permute(2, 0, 1).unsqueeze(0)
 
                 pred_type = get_predictions(result, args.prediction_type)
                 if args.prediction_type == "levels":

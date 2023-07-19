@@ -201,13 +201,15 @@ class Composite1024To512ImageInference:
             self.logits[key] = np.array(subgroup[key])
         self.logits_obtained = True
 
-    def obtain_predictions(self, reduction_logit_average: bool=True, experts_only: bool=False):
+    def obtain_predictions(self, reduction_logit_average: bool=True, experts_only: bool=False, separated_logits: bool=False):
         """
         Obtain the predictions (softmax probas) for the center 512x512 region of the 1024x1024 image.
         :param reduction_logit_average: if True, the reduction is done by first averaging the logits and computing the softmax
                 Otherwise, the reduction is done by computing the softmax for each logit and then averaging
         :param experts_only: if True, only the experts are used for the prediction, if they are available.
                 Experts predictions mean the center 256x256 region for the 768x768 image (as opposed to larger 512x512 region).
+        :param separated_logits: if True, the first channel will be treated as its own logit for the backgroundness score by directly plugging sigmoid,
+                and the other two channels will be treated as logits for the boundary.
         :return a torch tensor of shape (512, 512, 3), containing softmax values for each pixel.
         """
         if not self.logits_obtained:
@@ -301,9 +303,17 @@ class Composite1024To512ImageInference:
                     cat_tensor = torch.cat([torch.tensor(np_arr, device=config.device, dtype=torch.float32)
                                for np_arr in stacked_instances_array[y, x]], dim=-1)
                     if reduction_logit_average:
-                        result = torch.softmax(torch.mean(cat_tensor, dim=-1), dim=-1)
+                        if separated_logits:
+                            mean_tensor = torch.mean(cat_tensor, dim=-1)
+                            result = torch.cat([torch.sigmoid(mean_tensor[..., 0]), torch.softmax(mean_tensor[..., 1:], dim=-1)], dim=-1)
+                        else:
+                            result = torch.softmax(torch.mean(cat_tensor, dim=-1), dim=-1)
                     else:
-                        result = torch.mean(torch.softmax(cat_tensor, dim=-2), dim=-1)
+                        if separated_logits:
+                            scores = torch.cat([torch.sigmoid(cat_tensor[..., 0, :]), torch.softmax(cat_tensor[..., 1:, :], dim=-2)], dim=-2)
+                            result = torch.mean(scores, dim=-1)
+                        else:
+                            result = torch.mean(torch.softmax(cat_tensor, dim=-2), dim=-1)
                     row_preds.append(result)
             preds.append(torch.cat(row_preds, dim=1))
         return torch.cat(preds, dim=0)
