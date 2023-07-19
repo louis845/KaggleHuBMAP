@@ -60,13 +60,19 @@ class UNetEndClassifier(torch.nn.Module):
         assert (num_deep_multiclasses == 0) or (num_classes > 1), "num_classes must be greater than 1 if num_deep_multiclasses > 0"
 
 
-    def forward(self, x_list):
+    def forward(self, x_list, diagnosis=False):
         if self.deep_supervision:
-            result, attention_layers, deep_outputs = self.compute_with_attention_layers(x_list)
+            if diagnosis:
+                result, attention_layers, deep_outputs, diagnosis_outputs = self.compute_with_attention_layers(x_list, diagnosis=diagnosis)
+                return result, attention_layers, deep_outputs, diagnosis_outputs
+            result, attention_layers, deep_outputs = self.compute_with_attention_layers(x_list, diagnosis=diagnosis)
             return result, deep_outputs
-        return self.compute_with_attention_layers(x_list)[0]
+        if diagnosis:
+            result, attention_layers, diagnosis_outputs = self.compute_with_attention_layers(x_list, diagnosis=diagnosis)
+            return result, attention_layers, diagnosis_outputs
+        return self.compute_with_attention_layers(x_list, diagnosis=diagnosis)[0]
 
-    def compute_with_attention_layers(self, x_list):
+    def compute_with_attention_layers(self, x_list, diagnosis=False):
         attention_layers = []
 
         # expanding path
@@ -81,6 +87,8 @@ class UNetEndClassifier(torch.nn.Module):
             [self.conv_up_transpose[0](x_list[self.pyr_height]), x_list[self.pyr_height - 1] * attention_layer], dim=1))
         if self.deep_supervision:
             deep_outputs = [torch.squeeze(self.sigmoid(self.outconv_deep[0](x)), dim=1)]
+        if diagnosis:
+            diagnosis_outputs = [x]
 
         for i in range(1, self.pyr_height):
             gate_info = self.gate_activation(self.gate_batch_norm[i](
@@ -99,6 +107,9 @@ class UNetEndClassifier(torch.nn.Module):
                 elif i < self.pyr_height - 1:
                     deep_outputs.append(self.outconv_deep[i](x))
 
+            if diagnosis:
+                diagnosis_outputs.append(x)
+
         if self.num_classes > 1:
             if self.atrous_outconv_split:
                 x, x_mid = x
@@ -108,7 +119,12 @@ class UNetEndClassifier(torch.nn.Module):
         else:
             result = torch.squeeze(self.sigmoid(self.outconv(x)), dim=1)
         if self.deep_supervision:
-            return result, attention_layers, deep_outputs
+            if diagnosis:
+                return result, attention_layers, deep_outputs, diagnosis_outputs
+            else:
+                return result, attention_layers, deep_outputs
+        if diagnosis:
+            return result, attention_layers, diagnosis_outputs
         return result, attention_layers
 
 class UNetClassifier(torch.nn.Module):
@@ -122,9 +138,11 @@ class UNetClassifier(torch.nn.Module):
         self.classifier = UNetEndClassifier(hidden_channels, use_batch_norm=use_batch_norm, use_atrous_conv=use_atrous_conv, atrous_outconv_split=atrous_outconv_split, pyr_height=pyr_height, deep_supervision=deep_supervision, num_classes=num_classes, num_deep_multiclasses=num_deep_multiclasses, bottleneck_expansion=bottleneck_expansion)
         self.pyr_height = pyr_height
 
-    def forward(self, x):
+    def forward(self, x, diagnosis=False):
         x_list = self.backbone(x)
-        return self.classifier(x_list)
+        if diagnosis:
+            return {"encoder": x_list, "classifier": self.classifier(x_list, diagnosis=diagnosis)}
+        return self.classifier(x_list, diagnosis=diagnosis)
 
     def compute_with_attention_layers(self, x):
         x_list = self.backbone(x)

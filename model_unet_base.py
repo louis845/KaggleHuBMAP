@@ -264,11 +264,13 @@ class UNetEndClassifier(torch.nn.Module):
         assert (num_deep_multiclasses == 0) or (num_classes > 1), "num_classes must be greater than 1 if num_deep_multiclasses > 0"
 
 
-    def forward(self, x_list):
+    def forward(self, x_list, diagnosis=False):
         # contracting path
         x = self.conv_up[0](torch.concat([self.conv_up_transpose[0](x_list[self.pyr_height]), x_list[self.pyr_height - 1]], dim=1))
         if self.deep_supervision:
             deep_outputs = [torch.squeeze(self.sigmoid(self.outconv_deep[0](x)), dim=1)]
+        if diagnosis:
+            diagnosis_outputs = [x]
         for i in range(1, self.pyr_height):
             x = self.conv_up[i](torch.concat([self.conv_up_transpose[i](x), x_list[self.pyr_height - i - 1]], dim=1))
             if self.deep_supervision:
@@ -276,6 +278,8 @@ class UNetEndClassifier(torch.nn.Module):
                     deep_outputs.append(torch.squeeze(self.sigmoid(self.outconv_deep[i](x)), dim=1))
                 elif i < self.pyr_height - 1:
                     deep_outputs.append(self.outconv_deep[i](x))
+            if diagnosis:
+                diagnosis_outputs.append(x)
 
         if self.num_classes > 1:
             if self.atrous_outconv_split:
@@ -286,7 +290,11 @@ class UNetEndClassifier(torch.nn.Module):
         else:
             result = torch.squeeze(self.sigmoid(self.outconv(x)), dim=1)
         if self.deep_supervision:
+            if diagnosis:
+                return result, deep_outputs, diagnosis_outputs
             return result, deep_outputs
+        if diagnosis:
+            return result, diagnosis_outputs
         return result
 
 class UNetClassifier(torch.nn.Module):
@@ -300,9 +308,11 @@ class UNetClassifier(torch.nn.Module):
         self.classifier = UNetEndClassifier(hidden_channels, use_batch_norm=use_batch_norm, use_atrous_conv=use_atrous_conv, atrous_outconv_split=atrous_outconv_split, pyr_height=pyr_height, deep_supervision=deep_supervision, num_classes=num_classes, num_deep_multiclasses=num_deep_multiclasses, bottleneck_expansion=bottleneck_expansion)
         self.pyr_height = pyr_height
 
-    def forward(self, x):
+    def forward(self, x, diagnosis=False):
         x_list = self.backbone(x)
-        return self.classifier(x_list)
+        if diagnosis:
+            return {"encoder": x_list, "classifier": self.classifier(x_list, diagnosis=diagnosis)}
+        return self.classifier(x_list, diagnosis=diagnosis)
 
 class UNetEncoder(torch.nn.Module):
     def __init__(self, hidden_channels, in_channels=3, use_batch_norm=False):

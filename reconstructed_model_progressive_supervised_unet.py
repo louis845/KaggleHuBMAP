@@ -63,14 +63,20 @@ def separated_focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_h
     ground_truth_one_hot = ground_truth if one_hot_ground_truth else torch.nn.functional.one_hot(ground_truth, num_classes=3).permute(0, 3, 1, 2).to(torch.float32)
     with torch.no_grad():
         ground_truth_other = torch.stack([ground_truth_one_hot[:, 0, :, :] + ground_truth_one_hot[:, 1, :, :], ground_truth_one_hot[:, 2, :, :]], dim=1)
+        if args.use_heavy_boundary_in_separated_loss:
+            non_backgroundness = (1 - ground_truth_one_hot[:, 0, :, :]) * 3 + 1
 
     binary_ce = torch.nn.functional.binary_cross_entropy_with_logits(result[:, 0, :, :], ground_truth_one_hot[:, 0, :, :], reduction="none", pos_weight=(1 / class_weights))
     cross_entropy_boundary = torch.nn.functional.cross_entropy(result[:, 1:, :, :], ground_truth_other, reduction="none", weight=class_weights_composite)
     sigmoid = torch.sigmoid(result[:, 0, :, :])
     softmax = torch.softmax(result[:, 1:, :, :], dim=1)
 
-    return class_weights * ((sigmoid - ground_truth_one_hot[:, 0, :, :]) ** 2) * binary_ce +\
-            torch.sum((softmax - ground_truth_other) ** 2, dim=1) * cross_entropy_boundary
+    if args.use_heavy_boundary_in_separated_loss:
+        return class_weights * ((sigmoid - ground_truth_one_hot[:, 0, :, :]) ** 2) * binary_ce + \
+            non_backgroundness * torch.sum((softmax - ground_truth_other) ** 2, dim=1) * cross_entropy_boundary
+    else:
+        return class_weights * ((sigmoid - ground_truth_one_hot[:, 0, :, :]) ** 2) * binary_ce +\
+                torch.sum((softmax - ground_truth_other) ** 2, dim=1) * cross_entropy_boundary
 
 def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image_ground_truth_batch_, train_image_ground_truth_mask_batch_,
                          train_image_ground_truth_deep_, train_image_ground_truth_mask_deep_, use_amp_=False, scaler_=None):
@@ -698,6 +704,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_focal_loss", action="store_true", help="Whether to use focal loss. Default False.")
     parser.add_argument("--use_composite_focal_loss", action="store_true", help="Whether to use composite focal loss. Default False.")
     parser.add_argument("--use_separated_focal_loss", action="store_true", help="Whether to use separated focal loss. Default False.")
+    parser.add_argument("--use_heavy_boundary_in_separated_loss", action="store_true", help="Whether to use heavy boundary in separated focal loss. Default False. Must be used with --use_separated_focal_loss.")
     parser.add_argument("--use_amp", action="store_true", help="Whether to use automatic mixed precision. Default False.")
     parser.add_argument("--use_squeeze_excitation", action="store_true", help="Whether to use squeeze and excitation. Default False.")
     parser.add_argument("--use_initial_conv", action="store_true", help="Whether to use the initial 7x7 kernel convolution. Default False.")
@@ -845,6 +852,7 @@ if __name__ == "__main__":
         "use_focal_loss": args.use_focal_loss,
         "use_composite_focal_loss": args.use_composite_focal_loss,
         "use_separated_focal_loss": args.use_separated_focal_loss,
+        "use_heavy_boundary_in_separated_loss": args.use_heavy_boundary_in_separated_loss,
         "use_amp": args.use_amp,
         "use_squeeze_excitation": args.use_squeeze_excitation,
         "use_initial_conv": args.use_initial_conv,
@@ -895,7 +903,10 @@ if __name__ == "__main__":
     print("Using class weights:")
     classes = ["blood_vessel", "boundary"]
     class_weights = [5.0, 5.0]
-    class_weights_composite = [1.0, 10.0]
+    if args.use_composite_focal_loss and args.use_heavy_boundary_in_separated_loss:
+        class_weights_composite = [1.0, 4.0]
+    else:
+        class_weights_composite = [1.0, 10.0]
     num_classes = 2
     for k in range(len(classes)):
         seg_class = classes[k]
