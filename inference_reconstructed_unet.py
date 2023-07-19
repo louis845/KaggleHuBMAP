@@ -55,9 +55,12 @@ def get_predictions(result: torch.Tensor, predictions_type:str="argmax"):
     if predictions_type == "argmax":
         return result.argmax(dim=1)
     elif predictions_type == "confidence":
-        softmax = torch.softmax(result, dim=1)
-        # (confidence level at least 0.5)
-        return (softmax[:, 0, ...] <= 0.5) * (torch.argmax(result[:, 1:, ...], dim=1) + 1)
+        if use_separated_background:
+            return (result[:, 0, ...] <= 0.0) * (torch.argmax(result[:, 1:, ...], dim=1) + 1)
+        else:
+            softmax = torch.softmax(result, dim=1)
+            # (confidence level at least 0.5)
+            return (softmax[:, 0, ...] <= 0.5) * (torch.argmax(result[:, 1:, ...], dim=1) + 1)
     elif predictions_type == "noconfidence":
         return torch.argmax(result[:, 1:, ...], dim=1) + 1
     else:
@@ -127,6 +130,8 @@ if __name__ == "__main__":
     parser.add_argument("--unet_attention", action="store_true", help="Whether to use attention in the U-Net. Default False. Cannot be used with unet_plus.")
     parser.add_argument("--image_width", type=int, default=768, help="Width of the input images. Default 768.")
     parser.add_argument("--prediction_type", type=str, default="argmax", help="Type of prediction to use. Default argmax. Can be argmax, confidence, noconfidence, or levels.")
+    parser.add_argument("--use_separated_background", action="store_true",
+                        help="Whether to use a separated outconv for background sigmoid. Default False. Must be used with atrous conv.")
 
     model_data_manager.transform_add_argparse_arguments(parser)
 
@@ -145,12 +150,13 @@ if __name__ == "__main__":
         gt_masks[k] = obtain_reconstructed_binary_segmentation.get_default_WSI_mask(k)
 
     blocks = args.hidden_blocks
+    use_separated_background = args.use_separated_background
     if args.unet_attention:
         model = model_unet_attention.UNetClassifier(num_classes=2, num_deep_multiclasses=args.pyramid_height - 1,
                                                     hidden_channels=args.hidden_channels,
                                                     use_batch_norm=args.use_batch_norm,
                                                     use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
-                                                    in_channels=4, use_atrous_conv=args.use_atrous_conv,
+                                                    in_channels=4, use_atrous_conv=args.use_atrous_conv, atrous_outconv_split=use_separated_background,
                                                     deep_supervision=True,
                                                     squeeze_excitation=args.use_squeeze_excitation,
                                                     bottleneck_expansion=args.bottleneck_expansion,
@@ -159,7 +165,7 @@ if __name__ == "__main__":
         model = model_unet_base.UNetClassifier(num_classes=2, num_deep_multiclasses=args.pyramid_height - 1,
                                                hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
-                                               in_channels=4, use_atrous_conv=args.use_atrous_conv,
+                                               in_channels=4, use_atrous_conv=args.use_atrous_conv, atrous_outconv_split=use_separated_background,
                                                deep_supervision=True,
                                                squeeze_excitation=args.use_squeeze_excitation,
                                                bottleneck_expansion=args.bottleneck_expansion,
