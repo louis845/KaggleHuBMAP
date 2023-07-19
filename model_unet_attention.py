@@ -86,7 +86,10 @@ class UNetEndClassifier(torch.nn.Module):
         x = self.conv_up[0](torch.concat(
             [self.conv_up_transpose[0](x_list[self.pyr_height]), x_list[self.pyr_height - 1] * attention_layer], dim=1))
         if self.deep_supervision:
-            deep_outputs = [torch.squeeze(self.sigmoid(self.outconv_deep[0](x)), dim=1)]
+            if self.num_deep_multiclasses == self.pyr_height - 1:
+                deep_outputs = [self.outconv_deep[0](x)]
+            else:
+                deep_outputs = [torch.squeeze(self.sigmoid(self.outconv_deep[0](x)), dim=1)]
         if diagnosis:
             diagnosis_outputs = [x]
 
