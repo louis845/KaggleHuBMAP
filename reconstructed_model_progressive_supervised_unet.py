@@ -903,7 +903,7 @@ if __name__ == "__main__":
     print("Using class weights:")
     classes = ["blood_vessel", "boundary"]
     class_weights = [5.0, 5.0]
-    if args.use_composite_focal_loss and args.use_heavy_boundary_in_separated_loss:
+    if args.use_separated_focal_loss and args.use_heavy_boundary_in_separated_loss:
         class_weights_composite = [1.0, 4.0]
     else:
         class_weights_composite = [1.0, 10.0]
