@@ -305,12 +305,12 @@ class Composite1024To512ImageInference:
                     if reduction_logit_average:
                         if separated_logits:
                             mean_tensor = torch.mean(cat_tensor, dim=-1)
-                            result = torch.cat([torch.sigmoid(mean_tensor[..., 0]), torch.softmax(mean_tensor[..., 1:], dim=-1)], dim=-1)
+                            result = torch.cat([torch.sigmoid(mean_tensor[..., 0]).unsqueeze(-1), torch.softmax(mean_tensor[..., 1:], dim=-1)], dim=-1)
                         else:
                             result = torch.softmax(torch.mean(cat_tensor, dim=-1), dim=-1)
                     else:
                         if separated_logits:
-                            scores = torch.cat([torch.sigmoid(cat_tensor[..., 0, :]), torch.softmax(cat_tensor[..., 1:, :], dim=-2)], dim=-2)
+                            scores = torch.cat([torch.sigmoid(cat_tensor[..., 0, :]).unsqueeze(-2), torch.softmax(cat_tensor[..., 1:, :], dim=-2)], dim=-2)
                             result = torch.mean(scores, dim=-1)
                         else:
                             result = torch.mean(torch.softmax(cat_tensor, dim=-2), dim=-1)
