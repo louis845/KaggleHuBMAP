@@ -95,7 +95,7 @@ def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image
                                                            train_image_ground_truth_deep_[pyr_height - 2 - k],
                                                            reduction="none")
             k_loss = torch.sum(ce_res * train_image_ground_truth_mask_deep_[pyr_height - 2 - k]) * multiply_scale_factor
-            loss += k_loss
+            loss = loss + k_loss
 
             total_loss_per_outputs[k] = k_loss.item()
 
@@ -109,7 +109,7 @@ def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image
             ce_res = torch.nn.functional.cross_entropy(result, train_image_ground_truth_batch_, reduction="none",
                                                        weight=class_weights)
         result_loss = torch.sum(ce_res * train_image_ground_truth_mask_batch_)
-        loss += result_loss
+        loss = loss + result_loss
 
     if use_amp:
         # scaled loss to avoid overflow
