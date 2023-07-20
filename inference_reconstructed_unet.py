@@ -132,6 +132,7 @@ if __name__ == "__main__":
     parser.add_argument("--prediction_type", type=str, default="argmax", help="Type of prediction to use. Default argmax. Can be argmax, confidence, noconfidence, or levels.")
     parser.add_argument("--use_separated_background", action="store_true",
                         help="Whether to use a separated outconv for background sigmoid. Default False. Must be used with atrous conv.")
+    parser.add_argument("--ignore_unknown", action="store_true", help="Whether to ignore unknown classes. Default False.")
 
     model_data_manager.transform_add_argparse_arguments(parser)
 
@@ -207,6 +208,8 @@ if __name__ == "__main__":
 
     image_radius = image_width // 2
     print("Computing now. Prediction type: {}    Test time augmentation: {}".format(args.prediction_type, args.use_tta))
+    print("Ignore unknown: {}".format(args.ignore_unknown))
+    ignore_unknown = args.ignore_unknown
     with tqdm.tqdm(total=len(subdata_entries)) as pbar:
         while computed < len(subdata_entries):
             # Test the model
@@ -233,6 +236,7 @@ if __name__ == "__main__":
                     # Obtain the ground truth labels
                     ground_truth_batch = torch.zeros((compute_end - computed, 512, 512), dtype=torch.bool, device=config.device)
                     ground_truth_class_labels_batch = torch.zeros((compute_end - computed, 512, 512), dtype=torch.long, device=config.device)
+                    unknown_batch = torch.zeros((compute_end - computed, 512, 512), dtype=torch.bool, device=config.device) # default no unknown
                     for k in range(computed, compute_end):
                         seg_mask = input_data_loader.get_segmentation_mask(subdata_entries[k], "blood_vessel")
                         ground_truth_batch[k - computed, :, :] = torch.tensor(seg_mask, dtype=torch.bool, device=config.device)
@@ -243,18 +247,22 @@ if __name__ == "__main__":
                             x, x + 512, y, y + 512
                         ), dtype=torch.long, device=config.device)
 
+                        if ignore_unknown:
+                            unknown_mask = input_data_loader.get_segmentation_mask(subdata_entries[k], "unknown")
+                            unknown_batch[k - computed, :, :] = torch.tensor(unknown_mask, dtype=torch.bool, device=config.device)
+
                     # Compute global metrics
-                    true_positive += torch.sum((pred_type > 0) & ground_truth_batch).item()
-                    true_negative += torch.sum((pred_type == 0) & ~ground_truth_batch).item()
-                    false_positive += torch.sum((pred_type > 0) & ~ground_truth_batch).item()
-                    false_negative += torch.sum((pred_type == 0) & ground_truth_batch).item()
+                    true_positive += torch.sum((pred_type > 0) & ground_truth_batch & (~unknown_batch)).item()
+                    true_negative += torch.sum((pred_type == 0) & ~ground_truth_batch & (~unknown_batch)).item()
+                    false_positive += torch.sum((pred_type > 0) & ~ground_truth_batch & (~unknown_batch)).item()
+                    false_negative += torch.sum((pred_type == 0) & ground_truth_batch & (~unknown_batch)).item()
 
                     for k in range(len(classes)):
                         seg_class = classes[k]
-                        true_positive_classes[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch == (k + 1))).item()
-                        true_negative_classes[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch != (k + 1))).item()
-                        false_positive_classes[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch != (k + 1))).item()
-                        false_negative_classes[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch == (k + 1))).item()
+                        true_positive_classes[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & (~unknown_batch)).item()
+                        true_negative_classes[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & (~unknown_batch)).item()
+                        false_positive_classes[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & (~unknown_batch)).item()
+                        false_negative_classes[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & (~unknown_batch)).item()
 
                     # Compute the train and test metrics
                     training_batch_mask = torch.zeros((compute_end - computed, 1, 1), dtype=torch.bool, device=config.device)
@@ -265,27 +273,27 @@ if __name__ == "__main__":
                         elif subdata_entries[k] in val_subdata_entries:
                             validation_batch_mask[k - computed, 0, 0] = True
 
-                    true_positive_train += torch.sum((pred_type > 0) & ground_truth_batch & training_batch_mask).item()
-                    true_negative_train += torch.sum((pred_type == 0) & ~ground_truth_batch & training_batch_mask).item()
-                    false_positive_train += torch.sum((pred_type > 0) & ~ground_truth_batch & training_batch_mask).item()
-                    false_negative_train += torch.sum((pred_type == 0) & ground_truth_batch & training_batch_mask).item()
+                    true_positive_train += torch.sum((pred_type > 0) & ground_truth_batch & training_batch_mask & (~unknown_batch)).item()
+                    true_negative_train += torch.sum((pred_type == 0) & ~ground_truth_batch & training_batch_mask & (~unknown_batch)).item()
+                    false_positive_train += torch.sum((pred_type > 0) & ~ground_truth_batch & training_batch_mask & (~unknown_batch)).item()
+                    false_negative_train += torch.sum((pred_type == 0) & ground_truth_batch & training_batch_mask & (~unknown_batch)).item()
 
-                    true_positive_val += torch.sum((pred_type > 0) & ground_truth_batch & validation_batch_mask).item()
-                    true_negative_val += torch.sum((pred_type == 0) & ~ground_truth_batch & validation_batch_mask).item()
-                    false_positive_val += torch.sum((pred_type > 0) & ~ground_truth_batch & validation_batch_mask).item()
-                    false_negative_val += torch.sum((pred_type == 0) & ground_truth_batch & validation_batch_mask).item()
+                    true_positive_val += torch.sum((pred_type > 0) & ground_truth_batch & validation_batch_mask & (~unknown_batch)).item()
+                    true_negative_val += torch.sum((pred_type == 0) & ~ground_truth_batch & validation_batch_mask & (~unknown_batch)).item()
+                    false_positive_val += torch.sum((pred_type > 0) & ~ground_truth_batch & validation_batch_mask & (~unknown_batch)).item()
+                    false_negative_val += torch.sum((pred_type == 0) & ground_truth_batch & validation_batch_mask & (~unknown_batch)).item()
 
                     for k in range(len(classes)):
                         seg_class = classes[k]
-                        true_positive_classes_train[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & training_batch_mask).item()
-                        true_negative_classes_train[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & training_batch_mask).item()
-                        false_positive_classes_train[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & training_batch_mask).item()
-                        false_negative_classes_train[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & training_batch_mask).item()
+                        true_positive_classes_train[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & training_batch_mask & (~unknown_batch)).item()
+                        true_negative_classes_train[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & training_batch_mask & (~unknown_batch)).item()
+                        false_positive_classes_train[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & training_batch_mask & (~unknown_batch)).item()
+                        false_negative_classes_train[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & training_batch_mask & (~unknown_batch)).item()
 
-                        true_positive_classes_val[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & validation_batch_mask).item()
-                        true_negative_classes_val[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & validation_batch_mask).item()
-                        false_positive_classes_val[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & validation_batch_mask).item()
-                        false_negative_classes_val[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & validation_batch_mask).item()
+                        true_positive_classes_val[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & validation_batch_mask & (~unknown_batch)).item()
+                        true_negative_classes_val[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & validation_batch_mask & (~unknown_batch)).item()
+                        false_positive_classes_val[seg_class] += torch.sum((pred_type == (k + 1)) & (ground_truth_class_labels_batch != (k + 1)) & validation_batch_mask & (~unknown_batch)).item()
+                        false_negative_classes_val[seg_class] += torch.sum((pred_type != (k + 1)) & (ground_truth_class_labels_batch == (k + 1)) & validation_batch_mask & (~unknown_batch)).item()
 
             gc.collect()
             torch.cuda.empty_cache()
