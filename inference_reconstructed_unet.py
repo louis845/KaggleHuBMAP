@@ -114,6 +114,7 @@ def get_result_logits(model: torch.nn.Module, inference_batch: torch.Tensor, tes
         result = result[:, :, image_radius - 256:image_radius + 256, image_radius - 256:image_radius + 256]
         return result
 
+kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Inference of a multiclass U-Net model")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size to use. Default 2.")
@@ -157,7 +158,8 @@ if __name__ == "__main__":
                                                     hidden_channels=args.hidden_channels,
                                                     use_batch_norm=args.use_batch_norm,
                                                     use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
-                                                    in_channels=4, use_atrous_conv=args.use_atrous_conv, atrous_outconv_split=use_separated_background,
+                                                    in_channels=4, use_atrous_conv=args.use_atrous_conv,
+                                                    atrous_outconv_split=use_separated_background,
                                                     deep_supervision=True,
                                                     squeeze_excitation=args.use_squeeze_excitation,
                                                     bottleneck_expansion=args.bottleneck_expansion,
@@ -166,8 +168,9 @@ if __name__ == "__main__":
         model = model_unet_base.UNetClassifier(num_classes=2, num_deep_multiclasses=args.pyramid_height - 1,
                                                hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
-                                               in_channels=4, use_atrous_conv=args.use_atrous_conv, atrous_outconv_split=use_separated_background,
                                                deep_supervision=True,
+                                               in_channels=4, use_atrous_conv=args.use_atrous_conv,
+                                               atrous_outconv_split=use_separated_background,
                                                squeeze_excitation=args.use_squeeze_excitation,
                                                bottleneck_expansion=args.bottleneck_expansion,
                                                res_conv_blocks=blocks, use_initial_conv=args.use_initial_conv).to(device=config.device)
@@ -230,6 +233,7 @@ if __name__ == "__main__":
                 for k in range(computed, compute_end):
                     output_data_writer.write_image_data(subdata_entries[k],
                                                         cv2.cvtColor(pred_mask_image[k - computed, :, :, :], cv2.COLOR_HSV2RGB))
+                    np.save(os.path.join(output_data_writer.data_folder, "{}_result".format(subdata_entries[k])), result[k - computed, :, :, :].detach().cpu().numpy())
 
                 if args.prediction_type != "levels":
                     # Now we load the ground truth masks from the input data loader and compute the metrics
@@ -248,7 +252,10 @@ if __name__ == "__main__":
                         ), dtype=torch.long, device=config.device)
 
                         if ignore_unknown:
-                            unknown_mask = input_data_loader.get_segmentation_mask(subdata_entries[k], "unknown")
+                            """unknown_mask = input_data_loader.get_segmentation_mask(subdata_entries[k], "unknown") # bool np array
+                            # dilate the unknown mask by kernel with 2 iterations
+                            unknown_mask = (cv2.dilate(unknown_mask.astype(np.uint8) * 255, kernel, iterations=2) // 255).astype(bool)"""
+                            unknown_mask = gt_masks[wsi_id].obtain_unknown_mask(x, x + 512, y, y + 512) > 0
                             unknown_batch[k - computed, :, :] = torch.tensor(unknown_mask, dtype=torch.bool, device=config.device)
 
                     # Compute global metrics

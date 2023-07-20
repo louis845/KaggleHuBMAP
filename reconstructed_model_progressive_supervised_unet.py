@@ -581,6 +581,12 @@ def validation_step(train_history):
 
                 tested += len(batch_indices)
 
+                if test_only:
+                    result_arr = result.detach().cpu().numpy()
+                    for i in range(len(batch_indices)):
+                        np.save(os.path.join(model_dir, 'result_{}.npy'.format(batch_indices[i])),
+                                result_arr[i, :, :, :])
+
                 del bool_mask, pred_labels, pred_labels_confidence, pred_labels_class
                 del test_image_cat_batch, test_image_ground_truth_batch, test_image_ground_truth_mask_batch, \
                     test_image_ground_truth_deep[:], test_image_ground_truth_mask_deep[:]
@@ -721,6 +727,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_extra_steps", type=int, default=0, help="Extra steps of gradient descent before the usual step in an epoch. Default 0.")
     parser.add_argument("--extra_training_subdata", type=str, default=None, help="Additional training subdata to mix with the main training data. Default None.")
     parser.add_argument("--extra_subdata_ratio", type=float, default=0.2, help="The ratio of the extra subdata to mix with the main training data. Default 0.2. If extra training subdata is not provided, this is ignored.")
+    parser.add_argument("--test_only", action="store_true", help="Whether to only test the model. Default False. If true, the epochs and number of extra steps are ignored, set to 1, 0.")
 
     model_data_manager.model_add_argparse_arguments(parser)
 
@@ -779,11 +786,15 @@ if __name__ == "__main__":
     use_composite_focal_loss = args.use_composite_focal_loss
     use_separated_focal_loss = args.use_separated_focal_loss
     use_suppressed_deepsupervision = args.use_suppressed_deepsupervision
+    test_only = args.test_only
 
     assert not (use_focal_loss and use_composite_focal_loss), "You cannot use both focal loss and composite focal loss."
     assert not (use_focal_loss and use_separated_focal_loss), "You cannot use both focal loss and separated focal loss."
     assert not (use_composite_focal_loss and use_separated_focal_loss), "You cannot use both composite focal loss and separated focal loss."
     assert (not use_separated_focal_loss) or args.use_atrous_conv, "You can only use separated focal loss with atrous convolutions."
+    if test_only:
+        num_epochs = 1
+        num_extra_steps = 0
 
 
     assert type(blocks) == list, "Blocks must be a list."
@@ -812,14 +823,18 @@ if __name__ == "__main__":
     single_training_step_compile = single_training_step#torch.compile(single_training_step)
 
     momentum = args.momentum
-    if args.optimizer.lower() == "adam":
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, betas=(momentum, 0.999))
-    elif args.optimizer.lower() == "sgd":
-        optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, momentum=momentum)
+    if args.test_only:
+        optimizer = None
+        print("---------------------------------- TESTING ONLY ----------------------------------")
     else:
-        print("Invalid optimizer. The available options are: adam, sgd.")
-        exit(1)
-    print("Using optimizer {} with learning rate {} and momentum {}.".format(args.optimizer, args.learning_rate, momentum))
+        if args.optimizer.lower() == "adam":
+            optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, betas=(momentum, 0.999))
+        elif args.optimizer.lower() == "sgd":
+            optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, momentum=momentum)
+        else:
+            print("Invalid optimizer. The available options are: adam, sgd.")
+            exit(1)
+        print("Using optimizer {} with learning rate {} and momentum {}.".format(args.optimizer, args.learning_rate, momentum))
 
     if use_amp:
         scaler = torch.cuda.amp.GradScaler()
@@ -829,10 +844,11 @@ if __name__ == "__main__":
         optimizer_checkpoint_path = os.path.join(prev_model_checkpoint_dir, "optimizer.pt")
 
         model.load_state_dict(torch.load(model_checkpoint_path, map_location="cpu"))
-        optimizer.load_state_dict(torch.load(optimizer_checkpoint_path, map_location="cpu"))
+        if not args.test_only:
+            optimizer.load_state_dict(torch.load(optimizer_checkpoint_path, map_location="cpu"))
 
-        for g in optimizer.param_groups:
-            g['lr'] = args.learning_rate
+            for g in optimizer.param_groups:
+                g['lr'] = args.learning_rate
 
         gc.collect()
         torch.cuda.empty_cache()
@@ -1033,7 +1049,34 @@ if __name__ == "__main__":
             print()
             print("Training.....")
             print()
-            training_step(train_history)
+            # if test only, the metrics are all zero
+            if test_only:
+                train_history["loss_cum"].append(0.0)
+                for k in range(pyr_height):
+                    train_history["loss{}".format(k)].append(0.0)
+                    train_history["accuracy{}".format(k)].append(0.0)
+                    train_history["precision{}".format(k)].append(0.0)
+                    train_history["recall{}".format(k)].append(0.0)
+
+                train_history["confidence_accuracy"].append(0.0)
+                train_history["confidence_precision"].append(0.0)
+                train_history["confidence_recall"].append(0.0)
+
+                for k in range(len(classes)):
+                    seg_class = classes[k]
+                    train_history["accuracy_{}".format(seg_class)].append(0.0)
+                    train_history["precision_{}".format(seg_class)].append(0.0)
+                    train_history["recall_{}".format(seg_class)].append(0.0)
+
+                    train_history["confidence_accuracy_{}".format(seg_class)].append(0.0)
+                    train_history["confidence_precision_{}".format(seg_class)].append(0.0)
+                    train_history["confidence_recall_{}".format(seg_class)].append(0.0)
+
+                    train_history["class_accuracy_{}".format(seg_class)].append(0.0)
+                    train_history["class_precision_{}".format(seg_class)].append(0.0)
+                    train_history["class_recall_{}".format(seg_class)].append(0.0)
+            else:
+                training_step(train_history)
             memory_logger.log("CUDA memory after training step in epoch {}".format(epoch))
 
             if use_async_sampling != 0:
@@ -1100,7 +1143,7 @@ if __name__ == "__main__":
             memory_logger.log("CUDA memory after validation in epoch {}".format(epoch))
 
             # Save the model and optimizer
-            if epoch % epochs_per_save == 0 and epoch > 0:
+            if epoch % epochs_per_save == 0 and epoch > 0 and not test_only:
                 torch.save(model.state_dict(), os.path.join(model_dir, "model_epoch{}.pt".format(epoch)))
                 torch.save(optimizer.state_dict(), os.path.join(model_dir, "optimizer_epoch{}.pt".format(epoch)))
 
@@ -1109,8 +1152,9 @@ if __name__ == "__main__":
         print("Training Complete")
 
         # Save the model and optimizer
-        torch.save(model.state_dict(), os.path.join(model_dir, "model.pt"))
-        torch.save(optimizer.state_dict(), os.path.join(model_dir, "optimizer.pt"))
+        if not test_only:
+            torch.save(model.state_dict(), os.path.join(model_dir, "model.pt"))
+            torch.save(optimizer.state_dict(), os.path.join(model_dir, "optimizer.pt"))
         # Save the training history by converting it to a dataframe
         train_history = pd.DataFrame(train_history)
         train_history.to_csv(os.path.join(model_dir, "train_history.csv"), index=False)
@@ -1200,8 +1244,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("Training Interrupted. Saving Model...")
         # Save the model and optimizer
-        torch.save(model.state_dict(), os.path.join(model_dir, "model.pt"))
-        torch.save(optimizer.state_dict(), os.path.join(model_dir, "optimizer.pt"))
+        if not test_only:
+            torch.save(model.state_dict(), os.path.join(model_dir, "model.pt"))
+            torch.save(optimizer.state_dict(), os.path.join(model_dir, "optimizer.pt"))
 
         if use_async_sampling != 0:
             train_sampler.terminate()
