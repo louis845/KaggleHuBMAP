@@ -242,11 +242,15 @@ if __name__ == "__main__":
                     ground_truth_class_labels_batch = torch.zeros((compute_end - computed, 512, 512), dtype=torch.long, device=config.device)
                     unknown_batch = torch.zeros((compute_end - computed, 512, 512), dtype=torch.bool, device=config.device) # default no unknown
                     for k in range(computed, compute_end):
-                        seg_mask = input_data_loader.get_segmentation_mask(subdata_entries[k], "blood_vessel")
-                        ground_truth_batch[k - computed, :, :] = torch.tensor(seg_mask, dtype=torch.bool, device=config.device)
                         x = model_data_manager.data_information.loc[subdata_entries[k], "i"]
                         y = model_data_manager.data_information.loc[subdata_entries[k], "j"]
                         wsi_id = model_data_manager.data_information.loc[subdata_entries[k], "source_wsi"]
+
+                        # seg_mask = gt_masks[wsi_id].obtain_blood_vessel_mask(x, x + 512, y, y + 512) > 0
+                        seg_mask = input_data_loader.get_segmentation_mask(subdata_entries[k], "blood_vessel")
+                        seg_mask = (cv2.dilate(seg_mask.astype(np.uint8) * 255, kernel, iterations=2) // 255).astype(bool)
+                        ground_truth_batch[k - computed, :, :] = torch.tensor(seg_mask, dtype=torch.bool,
+                                                                              device=config.device)
                         ground_truth_class_labels_batch[k - computed, :, :] = torch.tensor(gt_masks[wsi_id].obtain_blood_vessel_mask(
                             x, x + 512, y, y + 512
                         ), dtype=torch.long, device=config.device)
