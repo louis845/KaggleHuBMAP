@@ -1,5 +1,5 @@
 """Obtain the raw logits from the model. The model here is trained with reconstructed_model_progressive_supervised_unet.py"""
-
+import collections
 import gc
 import os
 import time
@@ -11,6 +11,7 @@ import tqdm
 
 import numpy as np
 import torch.nn
+import cv2
 
 import model_data_manager
 import model_unet_base
@@ -84,11 +85,18 @@ if __name__ == "__main__":
     # randomly draw args.samples number of tiles
     subdata_entries = np.random.choice(subdata_entries, size=args.samples, replace=False)
 
+    all_encoders_diagnosis_channel = collections.defaultdict(lambda: np.array([], dtype=np.float32))
+    all_encoders_diagnosis_pixel = collections.defaultdict(lambda: np.array([], dtype=np.float32))
+    all_classifiers_diagnosis_channel = collections.defaultdict(lambda: np.array([], dtype=np.float32))
+    all_classifiers_diagnosis_pixel = collections.defaultdict(lambda: np.array([], dtype=np.float32))
+
     print("Computing the logits now...")
     with tqdm.tqdm(total=len(subdata_entries)) as pbar:
         while computed < len(subdata_entries):
             tile_id = subdata_entries[computed]
             # Compute diagnosis summary
+            encoder_diagnosis = []
+            classifier_diagnosis = []
             with torch.no_grad():
                 single_image_batch = inference_reconstructed_base.load_combined(tile_id).unsqueeze(0)
                 diagnosis_result = model(single_image_batch, diagnosis=True)
@@ -98,6 +106,39 @@ if __name__ == "__main__":
                 else:
                     result, deep_outputs, diagnosis_outputs = diagnosis_result["classifier"]
 
+                for x in x_list:
+                    # x is a (1, C, H, W) tensor.
+                    # standard deviation across pixels in each channel
+                    across_pixel_std = torch.std(x, dim=(2, 3)).squeeze(0)
+                    # standard deviation across channels in each pixel
+                    across_channel_std = torch.std(x, dim=(1,)).squeeze(0)
+                    across_channel_std = across_channel_std.reshape(-1)
+                    encoder_diagnosis.append({"channel_std": across_channel_std.cpu().numpy(), "pixel_std": across_pixel_std.cpu().numpy()})
+
+                for x in diagnosis_outputs:
+                    # x is a (1, C, H, W) tensor.
+                    # standard deviation across pixels in each channel
+                    across_pixel_std = torch.std(x, dim=(2, 3)).squeeze(0)
+                    # standard deviation across channels in each pixel
+                    across_channel_std = torch.std(x, dim=(1,)).squeeze(0)
+                    across_channel_std = across_channel_std.reshape(-1)
+                    classifier_diagnosis.append({"channel_std": across_channel_std.cpu().numpy(), "pixel_std": across_pixel_std.cpu().numpy()})
+
+                if args.unet_attention:
+                    for k in range(len(attention_layers)):
+                        attention_map = attention_layers[k] # (1, 1, H, W) tensor.
+                        # convert to numpy and save as image "{}_attention{}.png".format(tile_id, k) insider output_data_writer.data_folder
+                        attention_map = attention_map.squeeze(0).squeeze(0).cpu().numpy()
+                        attention_map = (attention_map * 255).astype(np.uint8)
+                        cv2.imwrite(os.path.join(output_data_writer.data_folder, "{}_attention{}.png".format(tile_id, k)), attention_map)
+
+                # save the diagnosis results
+                for k in range(len(encoder_diagnosis)):
+                    all_encoders_diagnosis_channel[k] = np.concatenate([all_encoders_diagnosis_channel[k], encoder_diagnosis[k]["channel_std"]])
+                    all_encoders_diagnosis_pixel[k] = np.concatenate([all_encoders_diagnosis_pixel[k], encoder_diagnosis[k]["pixel_std"]])
+                for k in range(len(classifier_diagnosis)):
+                    all_classifiers_diagnosis_channel[k] = np.concatenate([all_classifiers_diagnosis_channel[k], classifier_diagnosis[k]["channel_std"]])
+                    all_classifiers_diagnosis_pixel[k] = np.concatenate([all_classifiers_diagnosis_pixel[k], classifier_diagnosis[k]["pixel_std"]])
 
             gc.collect()
             pbar.update(1)
@@ -107,6 +148,18 @@ if __name__ == "__main__":
                 print("Computed {} images in {:.2f} seconds".format(computed, time.time() - ctime))
                 last_compute_print = computed
                 ctime = time.time()
+
+    diagnosis_group = output_data_writer.data_store.create_group("diagnosis")  # h5py.Group
+    for k in range(len(all_encoders_diagnosis_channel)):
+        diagnosis_group.create_dataset("encoder_channel_{}".format(k), data=all_encoders_diagnosis_channel[k],
+                                       compression="gzip")
+        diagnosis_group.create_dataset("encoder_pixel_{}".format(k), data=all_encoders_diagnosis_pixel[k],
+                                       compression="gzip")
+    for k in range(len(all_classifiers_diagnosis_channel)):
+        diagnosis_group.create_dataset("classifier_channel_{}".format(k), data=all_classifiers_diagnosis_channel[k],
+                                       compression="gzip")
+        diagnosis_group.create_dataset("classifier_pixel_{}".format(k), data=all_classifiers_diagnosis_pixel[k],
+                                       compression="gzip")
 
     input_data_loader.close()
     output_data_writer.close()
