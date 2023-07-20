@@ -326,6 +326,45 @@ class Composite1024To512ImageInference:
 # now these functions help getting the instance masks from the 512 x 512 x 3 logits
 kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 large_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+
+def get_boundary_mask(probas, threshold:float=0.5, boundary_erosion:int=0):
+    # if is torch tensor
+    assert probas.shape == (512, 512, 3)
+    boundary = probas[..., 2] > threshold
+    if boundary_erosion > 0:
+        boundary_mask_np = boundary.cpu().numpy().astype(np.uint8) * 255
+        boundary_mask_np = cv2.erode(boundary_mask_np, kernel, iterations=boundary_erosion)
+        boundary.copy_(torch.from_numpy((boundary_mask_np // 255).astype(bool)))
+    return boundary
+
+def get_objectness_mask(probas, threshold:float=0.5):
+    assert probas.shape == (512, 512, 3)
+    return probas[..., 0] <= threshold
+
+def get_instance_mask(probas, boundary_threshold:float=0.5, objectness_threshold:float=0.5, boundary_erosion:int=0):
+    assert probas.shape == (512, 512, 3)
+    boundary_mask = get_boundary_mask(probas, threshold=boundary_threshold, boundary_erosion=boundary_erosion)
+    objectness_mask = get_objectness_mask(probas, threshold=objectness_threshold)
+    return objectness_mask & (~boundary_mask)
+
+def get_instances_image(mask_info, instances:bool=False):
+    """mask_info is a shape (512, 512) torch bool tensor. First convert to numpy. If instances, use cv2 connected components
+       to get the components, and colour each component with a different colour, with black as background. If not instances,
+       just colour the mask with white. In either case, return (512, 512, 3) numpy array RGB image"""
+    mask = mask_info.cpu().numpy().astype(np.uint8) * 255
+    if instances:
+        num_labels, labels_im = cv2.connectedComponents(mask, connectivity=4)
+        hsv_image = np.zeros((512, 512, 3), dtype=np.uint8)
+        # we get the masks now. we also need to clean the labels
+        for label in range(1, num_labels):
+            hsv_image[labels_im == label, 0] = int((label * 255.0) / num_labels)
+            hsv_image[labels_im == label, 1] = 255
+            hsv_image[labels_im == label, 2] = 255
+        return cv2.cvtColor(hsv_image, cv2.COLOR_HSV2RGB)
+    else:
+        return np.repeat(mask[..., np.newaxis], 3, axis=-1)
+
+
 def get_instance_masks(logits: torch.Tensor):
     assert logits.shape == (512, 512, 3)
 

@@ -18,6 +18,7 @@ import cv2
 import sklearn.cluster
 
 import config
+import inference_reconstructed_base
 
 import model_data_manager
 
@@ -30,6 +31,217 @@ for json_str in json_list:
     all_polygon_masks[polygon_masks["id"]] = polygon_masks["annotations"]
 
 segmentation_store = h5py.File(os.path.join("segmentation_data", "data_summary.h5"), "r")
+
+
+instance_segmentation_previous_values = {} # type: dict[str, any]
+# stores the previous values for the instance segmentation popup
+class InstanceSegmentationPopup(PyQt5.QtWidgets.QDialog):
+    """Opens up a popup window to display instance segmentation tasks.
+    The constructor accepts two numpy arrays of shape (H, W, 3) as inputs, the first array is uint8 the original image,
+    the second array should be float32 denoting the class probabilities. The GUI should contain the following:
+
+    At the top center, there should be a widget, and inside the widget two labels horizontally, one displaying the
+    original image, and one displaying the processed predictions from the class probabilities.
+
+    Below that, there should be options for choosing the parameters for the processing step. The options should be
+    displayed vertically, and each option should have a label on the left for the name of the option, and a widget on
+    the right for setting the option. The options are listed below.
+
+    Option 1: Processing mode. This should be a dropdown menu which uses the list PROCESSING_MODES
+    Option 2: Background threshold. This should be a slider with a range of 0 to 1, with a default value of 0.5
+    Option 3: Boundary threshold. This should be a slider with a range of 0 to 1, with a default value of 0.5
+    Option 4: Boundary erosion. This should be a slider with a range of 0 to 10, with a default value of 0, increment 1
+    Option 5: Instances. This should be a checkbox, default unchecked.
+
+    At the bottom, there should be a button called "Compute", which when pressed, should compute the instances with the processing parameters
+    """
+    PROCESSING_INTERIOR_ONLY = "INTERIOR_ONLY"
+    PROCESSING_BOUNDARY_ONLY = "BOUNDARY_ONLY"
+    PROCESSING_INTERIOR_AND_BOUNDARY = "INTERIOR_AND_BOUNDARY"
+    PROCESSING_MODES = [PROCESSING_INTERIOR_ONLY, PROCESSING_BOUNDARY_ONLY, PROCESSING_INTERIOR_AND_BOUNDARY]
+
+    def __init__(self, original_image: np.ndarray, class_probabilities: np.ndarray, parent=None):
+        super().__init__(parent)
+        self.original_image = original_image
+        self.class_probabilities = class_probabilities
+        assert self.original_image.shape == self.class_probabilities.shape
+        assert self.original_image.dtype == np.uint8
+        assert self.class_probabilities.dtype == np.float32
+
+        self.setWindowTitle("Instance Segmentation")
+        self.resize(1920, 1080)
+        self.setup_ui()
+        self.load_previous_values()
+
+    def setup_ui(self):
+        # create main widget and QVBoxLayout
+        self.main_widget = PyQt5.QtWidgets.QWidget(self)
+        self.main_layout = PyQt5.QtWidgets.QVBoxLayout(self.main_widget)
+
+        # create top widget and QHBoxLayout
+        self.top_widget = PyQt5.QtWidgets.QWidget(self.main_widget)
+        self.top_layout = PyQt5.QtWidgets.QHBoxLayout(self.top_widget)
+
+        # create original image label and add to top layout
+        self.original_image_label = PyQt5.QtWidgets.QLabel(self.top_widget)
+        self.original_image_label.setPixmap(PyQt5.QtGui.QPixmap.fromImage(PyQt5.QtGui.QImage(self.original_image.data,
+                                            self.original_image.shape[1], self.original_image.shape[0], self.original_image.shape[1] * 3, PyQt5.QtGui.QImage.Format_RGB888)))
+        self.top_layout.addWidget(self.original_image_label)
+
+        # create processed image label and add to top layout, but don't set the image yet. Set to default black image with same size
+        self.processed_image_label = PyQt5.QtWidgets.QLabel(self.top_widget)
+        self.processed_image_label.setPixmap(PyQt5.QtGui.QPixmap.fromImage(PyQt5.QtGui.QImage(np.zeros_like(self.original_image).data,
+                                            self.original_image.shape[1], self.original_image.shape[0], self.original_image.shape[1] * 3, PyQt5.QtGui.QImage.Format_RGB888)))
+        self.top_layout.addWidget(self.processed_image_label)
+
+        # add top widget to main layout
+        self.main_layout.addWidget(self.top_widget)
+
+        # create processing mode widget and add to main layout
+        self.processing_mode_widget = PyQt5.QtWidgets.QWidget(self.main_widget)
+        self.processing_mode_layout = PyQt5.QtWidgets.QHBoxLayout(self.processing_mode_widget)
+        self.processing_mode_label = PyQt5.QtWidgets.QLabel(self.processing_mode_widget)
+        self.processing_mode_label.setText("Processing Mode")
+        self.processing_mode_layout.addWidget(self.processing_mode_label)
+        self.processing_mode_dropdown = PyQt5.QtWidgets.QComboBox(self.processing_mode_widget)
+        self.processing_mode_dropdown.addItems(self.PROCESSING_MODES)
+        self.processing_mode_layout.addWidget(self.processing_mode_dropdown)
+        self.main_layout.addWidget(self.processing_mode_widget)
+
+        # create background threshold widget and add to main layout
+        self.background_threshold_widget = PyQt5.QtWidgets.QWidget(self.main_widget)
+        self.background_threshold_layout = PyQt5.QtWidgets.QHBoxLayout(self.background_threshold_widget)
+        self.background_threshold_label = PyQt5.QtWidgets.QLabel(self.background_threshold_widget)
+        self.background_threshold_label.setText("Background Threshold")
+        self.background_threshold_layout.addWidget(self.background_threshold_label)
+        self.background_threshold_slider = PyQt5.QtWidgets.QSlider(self.background_threshold_widget)
+        self.background_threshold_slider.setOrientation(PyQt5.QtCore.Qt.Horizontal)
+        self.background_threshold_slider.setRange(0, 100)
+        self.background_threshold_slider.setValue(50)
+        self.background_threshold_layout.addWidget(self.background_threshold_slider)
+        self.main_layout.addWidget(self.background_threshold_widget)
+
+        # create boundary threshold widget and add to main layout
+        self.boundary_threshold_widget = PyQt5.QtWidgets.QWidget(self.main_widget)
+        self.boundary_threshold_layout = PyQt5.QtWidgets.QHBoxLayout(self.boundary_threshold_widget)
+        self.boundary_threshold_label = PyQt5.QtWidgets.QLabel(self.boundary_threshold_widget)
+        self.boundary_threshold_label.setText("Boundary Threshold")
+        self.boundary_threshold_layout.addWidget(self.boundary_threshold_label)
+        self.boundary_threshold_slider = PyQt5.QtWidgets.QSlider(self.boundary_threshold_widget)
+        self.boundary_threshold_slider.setOrientation(PyQt5.QtCore.Qt.Horizontal)
+        self.boundary_threshold_slider.setRange(0, 100)
+        self.boundary_threshold_slider.setValue(50)
+        self.boundary_threshold_layout.addWidget(self.boundary_threshold_slider)
+        self.main_layout.addWidget(self.boundary_threshold_widget)
+
+        # create boundary erosion widget and add to main layout
+        self.boundary_erosion_widget = PyQt5.QtWidgets.QWidget(self.main_widget)
+        self.boundary_erosion_layout = PyQt5.QtWidgets.QHBoxLayout(self.boundary_erosion_widget)
+        self.boundary_erosion_label = PyQt5.QtWidgets.QLabel(self.boundary_erosion_widget)
+        self.boundary_erosion_label.setText("Boundary Erosion")
+        self.boundary_erosion_layout.addWidget(self.boundary_erosion_label)
+        self.boundary_erosion_slider = PyQt5.QtWidgets.QSlider(self.boundary_erosion_widget)
+        self.boundary_erosion_slider.setOrientation(PyQt5.QtCore.Qt.Horizontal)
+        self.boundary_erosion_slider.setRange(0, 10)
+        self.boundary_erosion_slider.setValue(0)
+        self.boundary_erosion_layout.addWidget(self.boundary_erosion_slider)
+        self.main_layout.addWidget(self.boundary_erosion_widget)
+
+        # create instances widget and add to main layout
+        self.instances_widget = PyQt5.QtWidgets.QWidget(self.main_widget)
+        self.instances_layout = PyQt5.QtWidgets.QHBoxLayout(self.instances_widget)
+        self.instances_label = PyQt5.QtWidgets.QLabel(self.instances_widget)
+        self.instances_label.setText("Instances")
+        self.instances_layout.addWidget(self.instances_label)
+        self.instances_checkbox = PyQt5.QtWidgets.QCheckBox(self.instances_widget)
+        self.instances_checkbox.setChecked(False)
+        self.instances_layout.addWidget(self.instances_checkbox)
+        self.main_layout.addWidget(self.instances_widget)
+
+
+        # add compute button to main layout
+        self.compute_button = PyQt5.QtWidgets.QPushButton(self.main_widget)
+        self.compute_button.setText("Compute")
+        self.compute_button.clicked.connect(self.compute_button_clicked)
+        self.main_layout.addWidget(self.compute_button)
+
+        # add main widget to main window
+        self.setCentralWidget(self.main_widget)
+
+    def load_previous_values(self):
+        global instance_segmentation_previous_values
+        if "processing_mode" in instance_segmentation_previous_values:
+            self.processing_mode_dropdown.setCurrentIndex(self.PROCESSING_MODES.index(instance_segmentation_previous_values["processing_mode"]))
+        if "background_threshold" in instance_segmentation_previous_values:
+            self.background_threshold_slider.setValue(instance_segmentation_previous_values["background_threshold"])
+        if "boundary_threshold" in instance_segmentation_previous_values:
+            self.boundary_threshold_slider.setValue(instance_segmentation_previous_values["boundary_threshold"])
+        if "boundary_erosion" in instance_segmentation_previous_values:
+            self.boundary_erosion_slider.setValue(instance_segmentation_previous_values["boundary_erosion"])
+        if "instances" in instance_segmentation_previous_values:
+            self.instances_checkbox.setChecked(instance_segmentation_previous_values["instances"])
+
+    def closeEvent(self, event):
+        global instance_segmentation_previous_values
+        instance_segmentation_previous_values["processing_mode"] = self.PROCESSING_MODES[self.processing_mode_dropdown.currentIndex()]
+        instance_segmentation_previous_values["background_threshold"] = self.background_threshold_slider.value()
+        instance_segmentation_previous_values["boundary_threshold"] = self.boundary_threshold_slider.value()
+        instance_segmentation_previous_values["boundary_erosion"] = self.boundary_erosion_slider.value()
+        instance_segmentation_previous_values["instances"] = self.instances_checkbox.isChecked()
+        self.closed.emit()
+        event.accept()
+
+    def compute_button_clicked(self):
+        # get processing mode
+        processing_mode = self.PROCESSING_MODES[self.processing_mode_dropdown.currentIndex()]
+        background_threshold = self.background_threshold_slider.value() / 100
+        boundary_threshold = self.boundary_threshold_slider.value() / 100
+        boundary_erosion = self.boundary_erosion_slider.value()
+        compute_instances = self.instances_checkbox.isChecked()
+
+        class_probas_torch = torch.from_numpy(self.class_probas).to(config.device)
+        # compute processed image
+        if processing_mode == self.PROCESSING_INTERIOR_ONLY:
+            mask = inference_reconstructed_base.get_objectness_mask(class_probas_torch, background_threshold)
+        elif processing_mode == self.PROCESSING_BOUNDARY_ONLY:
+            mask = inference_reconstructed_base.get_boundary_mask(class_probas_torch, boundary_threshold, boundary_erosion)
+        elif processing_mode == self.PROCESSING_INTERIOR_AND_BOUNDARY:
+            mask = inference_reconstructed_base.get_instance_mask(class_probas_torch, boundary_threshold, background_threshold, boundary_erosion)
+
+        image = inference_reconstructed_base.get_instances_image(mask, instances=compute_instances) # (H, W, 3) numpy RGB image
+
+        # set processed image label
+        self.processed_image_label.setPixmap(PyQt5.QtGui.QPixmap.fromImage(PyQt5.QtGui.QImage(image.data,
+                                    image.shape[1], image.shape[0], image.shape[1] * 3, PyQt5.QtGui.QImage.Format_RGB888)))
+
+
+def load_tile_with_polygons(tile_id:str):
+    # Load the image here
+    image = cv2.imread(os.path.join(config.input_data_path, "train", tile_id + ".tif"))
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+    # Add the polygon annotations if it exists
+    if tile_id in all_polygon_masks:
+        for polygon_mask in all_polygon_masks[tile_id]:
+            # The color depends on the type, default unknown color = blue
+            color = (0, 0, 255)
+            if polygon_mask["type"] == "glomerulus":
+                color = (0, 255, 0)  # green
+            elif polygon_mask["type"] == "blood_vessel":
+                color = (255, 0, 0)  # red
+
+            # Draw the polygon
+            polygon_coordinate_list = polygon_mask["coordinates"][
+                0]  # This is a list of integer 2-tuples, representing the coordinates.
+            for i in range(len(polygon_coordinate_list)):
+                cv2.line(image, polygon_coordinate_list[i],
+                         polygon_coordinate_list[(i + 1) % len(polygon_coordinate_list)], color, 3)
+
+            # Fill the polygon with the color, with 35% opacity
+            overlay = image.copy()
+            cv2.fillPoly(overlay, [np.array(polygon_coordinate_list)], color)
+            image = cv2.addWeighted(overlay, 0.35, image, 0.65, 0)
+    return image
 
 class MainWindow(PyQt5.QtWidgets.QMainWindow):
     def __init__(self):
@@ -166,28 +378,7 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
             # The image is to be displayed in a Qt widget, so it needs to be converted into a QImage first.
 
             # Load the image here
-            image = cv2.imread(os.path.join(config.input_data_path, "train", clicked_data_entry + ".tif"))
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-            # Add the polygon annotations if it exists
-            if clicked_data_entry in all_polygon_masks:
-                for polygon_mask in all_polygon_masks[clicked_data_entry]:
-                    # The color depends on the type, default unknown color = blue
-                    color = (0, 0, 255)
-                    if polygon_mask["type"] == "glomerulus":
-                        color = (0, 255, 0) # green
-                    elif polygon_mask["type"] == "blood_vessel":
-                        color = (255, 0, 0) # red
-
-                    # Draw the polygon
-                    polygon_coordinate_list = polygon_mask["coordinates"][0] # This is a list of integer 2-tuples, representing the coordinates.
-                    for i in range(len(polygon_coordinate_list)):
-                        cv2.line(image, polygon_coordinate_list[i], polygon_coordinate_list[(i + 1) % len(polygon_coordinate_list)], color, 3)
-
-                    # Fill the polygon with the color, with 35% opacity
-                    overlay = image.copy()
-                    cv2.fillPoly(overlay, [np.array(polygon_coordinate_list)], color)
-                    image = cv2.addWeighted(overlay, 0.35, image, 0.65, 0)
+            image = load_tile_with_polygons(clicked_data_entry)
 
             widget = PyQt5.QtWidgets.QWidget()
             layout = PyQt5.QtWidgets.QVBoxLayout()
@@ -199,7 +390,7 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
 
             if model_data_manager.dataset_exists(alt_dataset):
                 data_loader = model_data_manager.get_dataset_dataloader(alt_dataset)
-                image_transformed = np.array(data_loader.get_image_data(clicked_data_entry))
+                image_transformed = np.array(data_loader.get_image_data(clicked_data_entry)).astype(dtype=np.uint8)
 
                 if image_transformed.shape[2] == 1:
                     image_transformed = np.repeat(image_transformed, 3, axis=2)
@@ -227,7 +418,7 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
                             traceback.print_exc()
                     elif model_data_manager.dataset_exists(segmentation_dataset):
                         data_loader = model_data_manager.get_dataset_dataloader(segmentation_dataset)
-                        segmentation_mask = np.array(data_loader.get_image_data(clicked_data_entry))
+                        segmentation_mask = np.array(data_loader.get_image_data(clicked_data_entry)).astype(dtype=np.uint8)
                         data_loader.close()
                         del data_loader
 
@@ -281,41 +472,33 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
         return label
 
     def custom_algorithm_button_clicked(self):
+        segmentation_dataset = str(self.comparison_segmentation_dropdown.currentText())
+        if segmentation_dataset == "None":
+            dialog = PyQt5.QtWidgets.QMessageBox(self)
+            dialog.setWindowTitle("Error")
+            dialog.setText("You must select a segmentation dataset containing the probabilities")
+            dialog.setIcon(PyQt5.QtWidgets.QMessageBox.Critical)
+            dialog.exec_()
+            return
+        if not model_data_manager.dataset_exists(segmentation_dataset):
+            dialog = PyQt5.QtWidgets.QMessageBox(self)
+            dialog.setWindowTitle("Error")
+            dialog.setText("The segmentation dataset you selected does not exist")
+            dialog.setIcon(PyQt5.QtWidgets.QMessageBox.Critical)
+            dialog.exec_()
+            return
+
         current_tab_title = str(self.tabbed_interface.tabText(self.tabbed_interface.currentIndex()))
-
         # Load the image here
-        image = cv2.imread(os.path.join(config.input_data_path, "train", current_tab_title + ".tif"))
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = load_tile_with_polygons(current_tab_title)
+        data_loader = model_data_manager.get_dataset_dataloader(segmentation_dataset)
+        probas = np.array(data_loader.get_image_data(current_tab_title))
+        data_loader.close()
+        del data_loader
 
-        image2 = image.copy()
-
-        """segmentation_dataset = str(self.comparison_segmentation_dropdown.currentText())
-        if segmentation_dataset != "None" and model_data_manager.dataset_exists(segmentation_dataset):
-            data_loader = model_data_manager.get_dataset_dataloader(segmentation_dataset)
-            segmentation_mask = np.array(data_loader.get_image_data(current_tab_title))
-            data_loader.close()
-            del data_loader
-
-            image2 = segmentation_mask"""
-
-        image2 = self.custom_image_transform(image2)
-
-        # Display both image and image2 in a new popup window belonging to the main window, with QDialong. The main window is blocked until the popup window is closed.
-
-        popup_window = PyQt5.QtWidgets.QDialog(self)
-        popup_window.setWindowTitle("Custom Algorithm Result")
-        popup_window.resize(800, 600)
-
-        layout = PyQt5.QtWidgets.QVBoxLayout()
-        popup_window.setLayout(layout)
-
-        label = self.create_label_from_image(image, popup_window)
-        label2 = self.create_label_from_image(image2, popup_window)
-
-        layout.addWidget(label)
-        layout.addWidget(label2)
-
-        popup_window.exec_()
+        # create instance segmentation popup
+        popup = InstanceSegmentationPopup(image, probas, self)
+        popup.exec_()
 
     def apply_random_shear(self, image, displacement_field, xory="x"):
         x = np.random.randint(low=0, high=image.shape[2])
