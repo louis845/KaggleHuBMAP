@@ -64,7 +64,7 @@ def separated_focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_h
     with torch.no_grad():
         ground_truth_other = torch.stack([ground_truth_one_hot[:, 0, :, :] + ground_truth_one_hot[:, 1, :, :], ground_truth_one_hot[:, 2, :, :]], dim=1)
         if args.use_heavy_boundary_in_separated_loss:
-            non_backgroundness = (1 - ground_truth_one_hot[:, 0, :, :]) * 4.75 + 0.25
+            non_backgroundness = (1 - ground_truth_one_hot[:, 0, :, :]) * 5.75 + 0.25
 
     binary_ce = torch.nn.functional.binary_cross_entropy_with_logits(result[:, 0, :, :], ground_truth_one_hot[:, 0, :, :], reduction="none", pos_weight=(1 / class_weights))
     cross_entropy_boundary = torch.nn.functional.cross_entropy(result[:, 1:, :, :], ground_truth_other, reduction="none", weight=class_weights_composite)
