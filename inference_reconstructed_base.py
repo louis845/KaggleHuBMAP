@@ -11,6 +11,8 @@ import torch
 
 data_information = pd.read_csv(os.path.join(config.input_data_path, "tile_meta.csv"), index_col=0)
 
+stain_loaded = False
+
 def load_single_image(tile_id) -> np.ndarray:
     if os.path.isfile(os.path.join(config.input_data_path, "train", "{}.tif".format(tile_id))):
         test_or_train = "train"
@@ -23,7 +25,7 @@ def load_single_image(tile_id) -> np.ndarray:
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     return image
 
-def load_image(tile_id, image_size=768) -> (np.ndarray, np.ndarray):
+def load_image(tile_id, image_size=768, stain_normalize=False) -> (np.ndarray, np.ndarray):
     image = np.zeros(shape=(image_size, image_size, 3), dtype=np.uint8)
     region_mask = np.zeros(shape=(image_size, image_size), dtype=bool)
     # the 512x512 center of the image is the original image
@@ -67,13 +69,19 @@ def load_image(tile_id, image_size=768) -> (np.ndarray, np.ndarray):
         image[rel_y - (y - diff):rel_y - (y - diff) + rel_height, rel_x - (x - diff):rel_x - (x - diff) + rel_width, :] = rel_image
         region_mask[rel_y - (y - diff):rel_y - (y - diff) + rel_height, rel_x - (x - diff):rel_x - (x - diff) + rel_width] = True
 
+    if stain_normalize:
+        global stain_loaded
+        import StainNet
+        stain_loaded = True
+        image = StainNet.stain_normalize_image(image, device=torch.device("cpu")) * np.expand_dims(region_mask, -1)
+
     return image, region_mask
 
 def combine_image_and_region(image, region_mask) -> np.ndarray:
     return np.concatenate([image, np.expand_dims(region_mask, axis=-1)], axis=-1)
 
-def load_combined(tile_id, image_size=768) -> torch.Tensor:
-    image, region_mask = load_image(tile_id, image_size)
+def load_combined(tile_id, image_size=768, stain_normalize=False) -> torch.Tensor:
+    image, region_mask = load_image(tile_id, image_size, stain_normalize=stain_normalize)
     return torch.tensor(combine_image_and_region(image, region_mask), dtype=torch.float32, device=config.device)\
         .permute(2, 0, 1)
 
@@ -112,8 +120,8 @@ class Composite1024To512ImageInference:
         self.logits_obtained = False
         self.logits = {}
 
-    def load_image(self, tile_id: str) -> None:
-        self.image, self.region_mask = load_image(tile_id, image_size=1024)
+    def load_image(self, tile_id: str, stain_normalize=False) -> None:
+        self.image, self.region_mask = load_image(tile_id, image_size=1024, stain_normalize=stain_normalize)
         self.image_loaded = True
         self.tile_id = tile_id
         initialize_region_cache()

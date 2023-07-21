@@ -17,6 +17,7 @@ import obtain_reconstructed_binary_segmentation
 import config
 
 folder = "reconstructed_wsi_data"
+stainnet_folder = "stainnet_wsi" # folder containing the WSI images transformed by StainNet. See the helper.py script inside StainNet folder.
 
 def obtain_relative_bounding_box(mask: np.ndarray):
     assert mask.ndim == 2, "Mask must be 2D"
@@ -378,7 +379,7 @@ class Region:
 
 class WSIImage:
     """Wrapper class for storing all WSI images."""
-    def __init__(self):
+    def __init__(self, load_stainnet_images=False):
         if not os.path.isfile(os.path.join(folder, "wsi_images.hdf5")):
             print()
             print("WSI images not found. Generating...")
@@ -390,8 +391,10 @@ class WSIImage:
                         del wsi_image_np
 
             print("Successfully generated WSI images.")
-
-        self.wsi_images = h5py.File(os.path.join(folder, "wsi_images.hdf5"), "r")
+        if load_stainnet_images:
+            self.wsi_images = h5py.File(os.path.join(stainnet_folder, "wsi_images.hdf5"), "r")
+        else:
+            self.wsi_images = h5py.File(os.path.join(folder, "wsi_images.hdf5"), "r")
 
     def get_whole_image(self, wsi_id):
         return np.array(self.wsi_images["wsi_{}".format(wsi_id)], dtype=np.uint8)
@@ -403,14 +406,25 @@ class WSIImage:
         self.wsi_images.close()
 
 
-images = WSIImage()
+images = WSIImage(False)
+stainnet_images = None
+def get_stainnet_WSIImage() -> WSIImage:
+    assert os.path.isfile(os.path.join(stainnet_folder, "wsi_images.hdf5")), "StainNet WSI images not found. Please generate it using helpers.py inside StainNet folder."
+    global stainnet_images
+    if stainnet_images is None:
+        stainnet_images = WSIImage(True)
+    return stainnet_images
+
+
 class ImageSampler:
-    def __init__(self, wsi_region: Region, sampling_region: Region, polygon_masks: obtain_reconstructed_binary_segmentation.WSIMask, image_width: int, device=config.device):
+    def __init__(self, wsi_region: Region, sampling_region: Region, polygon_masks: obtain_reconstructed_binary_segmentation.WSIMask, image_width: int, device=config.device, images_loader:WSIImage=images):
         """
         :param wsi_region: The region representing the available image pixels in the WSI.
         :param sampling_region: The region representing the available ground truth mask pixels in the WSI. To enable train/test split.
         :param polygon_masks: The WSIMask object (from obtain_reconstructed_binary_segmentation) containing the polygon masks.
         :param image_width: The width of the image to be sampled.
+        :param device: The device to use for sampling.
+        :param images_loader: The WSIImage object (from wsi_images) containing the WSI images.
         """
         assert sampling_region.interior_pixels_list is not None, "The interior pixels of the sampling region must be generated first! Use generate_interior_pixels()"
         assert wsi_region.region is not None, "The region mask of the WSI region must be generated first! Use generate_region()"
@@ -425,6 +439,7 @@ class ImageSampler:
 
         self.prediction_radius = self.sampling_region.interior_box_width // 2
         self.device = device
+        self.images_loader = images_loader
 
     def sample_interior_pixels(self, num_samples):
         return self.sampling_region.sample_interior_pixels(num_samples)
@@ -450,7 +465,7 @@ class ImageSampler:
         y2_int = min(self.wsi_region.region.shape[0], y2)
 
         with torch.no_grad():
-            image = images.get_image(self.wsi_region.wsi_id, x1_int, x2_int, y1_int, y2_int).astype(dtype=np.float32).transpose([2, 0, 1]) # float32, (0-2)
+            image = self.images_loader.get_image(self.wsi_region.wsi_id, x1_int, x2_int, y1_int, y2_int).astype(dtype=np.float32).transpose([2, 0, 1]) # float32, (0-2)
             region_mask = self.wsi_region.get_region_mask(x1_int, x2_int, y1_int, y2_int).astype(dtype=np.float32) # bool (3)
             ground_truth = self.polygons.obtain_blood_vessel_mask(x1_int, x2_int, y1_int, y2_int) # long (4)
             gt1 = self.sampling_region.get_region_mask(x1_int, x2_int, y1_int, y2_int)
@@ -760,7 +775,7 @@ def get_subdata_mask(subdata_name: str):
         masks[wsi_id].load_from_hdf5()
     return masks
 
-def get_image_sampler(subdata_name: str, image_width: int, device=config.device, use_async=None) -> MultipleImageSampler:
+def get_image_sampler(subdata_name: str, image_width: int, device=config.device, use_async=None, use_stainnet=False) -> MultipleImageSampler:
     """
     If use_async is not None, it should be a dict to store the default h5py files.
     """
@@ -771,9 +786,14 @@ def get_image_sampler(subdata_name: str, image_width: int, device=config.device,
     entries = model_data_manager.get_subdata_entry_list(subdata_name)
     samplers = {}
 
+    if use_stainnet:
+        assert os.path.isfile("stainnet_wsi/wsi_images.hdf5"), "StainNet WSI images not found. Please generate it using helpers.py inside StainNet folder."
+        loader = get_stainnet_WSIImage()
+    else:
+        loader = images
     for wsi_id in model_data_manager.data_information["source_wsi"].loc[entries].unique():
         sampler = ImageSampler(get_wsi_region_mask(wsi_id, use_async), mask[wsi_id],
-                               obtain_reconstructed_binary_segmentation.get_default_WSI_mask(wsi_id, use_async), image_width, device=device)
+                               obtain_reconstructed_binary_segmentation.get_default_WSI_mask(wsi_id, use_async), image_width, device=device, images_loader=loader)
         samplers[wsi_id] = sampler
 
     return MultipleImageSampler(samplers, device=device)

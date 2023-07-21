@@ -28,8 +28,8 @@ def show_tensor_RGB(tensor):
     plt.imshow(tensor_np)
     plt.show()
 
-def check_tile_id(tile_id):
-    combined_torch = inference_reconstructed_base.load_combined(tile_id)
+def check_tile_id(tile_id, stainnet:bool):
+    combined_torch = inference_reconstructed_base.load_combined(tile_id, stain_normalize=stainnet)
     # if type of combined sampler is MultipleImageSampler
     if isinstance(combined_sampler, image_wsi_sampling.MultipleImageSampler):
         combined_torch2, gt, gt_mask = combined_sampler.obtain_random_image_from_tile(tile_id, augmentation=False,
@@ -45,15 +45,19 @@ def check_tile_id(tile_id):
     blood_vessel_gt = loader.get_segmentation_mask(tile_id, "blood_vessel")
 
     imgref = inference_reconstructed_base.Composite1024To512ImageInference()
-    imgref.load_image(tile_id)
+    imgref.load_image(tile_id, stain_normalize=stainnet)
     combined_torch3 = imgref.get_combined_image(inference_reconstructed_base.Composite1024To512ImageInference.CENTER)
 
     assert combined_torch.shape == combined_torch2.shape
-    assert torch.allclose(combined_torch, combined_torch2)
-    assert torch.allclose(combined_torch, combined_torch3)
+    if stainnet:
+        assert torch.abs(combined_torch - combined_torch2).max().item() <= 1.0
+        assert torch.abs(combined_torch - combined_torch3).max().item() <= 1.0
+    else:
+        assert torch.allclose(combined_torch, combined_torch2)
+        assert torch.allclose(combined_torch, combined_torch3)
 
-def display_tile(tile_id):
-    combined_torch = inference_reconstructed_base.load_combined(tile_id)
+def display_tile(tile_id, stainnet:bool):
+    combined_torch = inference_reconstructed_base.load_combined(tile_id, stain_normalize=stainnet)
     if isinstance(combined_sampler, image_wsi_sampling.MultipleImageSampler):
         combined_torch2, gt, gt_mask = combined_sampler.obtain_random_image_from_tile(tile_id, augmentation=False,
                                                                                       random_location=False)
@@ -75,6 +79,9 @@ def display_tile(tile_id):
     show_tensor(gt * 128)
     show_tensor(gt_mask * 255)
 
+    print("Diff: ", torch.max(torch.abs(combined_torch[3, ...] - combined_torch2[3, ...])))
+    print("Diff: ", torch.max(torch.abs(combined_torch[:3, ...] - combined_torch2[:3, ...])))
+
     plt.imshow(blood_vessel_gt)
     plt.show()
 
@@ -84,14 +91,17 @@ if __name__ == "__main__":
     args = parser.parse_args()
     dataset = args.dataset
 
-    combined_sampler = image_wsi_sampling.get_image_sampler(dataset, image_width=768)
-    """combined_sampler = image_wsi_sampling_async.get_image_sampler(dataset, image_width=768, sampling_type="batch_random_image", buffer_max_size=100)
+    stainnormalize = True
+
+    #combined_sampler = image_wsi_sampling.get_image_sampler(dataset, image_width=768, use_stainnet=stainnormalize)
+    combined_sampler = image_wsi_sampling_async.get_image_sampler(dataset, image_width=768, sampling_type="batch_random_image", buffer_max_size=100, use_stainnet=stainnormalize)
     for tile_id in model_data_manager.get_subdata_entry_list(dataset):
-        combined_sampler.request_load_sample([tile_id], augmentation=False, random_location=False)"""
+        combined_sampler.request_load_sample([tile_id], augmentation=False, random_location=False)
 
     loader = model_data_manager.get_dataset_dataloader(None)
+
     for tile_id in tqdm.tqdm(model_data_manager.get_subdata_entry_list(dataset)):
-        check_tile_id(tile_id)
+        check_tile_id(tile_id, stainnormalize)
 
     if isinstance(combined_sampler, image_wsi_sampling_async.MultipleImageSamplerAsync):
         combined_sampler.terminate()
