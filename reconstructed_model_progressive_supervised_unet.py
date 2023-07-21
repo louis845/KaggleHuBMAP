@@ -64,7 +64,7 @@ def separated_focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_h
     with torch.no_grad():
         ground_truth_other = torch.stack([ground_truth_one_hot[:, 0, :, :] + ground_truth_one_hot[:, 1, :, :], ground_truth_one_hot[:, 2, :, :]], dim=1)
         if args.use_heavy_boundary_in_separated_loss:
-            non_backgroundness = (1 - ground_truth_one_hot[:, 0, :, :]) * 3 + 1
+            non_backgroundness = (1 - ground_truth_one_hot[:, 0, :, :]) * 4.75 + 0.25
 
     binary_ce = torch.nn.functional.binary_cross_entropy_with_logits(result[:, 0, :, :], ground_truth_one_hot[:, 0, :, :], reduction="none", pos_weight=(1 / class_weights))
     cross_entropy_boundary = torch.nn.functional.cross_entropy(result[:, 1:, :, :], ground_truth_other, reduction="none", weight=class_weights_composite)
@@ -710,6 +710,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_focal_loss", action="store_true", help="Whether to use focal loss. Default False.")
     parser.add_argument("--use_composite_focal_loss", action="store_true", help="Whether to use composite focal loss. Default False.")
     parser.add_argument("--use_separated_focal_loss", action="store_true", help="Whether to use separated focal loss. Default False.")
+    parser.add_argument("--use_residual_atrous_conv", action="store_true", help="Whether to use residual atrous convolutions. Default False.")
     parser.add_argument("--use_heavy_boundary_in_separated_loss", action="store_true", help="Whether to use heavy boundary in separated focal loss. Default False. Must be used with --use_separated_focal_loss.")
     parser.add_argument("--use_amp", action="store_true", help="Whether to use automatic mixed precision. Default False.")
     parser.add_argument("--use_squeeze_excitation", action="store_true", help="Whether to use squeeze and excitation. Default False.")
@@ -785,6 +786,7 @@ if __name__ == "__main__":
     use_focal_loss = args.use_focal_loss
     use_composite_focal_loss = args.use_composite_focal_loss
     use_separated_focal_loss = args.use_separated_focal_loss
+    use_residual_atrous_conv = args.use_residual_atrous_conv
     use_suppressed_deepsupervision = args.use_suppressed_deepsupervision
     test_only = args.test_only
 
@@ -792,6 +794,7 @@ if __name__ == "__main__":
     assert not (use_focal_loss and use_separated_focal_loss), "You cannot use both focal loss and separated focal loss."
     assert not (use_composite_focal_loss and use_separated_focal_loss), "You cannot use both composite focal loss and separated focal loss."
     assert (not use_separated_focal_loss) or args.use_atrous_conv, "You can only use separated focal loss with atrous convolutions."
+    assert (not use_residual_atrous_conv) or use_separated_focal_loss, "You can only use residual atrous convolutions with separated focal loss."
     if test_only:
         num_epochs = 1
         num_extra_steps = 0
@@ -808,7 +811,7 @@ if __name__ == "__main__":
         model = model_unet_attention.UNetClassifier(num_classes=2, num_deep_multiclasses=args.pyramid_height - 1,
                                                     hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                     use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
-                                                    in_channels=4, use_atrous_conv=args.use_atrous_conv, atrous_outconv_split=use_separated_focal_loss,
+                                                    in_channels=4, use_atrous_conv=args.use_atrous_conv, atrous_outconv_split=use_separated_focal_loss, atrous_outconv_residual=use_residual_atrous_conv,
                                                     deep_supervision=True, squeeze_excitation=args.use_squeeze_excitation,
                                                     bottleneck_expansion=args.bottleneck_expansion,
                                                     res_conv_blocks=blocks, use_initial_conv=args.use_initial_conv).to(device=config.device)
@@ -816,7 +819,7 @@ if __name__ == "__main__":
         model = model_unet_base.UNetClassifier(num_classes=2, num_deep_multiclasses=args.pyramid_height - 1,
                                                 hidden_channels=args.hidden_channels, use_batch_norm=args.use_batch_norm,
                                                use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height, deep_supervision=True,
-                                               in_channels=4, use_atrous_conv=args.use_atrous_conv, atrous_outconv_split=use_separated_focal_loss,
+                                               in_channels=4, use_atrous_conv=args.use_atrous_conv, atrous_outconv_split=use_separated_focal_loss, atrous_outconv_residual=use_residual_atrous_conv,
                                                squeeze_excitation=args.use_squeeze_excitation, bottleneck_expansion=args.bottleneck_expansion,
                                                res_conv_blocks=blocks, use_initial_conv=args.use_initial_conv).to(device=config.device)
 
@@ -868,6 +871,7 @@ if __name__ == "__main__":
         "use_focal_loss": args.use_focal_loss,
         "use_composite_focal_loss": args.use_composite_focal_loss,
         "use_separated_focal_loss": args.use_separated_focal_loss,
+        "use_residual_atrous_conv": use_residual_atrous_conv,
         "use_heavy_boundary_in_separated_loss": args.use_heavy_boundary_in_separated_loss,
         "use_amp": args.use_amp,
         "use_squeeze_excitation": args.use_squeeze_excitation,
