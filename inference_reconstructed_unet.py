@@ -233,7 +233,7 @@ if __name__ == "__main__":
                 for k in range(computed, compute_end):
                     output_data_writer.write_image_data(subdata_entries[k],
                                                         cv2.cvtColor(pred_mask_image[k - computed, :, :, :], cv2.COLOR_HSV2RGB))
-                    np.save(os.path.join(output_data_writer.data_folder, "{}_result".format(subdata_entries[k])), result[k - computed, :, :, :].detach().cpu().numpy())
+                    #np.save(os.path.join(output_data_writer.data_folder, "{}_result".format(subdata_entries[k])), result[k - computed, :, :, :].detach().cpu().numpy())
 
                 if args.prediction_type != "levels":
                     # Now we load the ground truth masks from the input data loader and compute the metrics
