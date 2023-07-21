@@ -40,14 +40,19 @@ class AtrousConv(torch.nn.Module):
 
         self.atrous_convs = torch.nn.ModuleList()
         for k in range(0, num_atrous_blocks):
-            self.atrous_convs.append(torch.nn.Conv2d(out_channels, 2 * out_channels // num_atrous_blocks, 3, bias=False, padding="same", padding_mode="replicate", dilation=(1 + 3 * k)))
-
+            if residual:
+                self.atrous_convs.append(torch.nn.Conv2d(out_channels, out_channels // num_atrous_blocks, 3, bias=False, padding="same", padding_mode="replicate", dilation=(1 + 3 * k)))
+            else:
+                self.atrous_convs.append(torch.nn.Conv2d(out_channels, 2 * out_channels // num_atrous_blocks, 3, bias=False, padding="same", padding_mode="replicate", dilation=(1 + 3 * k)))
         if use_batch_norm:
-            self.batchnorm_atrous = torch.nn.GroupNorm(num_groups=2 * out_channels, num_channels=2 * out_channels) # instance norm
+            if residual:
+                self.batchnorm_atrous = torch.nn.GroupNorm(num_groups=out_channels, num_channels=out_channels)  # instance norm
+            else:
+                self.batchnorm_atrous = torch.nn.GroupNorm(num_groups=2 * out_channels, num_channels=2 * out_channels) # instance norm
         self.elu_atrous = torch.nn.ReLU(inplace=True)
 
         if residual:
-            self.conv_residual = torch.nn.Conv2d(2 * out_channels, out_channels, 3, bias=False, padding="same", padding_mode="replicate")
+            self.conv_residual = torch.nn.Conv2d(out_channels, out_channels, 3, bias=False, padding="same", padding_mode="replicate")
             if use_batch_norm:
                 self.batchnorm_residual = torch.nn.GroupNorm(num_groups=out_channels // 4, num_channels=out_channels) # instance norm
             self.elu_residual = torch.nn.ReLU(inplace=True)
