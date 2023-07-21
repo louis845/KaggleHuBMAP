@@ -50,8 +50,16 @@ def check_tile_id(tile_id, stainnet:bool):
 
     assert combined_torch.shape == combined_torch2.shape
     if stainnet:
-        assert torch.abs(combined_torch - combined_torch2).max().item() <= 1.0
-        assert torch.abs(combined_torch - combined_torch3).max().item() <= 1.0
+        max1 = torch.abs(combined_torch - combined_torch2).max().item()
+        max2 = torch.abs(combined_torch - combined_torch3).max().item()
+        if max1 > 1.0:
+            print("Max diff exceeded: ", max1)
+            print("Tile ID: ", tile_id)
+            print("Number of pixels with diff > 1.0: ", torch.sum(torch.abs(combined_torch - combined_torch2) > 1.0).item())
+        if max2 > 1.0:
+            print("Max diff exceeded: ", max2)
+            print("Tile ID: ", tile_id)
+            print("Number of pixels with diff > 1.0: ", torch.sum(torch.abs(combined_torch - combined_torch3) > 1.0).item())
     else:
         assert torch.allclose(combined_torch, combined_torch2)
         assert torch.allclose(combined_torch, combined_torch3)

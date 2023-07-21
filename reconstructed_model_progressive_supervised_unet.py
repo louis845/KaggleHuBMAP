@@ -724,6 +724,7 @@ if __name__ == "__main__":
     parser.add_argument("--deep_exponent_base", type=float, default=2.0, help="The base of the exponent for the deep supervision loss. Default 2.0.")
     parser.add_argument("--mixup", type=float, default=0.0, help="The alpha value of mixup. Default 0, meaning no mixup.")
     parser.add_argument("--image_size", type=int, default=1024, help="The size of the images to use. Default 1024.")
+    parser.add_argument("--image_stain_norm", action="store_true", help="Whether to stain normalize the images. Default False.")
     parser.add_argument("--use_async_sampling", type=int, default=0, help="Whether to use async sampling. Default 0, meaning no async sampling. The values represent the max buffer of the processes. If -1, the max buffer is unlimited.")
     parser.add_argument("--num_extra_steps", type=int, default=0, help="Extra steps of gradient descent before the usual step in an epoch. Default 0.")
     parser.add_argument("--extra_training_subdata", type=str, default=None, help="Additional training subdata to mix with the main training data. Default None.")
@@ -885,6 +886,7 @@ if __name__ == "__main__":
         "deep_exponent_base": deep_exponent_base,
         "mixup": mixup,
         "image_size": args.image_size,
+        "image_stain_norm": args.image_stain_norm,
         "use_async_sampling": use_async_sampling,
         "num_extra_steps": num_extra_steps,
         "extra_training_subdata": args.extra_training_subdata,
@@ -961,22 +963,22 @@ if __name__ == "__main__":
     # Initialize image sampler here
     if use_async_sampling == 0:
         if args.extra_training_subdata is not None:
-            train_sampler = image_wsi_sampling.get_image_sampler(args.extra_training_subdata, image_width=image_size)
+            train_sampler = image_wsi_sampling.get_image_sampler(args.extra_training_subdata, image_width=image_size, use_stainnet=args.image_stain_norm)
         else:
-            train_sampler = image_wsi_sampling.get_image_sampler(train_subdata, image_width=image_size)
-        val_sampler = image_wsi_sampling.get_image_sampler(val_subdata, image_width=image_size)
+            train_sampler = image_wsi_sampling.get_image_sampler(train_subdata, image_width=image_size, use_stainnet=args.image_stain_norm)
+        val_sampler = image_wsi_sampling.get_image_sampler(val_subdata, image_width=image_size, use_stainnet=args.image_stain_norm)
     else:
         import image_wsi_sampling_async
         torch.multiprocessing.set_start_method("spawn")
 
         if args.extra_training_subdata is not None:
             train_sampler = image_wsi_sampling_async.get_image_sampler(args.extra_training_subdata, image_width=image_size, batch_size=batch_size, sampling_type="batch_random_image_mixup" if mixup > 0.0 else "batch_random_image",
-                                                                deep_supervision_outputs=pyr_height - 1, buffer_max_size=use_async_sampling)
+                                                                deep_supervision_outputs=pyr_height - 1, buffer_max_size=use_async_sampling, use_stainnet=args.image_stain_norm)
         else:
             train_sampler = image_wsi_sampling_async.get_image_sampler(train_subdata, image_width=image_size, batch_size=batch_size, sampling_type="batch_random_image_mixup" if mixup > 0.0 else "batch_random_image",
-                                                                deep_supervision_outputs=pyr_height - 1, buffer_max_size=use_async_sampling)
+                                                                deep_supervision_outputs=pyr_height - 1, buffer_max_size=use_async_sampling, use_stainnet=args.image_stain_norm)
         val_sampler = image_wsi_sampling_async.get_image_sampler(val_subdata, image_width=image_size, batch_size=batch_size, sampling_type="batch_random_image", deep_supervision_outputs=pyr_height - 1,
-                                                                 buffer_max_size=use_async_sampling)
+                                                                 buffer_max_size=use_async_sampling, use_stainnet=args.image_stain_norm)
 
         def async_request_images_train():
             if mixup > 0.0:
