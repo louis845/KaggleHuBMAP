@@ -15,10 +15,14 @@ def subprocess_run(image_loading_pipe_recv, subdata_name: str, image_width: int,
                    shared_image_cat: torch.Tensor, shared_ground_truth: torch.Tensor, shared_ground_truth_mask: torch.Tensor,
                    image_access_lock: torch.multiprocessing.Lock, image_available_lock: torch.multiprocessing.Lock,
                    image_required_flag: torch.multiprocessing.Value, running: torch.multiprocessing.Value,
-                   sampling_type:str="random_image", use_stainnet:bool=False):
+                   sampling_type:str="random_image", use_stainnet:bool=False, async_gpu:bool=False):
     try:
         print("Subprocess starting...")
-        sampler = image_wsi_sampling.get_image_sampler(subdata_name, image_width, device="cpu", use_stainnet=use_stainnet)
+        if async_gpu:
+            device = config.device
+        else:
+            device = "cpu"
+        sampler = image_wsi_sampling.get_image_sampler(subdata_name, image_width, device=device, use_stainnet=use_stainnet)
 
         buffered_outputs = []
         pending_images = []
@@ -53,18 +57,20 @@ def subprocess_run(image_loading_pipe_recv, subdata_name: str, image_width: int,
 
                 if sampling_type == "random_image":
                     image_cat, ground_truth, ground_truth_mask = last_result
-                    shared_image_cat.copy_(image_cat)
-                    shared_ground_truth.copy_(ground_truth)
-                    shared_ground_truth_mask.copy_(ground_truth_mask)
+                    shared_image_cat.copy_(image_cat, non_blocking=True)
+                    shared_ground_truth.copy_(ground_truth, non_blocking=True)
+                    shared_ground_truth_mask.copy_(ground_truth_mask, non_blocking=True)
+                    torch.cuda.synchronize()
 
                     del image_cat, ground_truth, ground_truth_mask
                     gc.collect()
                 else:
                     result, length = last_result
                     image_cat_batch, image_ground_truth_batch, image_ground_truth_mask_batch = result
-                    shared_image_cat[:length, ...].copy_(image_cat_batch)
-                    shared_ground_truth[:length, ...].copy_(image_ground_truth_batch)
-                    shared_ground_truth_mask[:length, ...].copy_(image_ground_truth_mask_batch)
+                    shared_image_cat[:length, ...].copy_(image_cat_batch, non_blocking=True)
+                    shared_ground_truth[:length, ...].copy_(image_ground_truth_batch, non_blocking=True)
+                    shared_ground_truth_mask[:length, ...].copy_(image_ground_truth_mask_batch, non_blocking=True)
+                    torch.cuda.synchronize()
 
                     del result, length, image_cat_batch, image_ground_truth_batch, image_ground_truth_mask_batch
                     gc.collect()
@@ -87,10 +93,14 @@ def subprocess_run_deep(image_loading_pipe_recv, subdata_name: str, image_width:
                     shared_ground_truth_deep: list[torch.Tensor], shared_ground_truth_mask_deep: list[torch.Tensor], deep_supervision_outputs: int,
                    image_access_lock: torch.multiprocessing.Lock, image_available_lock: torch.multiprocessing.Lock,
                    image_required_flag: torch.multiprocessing.Value, running: torch.multiprocessing.Value,
-                   sampling_type:str="batch_random_image", use_stainnet:bool=False):
+                   sampling_type:str="batch_random_image", use_stainnet:bool=False, async_gpu:bool=False):
     try:
         print("Subprocess starting...")
-        sampler = image_wsi_sampling.get_image_sampler(subdata_name, image_width, device="cpu", use_stainnet=use_stainnet)
+        if async_gpu:
+            device = config.device
+        else:
+            device = "cpu"
+        sampler = image_wsi_sampling.get_image_sampler(subdata_name, image_width, device=device, use_stainnet=use_stainnet)
 
         buffered_outputs = []
         pending_images = []
@@ -125,13 +135,14 @@ def subprocess_run_deep(image_loading_pipe_recv, subdata_name: str, image_width:
 
                 result, length = last_result
                 image_cat_batch, image_ground_truth_batch, image_ground_truth_mask_batch, image_ground_truth_deep, image_ground_truth_mask_deep = result
-                shared_image_cat[:length, ...].copy_(image_cat_batch)
-                shared_ground_truth[:length, ...].copy_(image_ground_truth_batch)
-                shared_ground_truth_mask[:length, ...].copy_(image_ground_truth_mask_batch)
+                shared_image_cat[:length, ...].copy_(image_cat_batch, non_blocking=True)
+                shared_ground_truth[:length, ...].copy_(image_ground_truth_batch, non_blocking=True)
+                shared_ground_truth_mask[:length, ...].copy_(image_ground_truth_mask_batch, non_blocking=True)
 
                 for l in range(deep_supervision_outputs):
-                    shared_ground_truth_deep[l][:length, ...].copy_(image_ground_truth_deep[l])
-                    shared_ground_truth_mask_deep[l][:length, ...].copy_(image_ground_truth_mask_deep[l])
+                    shared_ground_truth_deep[l][:length, ...].copy_(image_ground_truth_deep[l], non_blocking=True)
+                    shared_ground_truth_mask_deep[l][:length, ...].copy_(image_ground_truth_mask_deep[l], non_blocking=True)
+                torch.cuda.synchronize()
 
                 del result, length, image_cat_batch, image_ground_truth_batch, image_ground_truth_mask_batch, image_ground_truth_deep[:], image_ground_truth_mask_deep[:]
                 gc.collect()
@@ -152,7 +163,7 @@ def subprocess_run_deep(image_loading_pipe_recv, subdata_name: str, image_width:
 
 class MultipleImageSamplerAsync:
 
-    def __init__(self, subdata_name:str, image_width: int, batch_size: int=1, sampling_type:str="random_image", deep_supervision_outputs=0, buffer_max_size=-1, use_stainnet:bool=False):
+    def __init__(self, subdata_name:str, image_width: int, batch_size: int=1, sampling_type:str="random_image", deep_supervision_outputs=0, buffer_max_size=-1, use_stainnet:bool=False, async_gpu=False):
         """
         The sampling types are either "random_image", "batch_random_image", "batch_random_image_mixup".
 
@@ -163,6 +174,7 @@ class MultipleImageSamplerAsync:
         :param deep_supervision_outputs: The number of deep supervision outputs to use.
         :param buffer_max_size: The maximum number of images to buffer. If -1, then the buffer size is unlimited.
         :param use_stainnet: Whether to use stainnet to normalize the images.
+        :param async_gpu: Whether to use GPU acceleration for the async process. Default is False.
         """
         assert sampling_type in ["random_image", "batch_random_image", "batch_random_image_mixup"], "Sampling type must be either random_image, batch_random_image or batch_random_image_mixup"
         assert deep_supervision_outputs == 0 or sampling_type != "random_image", "Deep supervision outputs can only be used with batch sampling types"
@@ -215,12 +227,12 @@ class MultipleImageSamplerAsync:
                                                                self.shared_image_cat, self.shared_ground_truth, self.shared_ground_truth_mask,
                                                                self.shared_ground_truth_deep, self.shared_ground_truth_mask_deep, deep_supervision_outputs,
                                                                self.image_access_lock, self.image_available_lock,
-                                                               self.image_required_flag, self.running, sampling_type, use_stainnet])
+                                                               self.image_required_flag, self.running, sampling_type, use_stainnet, async_gpu])
         else:
             self.process = torch.multiprocessing.Process(target=subprocess_run, args=[image_loading_pipe_recv, subdata_name, image_width, buffer_max_size,
                                                                                            self.shared_image_cat, self.shared_ground_truth, self.shared_ground_truth_mask,
                                                                                            self.image_access_lock, self.image_available_lock,
-                                                                                           self.image_required_flag, self.running, sampling_type, use_stainnet])
+                                                                                           self.image_required_flag, self.running, sampling_type, use_stainnet, async_gpu])
         self.process.start()
 
     def terminate(self):
@@ -298,10 +310,10 @@ class MultipleImageSamplerAsync:
                 return image, ground_truth, ground_truth_mask, ground_truth_deep, ground_truth_mask_deep
             return image, ground_truth, ground_truth_mask
 
-def get_image_sampler(subdata_name: str, image_width=1024, batch_size: int=1, sampling_type:str="random_image", deep_supervision_outputs=0, buffer_max_size=-1, use_stainnet=False) -> MultipleImageSamplerAsync:
+def get_image_sampler(subdata_name: str, image_width=1024, batch_size: int=1, sampling_type:str="random_image", deep_supervision_outputs=0, buffer_max_size=-1, use_stainnet=False, use_gpu=False) -> MultipleImageSamplerAsync:
     if use_stainnet:
         assert os.path.isfile("stainnet_wsi/wsi_images.hdf5"), "StainNet WSI images not found. Please generate it using helpers.py inside StainNet folder."
-    return MultipleImageSamplerAsync(subdata_name, image_width, batch_size, sampling_type, deep_supervision_outputs, buffer_max_size, use_stainnet=use_stainnet)
+    return MultipleImageSamplerAsync(subdata_name, image_width, batch_size, sampling_type, deep_supervision_outputs, buffer_max_size, use_stainnet=use_stainnet, async_gpu=use_gpu)
 
 def generate_image_example(sampler: MultipleImageSamplerAsync, tile: str, num: int) -> float:
     ctime = time.time()

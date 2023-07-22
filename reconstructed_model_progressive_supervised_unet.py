@@ -726,6 +726,7 @@ if __name__ == "__main__":
     parser.add_argument("--image_size", type=int, default=1024, help="The size of the images to use. Default 1024.")
     parser.add_argument("--image_stain_norm", action="store_true", help="Whether to stain normalize the images. Default False.")
     parser.add_argument("--use_async_sampling", type=int, default=0, help="Whether to use async sampling. Default 0, meaning no async sampling. The values represent the max buffer of the processes. If -1, the max buffer is unlimited.")
+    parser.add_argument("--async_sampling_gpu", action="store_true", help="Whether to use GPU for async sampling. Default False. Ignored if use_async_sampling=0.")
     parser.add_argument("--num_extra_steps", type=int, default=0, help="Extra steps of gradient descent before the usual step in an epoch. Default 0.")
     parser.add_argument("--extra_training_subdata", type=str, default=None, help="Additional training subdata to mix with the main training data. Default None.")
     parser.add_argument("--extra_subdata_ratio", type=float, default=0.2, help="The ratio of the extra subdata to mix with the main training data. Default 0.2. If extra training subdata is not provided, this is ignored.")
@@ -888,6 +889,7 @@ if __name__ == "__main__":
         "image_size": args.image_size,
         "image_stain_norm": args.image_stain_norm,
         "use_async_sampling": use_async_sampling,
+        "async_sampling_gpu": args.async_sampling_gpu,
         "num_extra_steps": num_extra_steps,
         "extra_training_subdata": args.extra_training_subdata,
         "extra_subdata_ratio": args.extra_subdata_ratio,
@@ -962,23 +964,25 @@ if __name__ == "__main__":
 
     # Initialize image sampler here
     if use_async_sampling == 0:
+        print("Using synchronous image sampler")
         if args.extra_training_subdata is not None:
             train_sampler = image_wsi_sampling.get_image_sampler(args.extra_training_subdata, image_width=image_size, use_stainnet=args.image_stain_norm)
         else:
             train_sampler = image_wsi_sampling.get_image_sampler(train_subdata, image_width=image_size, use_stainnet=args.image_stain_norm)
         val_sampler = image_wsi_sampling.get_image_sampler(val_subdata, image_width=image_size, use_stainnet=args.image_stain_norm)
     else:
+        print("Using asynchronous image sampler. GPU: {}".format(args.async_sampling_gpu))
         import image_wsi_sampling_async
         torch.multiprocessing.set_start_method("spawn")
 
         if args.extra_training_subdata is not None:
             train_sampler = image_wsi_sampling_async.get_image_sampler(args.extra_training_subdata, image_width=image_size, batch_size=batch_size, sampling_type="batch_random_image_mixup" if mixup > 0.0 else "batch_random_image",
-                                                                deep_supervision_outputs=pyr_height - 1, buffer_max_size=use_async_sampling, use_stainnet=args.image_stain_norm)
+                                                                deep_supervision_outputs=pyr_height - 1, buffer_max_size=use_async_sampling, use_stainnet=args.image_stain_norm, use_gpu=args.async_sampling_gpu)
         else:
             train_sampler = image_wsi_sampling_async.get_image_sampler(train_subdata, image_width=image_size, batch_size=batch_size, sampling_type="batch_random_image_mixup" if mixup > 0.0 else "batch_random_image",
-                                                                deep_supervision_outputs=pyr_height - 1, buffer_max_size=use_async_sampling, use_stainnet=args.image_stain_norm)
+                                                                deep_supervision_outputs=pyr_height - 1, buffer_max_size=use_async_sampling, use_stainnet=args.image_stain_norm, use_gpu=args.async_sampling_gpu)
         val_sampler = image_wsi_sampling_async.get_image_sampler(val_subdata, image_width=image_size, batch_size=batch_size, sampling_type="batch_random_image", deep_supervision_outputs=pyr_height - 1,
-                                                                 buffer_max_size=use_async_sampling, use_stainnet=args.image_stain_norm)
+                                                                 buffer_max_size=use_async_sampling, use_stainnet=args.image_stain_norm, use_gpu=args.async_sampling_gpu)
 
         def async_request_images_train():
             if mixup > 0.0:
