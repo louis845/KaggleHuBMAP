@@ -56,10 +56,12 @@ def check_tile_id(tile_id, stainnet:bool):
             print("Max diff exceeded: ", max1)
             print("Tile ID: ", tile_id)
             print("Number of pixels with diff > 1.0: ", torch.sum(torch.abs(combined_torch - combined_torch2) > 1.0).item())
+            print("Number of pixels with diff > 2.0: ", torch.sum(torch.abs(combined_torch - combined_torch2) > 2.0).item())
         if max2 > 1.0:
             print("Max diff exceeded: ", max2)
             print("Tile ID: ", tile_id)
             print("Number of pixels with diff > 1.0: ", torch.sum(torch.abs(combined_torch - combined_torch3) > 1.0).item())
+            print("Number of pixels with diff > 2.0: ", torch.sum(torch.abs(combined_torch - combined_torch3) > 2.0).item())
     else:
         assert torch.allclose(combined_torch, combined_torch2)
         assert torch.allclose(combined_torch, combined_torch3)
@@ -101,10 +103,10 @@ if __name__ == "__main__":
 
     stainnormalize = True
 
-    #combined_sampler = image_wsi_sampling.get_image_sampler(dataset, image_width=768, use_stainnet=stainnormalize)
-    combined_sampler = image_wsi_sampling_async.get_image_sampler(dataset, image_width=768, sampling_type="batch_random_image", buffer_max_size=100, use_stainnet=stainnormalize)
+    combined_sampler = image_wsi_sampling.get_image_sampler(dataset, image_width=768, use_stainnet=stainnormalize)
+    """combined_sampler = image_wsi_sampling_async.get_image_sampler(dataset, image_width=768, sampling_type="batch_random_image", buffer_max_size=100, use_stainnet=stainnormalize)
     for tile_id in model_data_manager.get_subdata_entry_list(dataset):
-        combined_sampler.request_load_sample([tile_id], augmentation=False, random_location=False)
+        combined_sampler.request_load_sample([tile_id], augmentation=False, random_location=False)"""
 
     loader = model_data_manager.get_dataset_dataloader(None)
 
