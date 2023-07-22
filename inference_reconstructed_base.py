@@ -313,17 +313,18 @@ class Composite1024To512ImageInference:
                     cat_tensor = torch.cat([torch.tensor(np_arr, device=config.device, dtype=torch.float32)
                                for np_arr in stacked_instances_array[y, x]], dim=-1)
                     if reduction_logit_average:
+                        mean_tensor = torch.mean(cat_tensor, dim=-1)
                         if separated_logits:
-                            mean_tensor = torch.mean(cat_tensor, dim=-1)
                             result = torch.cat([torch.sigmoid(mean_tensor[..., 0]).unsqueeze(-1), torch.softmax(mean_tensor[..., 1:], dim=-1)], dim=-1)
                         else:
-                            result = torch.softmax(torch.mean(cat_tensor, dim=-1), dim=-1)
+                            result = torch.cat([torch.softmax(mean_tensor, dim=-1)[..., 0].unsqueeze(-1), torch.softmax(mean_tensor[..., 1:], dim=-1)], dim=-1)
                     else:
                         if separated_logits:
                             scores = torch.cat([torch.sigmoid(cat_tensor[..., 0, :]).unsqueeze(-2), torch.softmax(cat_tensor[..., 1:, :], dim=-2)], dim=-2)
                             result = torch.mean(scores, dim=-1)
                         else:
-                            result = torch.mean(torch.softmax(cat_tensor, dim=-2), dim=-1)
+                            scores = torch.cat([torch.softmax(cat_tensor, dim=-2)[..., 0, :].unsqueeze(-2), torch.softmax(cat_tensor[..., 1:, :], dim=-2)], dim=-2)
+                            result = torch.mean(scores, dim=-1)
                     row_preds.append(result)
             preds.append(torch.cat(row_preds, dim=1))
         return torch.cat(preds, dim=0)

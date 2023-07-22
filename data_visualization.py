@@ -75,7 +75,7 @@ class InstanceSegmentationPopup(PyQt5.QtWidgets.QDialog):
 
     def setup_ui(self):
         # create main widget and QVBoxLayout
-        self.main_widget = PyQt5.QtWidgets.QWidget(self)
+        self.main_widget = self
         self.main_layout = PyQt5.QtWidgets.QVBoxLayout(self.main_widget)
 
         # create top widget and QHBoxLayout
@@ -166,7 +166,7 @@ class InstanceSegmentationPopup(PyQt5.QtWidgets.QDialog):
         self.main_layout.addWidget(self.compute_button)
 
         # add main widget to main window
-        self.setCentralWidget(self.main_widget)
+        self.setLayout(self.main_layout)
 
     def load_previous_values(self):
         global instance_segmentation_previous_values
@@ -182,37 +182,42 @@ class InstanceSegmentationPopup(PyQt5.QtWidgets.QDialog):
             self.instances_checkbox.setChecked(instance_segmentation_previous_values["instances"])
 
     def closeEvent(self, event):
-        global instance_segmentation_previous_values
-        instance_segmentation_previous_values["processing_mode"] = self.PROCESSING_MODES[self.processing_mode_dropdown.currentIndex()]
-        instance_segmentation_previous_values["background_threshold"] = self.background_threshold_slider.value()
-        instance_segmentation_previous_values["boundary_threshold"] = self.boundary_threshold_slider.value()
-        instance_segmentation_previous_values["boundary_erosion"] = self.boundary_erosion_slider.value()
-        instance_segmentation_previous_values["instances"] = self.instances_checkbox.isChecked()
-        self.closed.emit()
-        event.accept()
+        try:
+            global instance_segmentation_previous_values
+            instance_segmentation_previous_values["processing_mode"] = self.PROCESSING_MODES[self.processing_mode_dropdown.currentIndex()]
+            instance_segmentation_previous_values["background_threshold"] = self.background_threshold_slider.value()
+            instance_segmentation_previous_values["boundary_threshold"] = self.boundary_threshold_slider.value()
+            instance_segmentation_previous_values["boundary_erosion"] = self.boundary_erosion_slider.value()
+            instance_segmentation_previous_values["instances"] = self.instances_checkbox.isChecked()
+            event.accept()
+        except:
+            traceback.print_exc()
 
     def compute_button_clicked(self):
         # get processing mode
-        processing_mode = self.PROCESSING_MODES[self.processing_mode_dropdown.currentIndex()]
-        background_threshold = self.background_threshold_slider.value() / 100
-        boundary_threshold = self.boundary_threshold_slider.value() / 100
-        boundary_erosion = self.boundary_erosion_slider.value()
-        compute_instances = self.instances_checkbox.isChecked()
+        try:
+            processing_mode = self.PROCESSING_MODES[self.processing_mode_dropdown.currentIndex()]
+            background_threshold = self.background_threshold_slider.value() / 100
+            boundary_threshold = self.boundary_threshold_slider.value() / 100
+            boundary_erosion = self.boundary_erosion_slider.value()
+            compute_instances = self.instances_checkbox.isChecked()
 
-        class_probas_torch = torch.from_numpy(self.class_probas).to(config.device)
-        # compute processed image
-        if processing_mode == self.PROCESSING_INTERIOR_ONLY:
-            mask = inference_reconstructed_base.get_objectness_mask(class_probas_torch, background_threshold)
-        elif processing_mode == self.PROCESSING_BOUNDARY_ONLY:
-            mask = inference_reconstructed_base.get_boundary_mask(class_probas_torch, boundary_threshold, boundary_erosion)
-        elif processing_mode == self.PROCESSING_INTERIOR_AND_BOUNDARY:
-            mask = inference_reconstructed_base.get_instance_mask(class_probas_torch, boundary_threshold, background_threshold, boundary_erosion)
+            class_probas_torch = torch.from_numpy(self.class_probabilities).to(config.device)
+            # compute processed image
+            if processing_mode == self.PROCESSING_INTERIOR_ONLY:
+                mask = inference_reconstructed_base.get_objectness_mask(class_probas_torch, background_threshold)
+            elif processing_mode == self.PROCESSING_BOUNDARY_ONLY:
+                mask = inference_reconstructed_base.get_boundary_mask(class_probas_torch, boundary_threshold, boundary_erosion)
+            elif processing_mode == self.PROCESSING_INTERIOR_AND_BOUNDARY:
+                mask = inference_reconstructed_base.get_instance_mask(class_probas_torch, boundary_threshold, background_threshold, boundary_erosion)
 
-        image = inference_reconstructed_base.get_instances_image(mask, instances=compute_instances) # (H, W, 3) numpy RGB image
+            image = inference_reconstructed_base.get_instances_image(mask, instances=compute_instances) # (H, W, 3) numpy RGB image
 
-        # set processed image label
-        self.processed_image_label.setPixmap(PyQt5.QtGui.QPixmap.fromImage(PyQt5.QtGui.QImage(image.data,
-                                    image.shape[1], image.shape[0], image.shape[1] * 3, PyQt5.QtGui.QImage.Format_RGB888)))
+            # set processed image label
+            self.processed_image_label.setPixmap(PyQt5.QtGui.QPixmap.fromImage(PyQt5.QtGui.QImage(image.data,
+                                        image.shape[1], image.shape[0], image.shape[1] * 3, PyQt5.QtGui.QImage.Format_RGB888)))
+        except Exception as e:
+            traceback.print_exc()
 
 
 def load_tile_with_polygons(tile_id:str):
@@ -489,6 +494,13 @@ class MainWindow(PyQt5.QtWidgets.QMainWindow):
             return
 
         current_tab_title = str(self.tabbed_interface.tabText(self.tabbed_interface.currentIndex()))
+        if (current_tab_title is None) or (current_tab_title == ""):
+            dialog = PyQt5.QtWidgets.QMessageBox(self)
+            dialog.setWindowTitle("Error")
+            dialog.setText("You must select a data entry to apply the custom algorithm to")
+            dialog.setIcon(PyQt5.QtWidgets.QMessageBox.Critical)
+            dialog.exec_()
+            return
         # Load the image here
         image = load_tile_with_polygons(current_tab_title)
         data_loader = model_data_manager.get_dataset_dataloader(segmentation_dataset)
