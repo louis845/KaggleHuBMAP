@@ -75,6 +75,8 @@ if __name__ == "__main__":
                         help="Whether to average the logits. Default False.")
     parser.add_argument("--experts_only", action="store_true",
                         help="Whether to only use \"expert\" prediction. Default False.")
+    parser.add_argument("--center_only", action="store_true",
+                        help="Whether to only use the center predictions of the image. Default False.")
     parser.add_argument("--separated_logits", action="store_true", help="Whether to use separated logits. This is usually coupled with --use_separated_focal_loss in training script, and --use_separated_background in inference_reconstructed_logits.")
     parser.add_argument("--ignore_unknown", action="store_true", help="Whether to ignore unknown classes. Default False.")
 
@@ -128,9 +130,13 @@ if __name__ == "__main__":
     logits_group = input_data_loader.data_store["logits"]  # type: h5py.Group
     reduction_logit_average = args.reduction_logit_average
     experts_only = args.experts_only
+    center_only = args.center_only
     separated_logits = args.separated_logits
     ignore_unknown = args.ignore_unknown
-    print("Computing now. Prediction type: {}    Reduction logit average: {}    Experts only: {}    Separated logits: {}".format(args.prediction_type, reduction_logit_average, experts_only, separated_logits))
+
+    assert not (experts_only and center_only), "Cannot use both experts_only and center_only"
+    print("Computing now. Prediction type: {}    Reduction logit average: {}    Experts only: {}    Center only: {}    Separated logits: {}".format(args.prediction_type, reduction_logit_average, experts_only, center_only, separated_logits))
+    print("Ignore unknown: {}".format(ignore_unknown))
     with tqdm.tqdm(total=len(subdata_entries)) as pbar:
         while computed < len(subdata_entries):
             tile_id = subdata_entries[computed]
@@ -140,7 +146,7 @@ if __name__ == "__main__":
 
                 img_helper = inference_reconstructed_base.Composite1024To512ImageInference()
                 img_helper.load_logits_from_hdf(logits_group, tile_id)
-                result = img_helper.obtain_predictions(reduction_logit_average, experts_only, separated_logits).permute(2, 0, 1).unsqueeze(0)
+                result = img_helper.obtain_predictions(reduction_logit_average, experts_only, separated_logits, center_only).permute(2, 0, 1).unsqueeze(0)
 
                 if args.prediction_type == "probas":
                     output_data_writer.write_image_data(tile_id, result.squeeze(0).permute(1, 2, 0).cpu().numpy())

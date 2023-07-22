@@ -209,7 +209,7 @@ class Composite1024To512ImageInference:
             self.logits[key] = np.array(subgroup[key])
         self.logits_obtained = True
 
-    def obtain_predictions(self, reduction_logit_average: bool=True, experts_only: bool=False, separated_logits: bool=False):
+    def obtain_predictions(self, reduction_logit_average: bool=True, experts_only: bool=False, separated_logits: bool=False, center_only: bool=False):
         """
         Obtain the predictions (softmax probas) for the center 512x512 region of the 1024x1024 image.
         :param reduction_logit_average: if True, the reduction is done by first averaging the logits and computing the softmax
@@ -218,6 +218,7 @@ class Composite1024To512ImageInference:
                 Experts predictions mean the center 256x256 region for the 768x768 image (as opposed to larger 512x512 region).
         :param separated_logits: if True, the first channel will be treated as its own logit for the backgroundness score by directly plugging sigmoid,
                 and the other two channels will be treated as logits for the boundary.
+        :param center_only: if True, only the center is used for prediction, and this overrides experts_only. If false, then whether the experts are used depends on experts_only.
         :return a torch tensor of shape (512, 512, 3), containing softmax values for each pixel.
         """
         if not self.logits_obtained:
@@ -229,72 +230,73 @@ class Composite1024To512ImageInference:
         stacked_instances_array = full_array(shape=(4, 4))
 
         # fill in the 512x512 square with logits
-        for key in self.logits:
-            if key == self.CENTER_STR:
-                if experts_only:
-                    for y in range(1, 3):
-                        for x in range(1, 3):
-                            instances_array[y, x] += 1
-                            stacked_instances_array[y, x].append(self.logits[key][128 * y:128 * (y + 1),
-                                                                 128 * x:128 * (x + 1), ...])
-                else:
-                    for y in range(0, 4):
-                        for x in range(0, 4):
-                            instances_array[y, x] += 1
-                            stacked_instances_array[y, x].append(self.logits[key][128 * y:128 * (y + 1),
-                                                                 128 * x:128 * (x + 1), ...])
-            if key == self.TOP_LEFT_STR:
-                if experts_only:
-                    for y in range(0, 2):
-                        for x in range(0, 2):
-                            instances_array[y, x] += 1
-                            stacked_instances_array[y, x].append(self.logits[key][128 * y:128 * (y + 1),
-                                                                 128 * x:128 * (x + 1), ...])
-                else:
-                    for y in range(0, 3):
-                        for x in range(0, 3):
-                            instances_array[y, x] += 1
-                            stacked_instances_array[y, x].append(self.logits[key][128 * y:128 * (y + 1),
-                                                                 128 * x:128 * (x + 1), ...])
-            if key == self.TOP_RIGHT_STR:
-                if experts_only:
-                    for y in range(0, 2):
-                        for x in range(1, 3):
-                            instances_array[y, x + 1] += 1
-                            stacked_instances_array[y, x + 1].append(self.logits[key][128 * y:128 * (y + 1),
-                                                                 128 * x:128 * (x + 1), ...])
-                else:
-                    for y in range(0, 3):
-                        for x in range(0, 3):
-                            instances_array[y, x + 1] += 1
-                            stacked_instances_array[y, x + 1].append(self.logits[key][128 * y:128 * (y + 1),
+        if not center_only:
+            for key in self.logits:
+                if key == self.CENTER_STR:
+                    if experts_only:
+                        for y in range(1, 3):
+                            for x in range(1, 3):
+                                instances_array[y, x] += 1
+                                stacked_instances_array[y, x].append(self.logits[key][128 * y:128 * (y + 1),
                                                                      128 * x:128 * (x + 1), ...])
-            if key == self.BOTTOM_LEFT_STR:
-                if experts_only:
-                    for y in range(1, 3):
-                        for x in range(0, 2):
-                            instances_array[y + 1, x] += 1
-                            stacked_instances_array[y + 1, x].append(self.logits[key][128 * y:128 * (y + 1),
-                                                                 128 * x:128 * (x + 1), ...])
-                else:
-                    for y in range(0, 3):
-                        for x in range(0, 3):
-                            instances_array[y + 1, x] += 1
-                            stacked_instances_array[y + 1, x].append(self.logits[key][128 * y:128 * (y + 1),
+                    else:
+                        for y in range(0, 4):
+                            for x in range(0, 4):
+                                instances_array[y, x] += 1
+                                stacked_instances_array[y, x].append(self.logits[key][128 * y:128 * (y + 1),
                                                                      128 * x:128 * (x + 1), ...])
-            if key == self.BOTTOM_RIGHT_STR:
-                if experts_only:
-                    for y in range(1, 3):
-                        for x in range(1, 3):
-                            instances_array[y + 1, x + 1] += 1
-                            stacked_instances_array[y + 1, x + 1].append(self.logits[key][128 * y:128 * (y + 1),
-                                                                 128 * x:128 * (x + 1), ...])
-                else:
-                    for y in range(0, 3):
-                        for x in range(0, 3):
-                            instances_array[y + 1, x + 1] += 1
-                            stacked_instances_array[y + 1, x + 1].append(self.logits[key][128 * y:128 * (y + 1),
+                if key == self.TOP_LEFT_STR:
+                    if experts_only:
+                        for y in range(0, 2):
+                            for x in range(0, 2):
+                                instances_array[y, x] += 1
+                                stacked_instances_array[y, x].append(self.logits[key][128 * y:128 * (y + 1),
                                                                      128 * x:128 * (x + 1), ...])
+                    else:
+                        for y in range(0, 3):
+                            for x in range(0, 3):
+                                instances_array[y, x] += 1
+                                stacked_instances_array[y, x].append(self.logits[key][128 * y:128 * (y + 1),
+                                                                     128 * x:128 * (x + 1), ...])
+                if key == self.TOP_RIGHT_STR:
+                    if experts_only:
+                        for y in range(0, 2):
+                            for x in range(1, 3):
+                                instances_array[y, x + 1] += 1
+                                stacked_instances_array[y, x + 1].append(self.logits[key][128 * y:128 * (y + 1),
+                                                                     128 * x:128 * (x + 1), ...])
+                    else:
+                        for y in range(0, 3):
+                            for x in range(0, 3):
+                                instances_array[y, x + 1] += 1
+                                stacked_instances_array[y, x + 1].append(self.logits[key][128 * y:128 * (y + 1),
+                                                                         128 * x:128 * (x + 1), ...])
+                if key == self.BOTTOM_LEFT_STR:
+                    if experts_only:
+                        for y in range(1, 3):
+                            for x in range(0, 2):
+                                instances_array[y + 1, x] += 1
+                                stacked_instances_array[y + 1, x].append(self.logits[key][128 * y:128 * (y + 1),
+                                                                     128 * x:128 * (x + 1), ...])
+                    else:
+                        for y in range(0, 3):
+                            for x in range(0, 3):
+                                instances_array[y + 1, x] += 1
+                                stacked_instances_array[y + 1, x].append(self.logits[key][128 * y:128 * (y + 1),
+                                                                         128 * x:128 * (x + 1), ...])
+                if key == self.BOTTOM_RIGHT_STR:
+                    if experts_only:
+                        for y in range(1, 3):
+                            for x in range(1, 3):
+                                instances_array[y + 1, x + 1] += 1
+                                stacked_instances_array[y + 1, x + 1].append(self.logits[key][128 * y:128 * (y + 1),
+                                                                     128 * x:128 * (x + 1), ...])
+                    else:
+                        for y in range(0, 3):
+                            for x in range(0, 3):
+                                instances_array[y + 1, x + 1] += 1
+                                stacked_instances_array[y + 1, x + 1].append(self.logits[key][128 * y:128 * (y + 1),
+                                                                         128 * x:128 * (x + 1), ...])
 
         for y in range(0, 4):
             for x in range(0, 4):
