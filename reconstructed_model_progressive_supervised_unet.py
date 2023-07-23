@@ -702,6 +702,7 @@ if __name__ == "__main__":
     parser.add_argument("--augmentation", action="store_true", help="Whether to use data augmentation. Default False.")
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate to use. Default 1e-5.")
     parser.add_argument("--momentum", type=float, default=0.9, help="Momentum to use. Default 0.9. This would be the momentum for SGD, and beta1 for Adam.")
+    parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use. Default 0.0.")
     parser.add_argument("--optimizer", type=str, default="adam", help="Which optimizer to use. Available options: adam, sgd. Default adam.")
     parser.add_argument("--epochs_per_save", type=int, default=2, help="Number of epochs between saves. Default 2.")
     parser.add_argument("--use_batch_norm", action="store_true", help="Whether to use batch normalization. Default False.")
@@ -833,9 +834,12 @@ if __name__ == "__main__":
         print("---------------------------------- TESTING ONLY ----------------------------------")
     else:
         if args.optimizer.lower() == "adam":
-            optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, betas=(momentum, 0.999))
+            if args.weight_decay == 0.0:
+                optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, betas=(momentum, 0.999))
+            else:
+                optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, betas=(momentum, 0.999), weight_decay=args.weight_decay)
         elif args.optimizer.lower() == "sgd":
-            optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, momentum=momentum)
+            optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, momentum=momentum, weight_decay=args.weight_decay)
         else:
             print("Invalid optimizer. The available options are: adam, sgd.")
             exit(1)
@@ -865,6 +869,7 @@ if __name__ == "__main__":
         "augmentation": augmentation,
         "learning_rate": args.learning_rate,
         "momentum": momentum,
+        "weight_decay": args.weight_decay,
         "optimizer": args.optimizer,
         "epochs_per_save": epochs_per_save,
         "use_batch_norm": args.use_batch_norm,
