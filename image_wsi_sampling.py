@@ -629,7 +629,7 @@ class MultipleImageSampler:
             ground_truth2 = torch.nn.functional.one_hot(ground_truth2, num_classes=3).permute(2, 0, 1).to(torch.float32)
 
             gc.collect()
-            torch.cuda.empty_cache()
+            #torch.cuda.empty_cache()
 
             # apply mixup augmentation
             lambda_interp = np.random.beta(mixup_alpha, mixup_alpha)
@@ -641,7 +641,7 @@ class MultipleImageSampler:
 
             del image_cat1, image_cat2, ground_truth1, ground_truth2, ground_truth_mask1, ground_truth_mask2
             gc.collect()
-            torch.cuda.empty_cache()
+            #torch.cuda.empty_cache()
 
             if deep_supervision_downsamples > 0:
                 ground_truth_deep = []
