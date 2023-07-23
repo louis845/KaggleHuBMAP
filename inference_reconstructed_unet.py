@@ -123,6 +123,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_atrous_conv", action="store_true", help="Whether to use atrous convolutional networks. Default False.")
     parser.add_argument("--use_squeeze_excitation", action="store_true", help="Whether to use squeeze and excitation. Default False.")
     parser.add_argument("--use_initial_conv", action="store_true", help="Whether to use the initial 7x7 kernel convolution. Default False.")
+    parser.add_argument("--use_residual_atrous_conv", action="store_true", help="Whether to use residual atrous convolutions. Default False.")
     parser.add_argument("--hidden_blocks", type=int, nargs="+", default=[2, 3, 4, 6, 6, 7, 7], help="Number of hidden blocks for ResNets. Ignored if not resnet.")
     parser.add_argument("--use_tta", action="store_true", help="Whether to use test time augmentation. Default False.")
     parser.add_argument("--hidden_channels", type=int, default=64, help="Number of hidden channels to use. Default 64.")
@@ -134,6 +135,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_separated_background", action="store_true",
                         help="Whether to use a separated outconv for background sigmoid. Default False. Must be used with atrous conv.")
     parser.add_argument("--ignore_unknown", action="store_true", help="Whether to ignore unknown classes. Default False.")
+    parser.add_argument("--image_stain_norm", action="store_true", help="Whether to stain normalize the images. Default False.")
 
     model_data_manager.transform_add_argparse_arguments(parser)
 
@@ -153,6 +155,7 @@ if __name__ == "__main__":
 
     blocks = args.hidden_blocks
     use_separated_background = args.use_separated_background
+    use_residual_atrous_conv = args.use_residual_atrous_conv
     if args.unet_attention:
         model = model_unet_attention.UNetClassifier(num_classes=2, num_deep_multiclasses=args.pyramid_height - 1,
                                                     hidden_channels=args.hidden_channels,
@@ -160,6 +163,7 @@ if __name__ == "__main__":
                                                     use_res_conv=args.use_res_conv, pyr_height=args.pyramid_height,
                                                     in_channels=4, use_atrous_conv=args.use_atrous_conv,
                                                     atrous_outconv_split=use_separated_background,
+                                                    atrous_outconv_residual=use_residual_atrous_conv,
                                                     deep_supervision=True,
                                                     squeeze_excitation=args.use_squeeze_excitation,
                                                     bottleneck_expansion=args.bottleneck_expansion,
@@ -171,6 +175,7 @@ if __name__ == "__main__":
                                                deep_supervision=True,
                                                in_channels=4, use_atrous_conv=args.use_atrous_conv,
                                                atrous_outconv_split=use_separated_background,
+                                               atrous_outconv_residual=use_residual_atrous_conv,
                                                squeeze_excitation=args.use_squeeze_excitation,
                                                bottleneck_expansion=args.bottleneck_expansion,
                                                res_conv_blocks=blocks, use_initial_conv=args.use_initial_conv).to(device=config.device)
@@ -212,6 +217,8 @@ if __name__ == "__main__":
     image_radius = image_width // 2
     print("Computing now. Prediction type: {}    Test time augmentation: {}".format(args.prediction_type, args.use_tta))
     print("Ignore unknown: {}".format(args.ignore_unknown))
+    image_stain_norm = args.image_stain_norm
+    print("Using stain normalization: {}".format(image_stain_norm))
     ignore_unknown = args.ignore_unknown
     with tqdm.tqdm(total=len(subdata_entries)) as pbar:
         while computed < len(subdata_entries):
@@ -221,7 +228,7 @@ if __name__ == "__main__":
                 inference_batch = torch.zeros((compute_end - computed, 4, image_width, image_width), dtype=torch.float32, device=config.device)
 
                 for k in range(computed, compute_end):
-                    inference_batch[k - computed, :, :, :] = inference_reconstructed_base.load_combined(subdata_entries[k], image_size=image_width)
+                    inference_batch[k - computed, :, :, :] = inference_reconstructed_base.load_combined(subdata_entries[k], image_size=image_width, stain_normalize=image_stain_norm)
                 
                 result = get_result_logits(model, inference_batch, args.use_tta)
                 pred_type = get_predictions(result, args.prediction_type)
