@@ -127,7 +127,7 @@ if __name__ == "__main__":
             false_negative_classes_val[seg_class] = 0.0
 
     image_radius = 384
-    logits_group = input_data_loader.data_store["logits"]  # type: h5py.Group
+    logits_group = input_data_loader.data_store["logits"] if "logits" in input_data_loader.data_store else None
     reduction_logit_average = args.reduction_logit_average
     experts_only = args.experts_only
     center_only = args.center_only
@@ -135,7 +135,10 @@ if __name__ == "__main__":
     ignore_unknown = args.ignore_unknown
 
     assert not (experts_only and center_only), "Cannot use both experts_only and center_only"
-    print("Computing now. Prediction type: {}    Reduction logit average: {}    Experts only: {}    Center only: {}    Separated logits: {}".format(args.prediction_type, reduction_logit_average, experts_only, center_only, separated_logits))
+    if logits_group is None:
+        print("No logits found. Assuming the data already has probas computed.")
+    else:
+        print("Computing now. Prediction type: {}    Reduction logit average: {}    Experts only: {}    Center only: {}    Separated logits: {}".format(args.prediction_type, reduction_logit_average, experts_only, center_only, separated_logits))
     print("Ignore unknown: {}".format(ignore_unknown))
     with tqdm.tqdm(total=len(subdata_entries)) as pbar:
         while computed < len(subdata_entries):
@@ -143,10 +146,14 @@ if __name__ == "__main__":
             compute_end = computed + 1
             # Get logits from computed input data
             with torch.no_grad():
-
-                img_helper = inference_reconstructed_base.Composite1024To512ImageInference()
-                img_helper.load_logits_from_hdf(logits_group, tile_id)
-                result = img_helper.obtain_predictions(reduction_logit_average, experts_only, separated_logits, center_only).permute(2, 0, 1).unsqueeze(0)
+                if logits_group is not None:
+                    img_helper = inference_reconstructed_base.Composite1024To512ImageInference()
+                    img_helper.load_logits_from_hdf(logits_group, tile_id)
+                    result = img_helper.obtain_predictions(reduction_logit_average, experts_only, separated_logits, center_only).permute(2, 0, 1).unsqueeze(0)
+                else:
+                    probas = input_data_loader.get_image_data(tile_id)
+                    assert probas.dtype == np.float32, "Probas must be float32"
+                    result = torch.tensor(probas, dtype=torch.float32, device=config.device).permute(2, 0, 1).unsqueeze(0)
 
                 if args.prediction_type == "probas":
                     output_data_writer.write_image_data(tile_id, result.squeeze(0).permute(1, 2, 0).cpu().numpy())
