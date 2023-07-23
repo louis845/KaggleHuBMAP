@@ -844,6 +844,7 @@ if __name__ == "__main__":
             print("Invalid optimizer. The available options are: adam, sgd.")
             exit(1)
         print("Using optimizer {} with learning rate {} and momentum {}.".format(args.optimizer, args.learning_rate, momentum))
+        print("Using weight decay {}.".format(args.weight_decay))
 
     if use_amp:
         scaler = torch.cuda.amp.GradScaler()
