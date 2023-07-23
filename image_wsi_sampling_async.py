@@ -260,9 +260,13 @@ class MultipleImageSamplerAsync:
         """Get the currently loaded image. WARNING - this is a blocking call.
         If no images are in the pipe, this might create a deadlock."""
         assert self.sampling_type == "random_image", "Image loading can only be requested when using random_image sampling type."
-        self.image_available_lock.acquire(block=True)
+        locked = self.image_available_lock.acquire(block=True, timeout=60)
+        if not locked:
+            raise TimeoutError("Image loading timed out.")
 
-        self.image_access_lock.acquire(block=True)
+        locked = self.image_access_lock.acquire(block=True, timeout=60)
+        if not locked:
+            raise TimeoutError("Image loading timed out.")
         image = self.shared_image_cat.to(device, copy=True)
         ground_truth = self.shared_ground_truth.to(device, copy=True)
         ground_truth_mask = self.shared_ground_truth_mask.to(device, copy=True)
@@ -277,9 +281,13 @@ class MultipleImageSamplerAsync:
                     ground_truth_mask_deep_tensors: list[torch.Tensor]=None):
         """Get the loaded samples for the batch. WARNING - this is a blocking call."""
         assert self.sampling_type != "random_image", "Sampling can only be used not with the random_image sampling type."
-        self.image_available_lock.acquire(block=True)
+        locked = self.image_available_lock.acquire(block=True, timeout=60)
+        if not locked:
+            raise TimeoutError("Image loading timed out.")
 
-        self.image_access_lock.acquire(block=True)
+        locked = self.image_access_lock.acquire(block=True, timeout=60)
+        if not locked:
+            raise TimeoutError("Image loading timed out.")
 
         if image_tensor is None:
             # we allocate and create a copy and then return it
