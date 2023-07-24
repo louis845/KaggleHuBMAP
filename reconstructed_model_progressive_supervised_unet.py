@@ -92,6 +92,8 @@ def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image
             multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
             if (k > 0) and use_suppressed_deepsupervision:
                 multiply_scale_factor = 0.0
+            elif use_partially_suppressed_deepsupervision:
+                multiply_scale_factor /= 20.0
 
             if use_focal_loss:
                 ce_res = focal_loss(deep_outputs[k], train_image_ground_truth_deep_[pyr_height - 2 - k],
@@ -467,6 +469,8 @@ def validation_step(train_history):
                     multiply_scale_factor = deep_exponent_base ** (pyr_height - 1 - k)
                     if (k > 0) and use_suppressed_deepsupervision:
                         multiply_scale_factor = 0.0
+                    elif use_partially_suppressed_deepsupervision:
+                        multiply_scale_factor /= 20.0
 
                     if use_focal_loss:
                         ce_res = focal_loss(deep_outputs[k], test_image_ground_truth_deep[pyr_height - 2 - k],
@@ -717,6 +721,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_squeeze_excitation", action="store_true", help="Whether to use squeeze and excitation. Default False.")
     parser.add_argument("--use_initial_conv", action="store_true", help="Whether to use the initial 7x7 kernel convolution. Default False.")
     parser.add_argument("--use_suppressed_deepsupervision", action="store_true", help="Whether to use suppressed deep supervision. Default False.")
+    parser.add_argument("--use_partially_suppressed_deepsupervision", action="store_true", help="Whether to use partially suppressed deep supervision. Default False.")
     parser.add_argument("--hidden_channels", type=int, default=64, help="Number of hidden channels to use. Default 64.")
     parser.add_argument("--hidden_blocks", type=int, nargs="+", default=[2, 3, 4, 6, 6, 7, 7], help="Number of hidden blocks for ResNets. Ignored if not resnet.")
     parser.add_argument("--bottleneck_expansion", type=int, default=1, help="The expansion factor of the bottleneck. Default 1.")
@@ -791,6 +796,7 @@ if __name__ == "__main__":
     use_separated_focal_loss = args.use_separated_focal_loss
     use_residual_atrous_conv = args.use_residual_atrous_conv
     use_suppressed_deepsupervision = args.use_suppressed_deepsupervision
+    use_partially_suppressed_deepsupervision = args.use_partially_suppressed_deepsupervision
     test_only = args.test_only
 
     assert not (use_focal_loss and use_composite_focal_loss), "You cannot use both focal loss and composite focal loss."
@@ -798,6 +804,7 @@ if __name__ == "__main__":
     assert not (use_composite_focal_loss and use_separated_focal_loss), "You cannot use both composite focal loss and separated focal loss."
     assert (not use_separated_focal_loss) or args.use_atrous_conv, "You can only use separated focal loss with atrous convolutions."
     assert (not use_residual_atrous_conv) or use_separated_focal_loss, "You can only use residual atrous convolutions with separated focal loss."
+    # assert not (use_suppressed_deepsupervision and use_partially_suppressed_deepsupervision), "You cannot use both suppressed and partially suppressed deep supervision."
     if test_only:
         num_epochs = 1
         num_extra_steps = 0
@@ -888,6 +895,7 @@ if __name__ == "__main__":
         "use_squeeze_excitation": args.use_squeeze_excitation,
         "use_initial_conv": args.use_initial_conv,
         "use_suppressed_deepsupervision": args.use_suppressed_deepsupervision,
+        "use_partially_suppressed_deepsupervision": use_partially_suppressed_deepsupervision,
         "hidden_channels": args.hidden_channels,
         "hidden_blocks": args.hidden_blocks,
         "bottleneck_expansion": args.bottleneck_expansion,
