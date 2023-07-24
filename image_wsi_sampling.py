@@ -707,7 +707,7 @@ if not os.path.isfile(os.path.join(folder, "data.hdf5")):
             r.generate_interior_pixels(interior_box=12)
             del r
 
-if not os.path.isfile(os.path.join(folder, "wsi512_1_region.png")):
+if (not os.path.isfile(os.path.join(folder, "wsi512_1_region.png"))) and config.samplers_data_path == "":
     with h5py.File(os.path.join(folder, "data.hdf5"), "r") as segmentation_masks:
         for wsi_id in range(1, 5):
             print("Generating images for wsi_{}".format(wsi_id))
