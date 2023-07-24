@@ -743,7 +743,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     model_dir, dataset_loader, training_entries, validation_entries, prev_model_checkpoint_dir, extra_info, train_subdata, val_subdata = model_data_manager.model_get_argparse_arguments(args, return_subdata_name=True)
-    memory_logger = logging_memory_utils.obtain_memory_logger(model_dir)
+    memory_logger = logging_memory_utils.obtain_memory_logger(model_dir, config.samplers_data_path == "")
     assert type(training_entries) == list
     assert type(validation_entries) == list
 
