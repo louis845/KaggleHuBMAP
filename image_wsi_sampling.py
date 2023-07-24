@@ -16,8 +16,8 @@ import obtain_reconstructed_wsi_images
 import obtain_reconstructed_binary_segmentation
 import config
 
-folder = "reconstructed_wsi_data"
-stainnet_folder = "stainnet_wsi" # folder containing the WSI images transformed by StainNet. See the helper.py script inside StainNet folder.
+folder = config.samplers_data_path + "reconstructed_wsi_data"
+stainnet_folder = config.samplers_data_path + "stainnet_wsi" # folder containing the WSI images transformed by StainNet. See the helper.py script inside StainNet folder.
 
 def obtain_relative_bounding_box(mask: np.ndarray):
     assert mask.ndim == 2, "Mask must be 2D"
