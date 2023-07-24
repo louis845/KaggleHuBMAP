@@ -859,6 +859,9 @@ if __name__ == "__main__":
 
             for g in optimizer.param_groups:
                 g['lr'] = args.learning_rate
+                if args.weight_decay > 0.0:
+                    assert "weight_decay" in g, "The optimizer does not have weight decay."
+                    g['weight_decay'] = args.weight_decay
 
         gc.collect()
         torch.cuda.empty_cache()
