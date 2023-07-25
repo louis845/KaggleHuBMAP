@@ -979,8 +979,8 @@ if __name__ == "__main__":
         print("Class {}: {}, {}".format(seg_class, class_weights[k], class_weights_composite[k]))
 
     if use_separated_focal_loss:
-        class_weights = torch.tensor(class_weights[0], dtype=torch.float32, device=config.device)
         class_weights_old = torch.tensor([1.0] + class_weights, dtype=torch.float32, device=config.device)
+        class_weights = torch.tensor(class_weights[0], dtype=torch.float32, device=config.device)
     else:
         class_weights = torch.tensor([1.0] + class_weights, dtype=torch.float32, device=config.device)
     class_weights_composite = torch.tensor(class_weights_composite, dtype=torch.float32, device=config.device)
