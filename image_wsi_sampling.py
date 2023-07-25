@@ -840,8 +840,10 @@ if __name__ == "__main__":
     #generate_masks_from_subdata("dataset1_split2")
     #generate_masks_from_subdata("dataset1_regional_split1")
     #generate_masks_from_subdata("dataset1_regional_split2")
-    generate_masks_from_subdata("dataset1_regional_split1_extra")
-    generate_masks_from_subdata("dataset1_regional_split2_extra")
+    #generate_masks_from_subdata("dataset1_regional_split1_extra")
+    #generate_masks_from_subdata("dataset1_regional_split2_extra")
+    generate_masks_from_subdata("dataset1")
+    generate_masks_from_subdata("dataset1_extra")
 
     """mask1 = get_subdata_mask("dataset1_regional_split1")
     sampler = ImageSampler(get_wsi_region_mask(1), mask1[1], obtain_reconstructed_binary_segmentation.get_default_WSI_mask(1), 1024)
