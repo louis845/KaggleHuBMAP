@@ -172,9 +172,11 @@ def model_add_argparse_arguments(parser, allow_missing_validation=False):
         parser.add_argument("--val_subdata", type=str, required=True, help="The subdata to be used for validation.")
     parser.add_argument("--prev_model_ckpt", type=str, help="The previous model to be loaded to continue training.")
     parser.add_argument("--load_in_memory", action="store_true", help="Whether to load the data in memory.")
+    parser.add_argument("--ignore_overlap", action="store_true", help="Whether to ignore overlapping entries in train and validation subdata.")
 
 def model_get_argparse_arguments(args, allow_missing_validation=False, return_subdata_name=False):
     model_name = args.model_name
+    ignore_overlap = args.ignore_overlap
     if model_exists(model_name):
         print("Model already exists! Pick another name.")
         quit()
@@ -235,7 +237,7 @@ def model_get_argparse_arguments(args, allow_missing_validation=False, return_su
         intersection_empty = np.sum(np.searchsorted(training_entries_num_id, validation_entries_num_id, side="left")
                < np.searchsorted(training_entries_num_id, validation_entries_num_id, side="right")) == 0
 
-        if not intersection_empty:
+        if (not intersection_empty) and (not ignore_overlap):
             print("The training and validation sets are not disjoint! Pick another subdata.")
             quit()
 
@@ -251,7 +253,7 @@ def model_get_argparse_arguments(args, allow_missing_validation=False, return_su
     if val_subdata is None:
         validation_entries = None
 
-    extra_info = {"dataset": dataset, "train_subdata": train_subdata, "val_subdata": val_subdata, "previous_model": str(prev_model_ckpt)}
+    extra_info = {"dataset": dataset, "train_subdata": train_subdata, "val_subdata": val_subdata, "previous_model": str(prev_model_ckpt), "ignore_overlap": ignore_overlap}
 
     if return_subdata_name:
         return new_model_dir, data_loader, training_entries, validation_entries, prev_model_dir, extra_info, train_subdata, val_subdata

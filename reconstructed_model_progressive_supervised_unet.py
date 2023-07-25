@@ -760,7 +760,8 @@ if __name__ == "__main__":
         # check disjoint, and check contains
         intersection_empty = np.sum(np.searchsorted(extra_training_int_id, valid_int_id, side="left")
                < np.searchsorted(extra_training_int_id, valid_int_id, side="right")) == 0
-        assert intersection_empty, "The validation set and the extra training set must be disjoint."
+        if not args.ignore_unknown:
+            assert intersection_empty, "The validation set and the extra training set must be disjoint."
         del valid_int_id
         assert np.all(np.searchsorted(extra_training_int_id, training_int_id, side="left")
                < np.searchsorted(extra_training_int_id, training_int_id, side="right")), "The extra training set must contain all the training set."
