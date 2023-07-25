@@ -38,7 +38,11 @@ def compute_class_no_confidence(result: torch.Tensor):
         return torch.argmax(result[:, 1:, ...], dim=1) + 1
 
 def focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_hot_ground_truth:bool):
-    cross_entropy = torch.nn.functional.cross_entropy(result, ground_truth, reduction="none", weight=class_weights)
+    if use_separated_focal_loss:
+        mclass_weights = class_weights_old
+    else:
+        mclass_weights = class_weights
+    cross_entropy = torch.nn.functional.cross_entropy(result, ground_truth, reduction="none", weight=mclass_weights)
 
     ground_truth_one_hot = ground_truth if one_hot_ground_truth else torch.nn.functional.one_hot(ground_truth, num_classes=3).permute(0, 3, 1, 2).to(torch.float32)
     softmax = torch.softmax(result, dim=1)
@@ -95,7 +99,7 @@ def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image
             elif use_partially_suppressed_deepsupervision:
                 multiply_scale_factor /= 20.0
 
-            if use_focal_loss:
+            if use_focal_loss or use_separated_focal_loss or use_composite_focal_loss:
                 ce_res = focal_loss(deep_outputs[k], train_image_ground_truth_deep_[pyr_height - 2 - k],
                                     one_hot_ground_truth=mixup_used)
             else:
@@ -472,7 +476,7 @@ def validation_step(train_history):
                     elif use_partially_suppressed_deepsupervision:
                         multiply_scale_factor /= 20.0
 
-                    if use_focal_loss:
+                    if use_focal_loss or use_separated_focal_loss or use_composite_focal_loss:
                         ce_res = focal_loss(deep_outputs[k], test_image_ground_truth_deep[pyr_height - 2 - k],
                                             one_hot_ground_truth=False)
                     else:
@@ -976,6 +980,7 @@ if __name__ == "__main__":
 
     if use_separated_focal_loss:
         class_weights = torch.tensor(class_weights[0], dtype=torch.float32, device=config.device)
+        class_weights_old = torch.tensor([1.0] + class_weights, dtype=torch.float32, device=config.device)
     else:
         class_weights = torch.tensor([1.0] + class_weights, dtype=torch.float32, device=config.device)
     class_weights_composite = torch.tensor(class_weights_composite, dtype=torch.float32, device=config.device)
