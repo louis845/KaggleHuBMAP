@@ -102,10 +102,13 @@ class ResConvBlock(torch.nn.Module):
             self.batchnorm1 = torch.nn.GroupNorm(num_groups=out_channels, num_channels=out_channels) # instance norm
         self.elu1 = torch.nn.ReLU(inplace=True)
 
+        num_groups = out_channels // 8
+        if (out_channels % num_groups) != 0:
+            num_groups = out_channels // 4
         if downsample:
-            self.conv2 = torch.nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=2, bias=False, padding=0, groups=out_channels // 8) # x8d, meaning 8 channels in each "capacity" connection
+            self.conv2 = torch.nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=2, bias=False, padding=0, groups=num_groups) # x8d, meaning 8 channels in each "capacity" connection
         else:
-            self.conv2 = torch.nn.Conv2d(out_channels, out_channels, kernel_size=3, bias=False, padding="same", padding_mode="replicate", groups=out_channels // 8)
+            self.conv2 = torch.nn.Conv2d(out_channels, out_channels, kernel_size=3, bias=False, padding="same", padding_mode="replicate", groups=num_groups)
         if use_batch_norm:
             self.batchnorm2 = torch.nn.GroupNorm(num_groups=out_channels, num_channels=out_channels) # instance norm
         self.elu2 = torch.nn.ReLU(inplace=True)
