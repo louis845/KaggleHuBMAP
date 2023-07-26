@@ -47,7 +47,22 @@ def focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_hot_ground_
     ground_truth_one_hot = ground_truth if one_hot_ground_truth else torch.nn.functional.one_hot(ground_truth, num_classes=3).permute(0, 3, 1, 2).to(torch.float32)
     softmax = torch.softmax(result, dim=1)
 
-    return torch.sum((softmax[:, 1:, :, :] - ground_truth_one_hot[:, 1:, :, :]) ** 2, dim=1) * cross_entropy
+    return torch.sum((softmax - ground_truth_one_hot) ** 2, dim=1) * cross_entropy
+
+def math_focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_hot_ground_truth:bool):
+    if use_separated_focal_loss:
+        mclass_weights = class_weights_old
+    else:
+        mclass_weights = class_weights
+    cross_entropy = torch.nn.functional.cross_entropy(result, ground_truth, reduction="none")
+
+    with torch.no_grad():
+        ground_truth_one_hot = ground_truth if one_hot_ground_truth else torch.nn.functional.one_hot(ground_truth, num_classes=3).permute(0, 3, 1, 2).to(torch.float32)
+        weights = torch.sum(ground_truth_one_hot * mclass_weights.unsqueeze(-1).unsqueeze(-1), dim=1)
+
+    softmax = torch.softmax(result, dim=1)
+
+    return weights * torch.sum((softmax - ground_truth_one_hot) ** 2, dim=1) * cross_entropy
 
 def composite_focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_hot_ground_truth:bool):
     ground_truth_one_hot = ground_truth if one_hot_ground_truth else torch.nn.functional.one_hot(ground_truth, num_classes=3).permute(0, 3, 1, 2).to(torch.float32)
@@ -64,23 +79,37 @@ def composite_focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_h
         non_backgroundness * torch.sum((softmax_cp - ground_truth_other) ** 2, dim=1) * cross_entropy_cp
 
 def separated_focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_hot_ground_truth:bool):
-    ground_truth_one_hot = ground_truth if one_hot_ground_truth else torch.nn.functional.one_hot(ground_truth, num_classes=3).permute(0, 3, 1, 2).to(torch.float32)
     with torch.no_grad():
+        ground_truth_one_hot = ground_truth if one_hot_ground_truth else torch.nn.functional.one_hot(ground_truth, num_classes=3).permute(0, 3, 1, 2).to(torch.float32)
         ground_truth_other = torch.stack([ground_truth_one_hot[:, 0, :, :] + ground_truth_one_hot[:, 1, :, :], ground_truth_one_hot[:, 2, :, :]], dim=1)
         if args.use_heavy_boundary_in_separated_loss:
             non_backgroundness = (1 - ground_truth_one_hot[:, 0, :, :]) * 5.9 + 0.1
 
-    binary_ce = torch.nn.functional.binary_cross_entropy_with_logits(result[:, 0, :, :], ground_truth_one_hot[:, 0, :, :], reduction="none", pos_weight=(1 / class_weights))
-    cross_entropy_boundary = torch.nn.functional.cross_entropy(result[:, 1:, :, :], ground_truth_other, reduction="none", weight=class_weights_composite)
+        if mathematical:
+            bce_weights = class_weights + (1 - class_weights) * ground_truth_one_hot[:, 0, :, :]
+            if args.use_heavy_boundary_in_separated_loss:
+                ce_weights = torch.sum(ground_truth_other * class_weights_composite.unsqueeze(-1).unsqueeze(-1), dim=1) * non_backgroundness
+            else:
+                ce_weights = torch.sum(ground_truth_other * class_weights_composite.unsqueeze(-1).unsqueeze(-1), dim=1)
+
     sigmoid = torch.sigmoid(result[:, 0, :, :])
     softmax = torch.softmax(result[:, 1:, :, :], dim=1)
+    if mathematical:
+        binary_ce = torch.nn.functional.binary_cross_entropy_with_logits(result[:, 0, :, :], ground_truth_one_hot[:, 0, :, :], reduction="none")
+        cross_entropy_boundary = torch.nn.functional.cross_entropy(result[:, 1:, :, :], ground_truth_other, reduction="none")
 
-    if args.use_heavy_boundary_in_separated_loss:
-        return class_weights * ((sigmoid - ground_truth_one_hot[:, 0, :, :]) ** 2) * binary_ce + \
-            non_backgroundness * torch.sum((softmax - ground_truth_other) ** 2, dim=1) * cross_entropy_boundary
+        return bce_weights * ((sigmoid - ground_truth_one_hot[:, 0, :, :]) ** 2) * binary_ce + \
+            ce_weights * torch.sum((softmax - ground_truth_other) ** 2, dim=1) * cross_entropy_boundary
     else:
-        return class_weights * ((sigmoid - ground_truth_one_hot[:, 0, :, :]) ** 2) * binary_ce +\
-                torch.sum((softmax - ground_truth_other) ** 2, dim=1) * cross_entropy_boundary
+        binary_ce = torch.nn.functional.binary_cross_entropy_with_logits(result[:, 0, :, :], ground_truth_one_hot[:, 0, :, :], reduction="none", pos_weight=(1 / class_weights))
+        cross_entropy_boundary = torch.nn.functional.cross_entropy(result[:, 1:, :, :], ground_truth_other, reduction="none", weight=class_weights_composite)
+
+        if args.use_heavy_boundary_in_separated_loss:
+            return class_weights * ((sigmoid - ground_truth_one_hot[:, 0, :, :]) ** 2) * binary_ce + \
+                non_backgroundness * torch.sum((softmax - ground_truth_other) ** 2, dim=1) * cross_entropy_boundary
+        else:
+            return class_weights * ((sigmoid - ground_truth_one_hot[:, 0, :, :]) ** 2) * binary_ce +\
+                    torch.sum((softmax - ground_truth_other) ** 2, dim=1) * cross_entropy_boundary
 
 def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image_ground_truth_batch_, train_image_ground_truth_mask_batch_,
                          train_image_ground_truth_deep_, train_image_ground_truth_mask_deep_, use_amp_=False, scaler_=None):
@@ -100,8 +129,12 @@ def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image
                 multiply_scale_factor /= 20.0
 
             if use_focal_loss or use_separated_focal_loss or use_composite_focal_loss:
-                ce_res = focal_loss(deep_outputs[k], train_image_ground_truth_deep_[pyr_height - 2 - k],
-                                    one_hot_ground_truth=mixup_used)
+                if mathematical:
+                    ce_res = math_focal_loss(deep_outputs[k], train_image_ground_truth_deep_[pyr_height - 2 - k],
+                                        one_hot_ground_truth=mixup_used)
+                else:
+                    ce_res = focal_loss(deep_outputs[k], train_image_ground_truth_deep_[pyr_height - 2 - k],
+                                        one_hot_ground_truth=mixup_used)
             else:
                 ce_res = torch.nn.functional.cross_entropy(deep_outputs[k],
                                                            train_image_ground_truth_deep_[pyr_height - 2 - k],
@@ -116,7 +149,10 @@ def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image
         elif use_composite_focal_loss:
             ce_res = composite_focal_loss(result, train_image_ground_truth_batch_, one_hot_ground_truth=mixup_used)
         elif use_focal_loss:
-            ce_res = focal_loss(result, train_image_ground_truth_batch_, one_hot_ground_truth=mixup_used)
+            if mathematical:
+                ce_res = math_focal_loss(result, train_image_ground_truth_batch_, one_hot_ground_truth=mixup_used)
+            else:
+                ce_res = focal_loss(result, train_image_ground_truth_batch_, one_hot_ground_truth=mixup_used)
         else:
             ce_res = torch.nn.functional.cross_entropy(result, train_image_ground_truth_batch_, reduction="none",
                                                        weight=class_weights)
@@ -477,8 +513,12 @@ def validation_step(train_history):
                         multiply_scale_factor /= 20.0
 
                     if use_focal_loss or use_separated_focal_loss or use_composite_focal_loss:
-                        ce_res = focal_loss(deep_outputs[k], test_image_ground_truth_deep[pyr_height - 2 - k],
-                                            one_hot_ground_truth=False)
+                        if mathematical:
+                            ce_res = math_focal_loss(deep_outputs[k], test_image_ground_truth_deep[pyr_height - 2 - k],
+                                                one_hot_ground_truth=False)
+                        else:
+                            ce_res = focal_loss(deep_outputs[k], test_image_ground_truth_deep[pyr_height - 2 - k],
+                                                one_hot_ground_truth=False)
                     else:
                         ce_res = torch.nn.functional.cross_entropy(deep_outputs[k],
                                                                    test_image_ground_truth_deep[pyr_height - 2 - k],
@@ -510,7 +550,10 @@ def validation_step(train_history):
                 elif use_composite_focal_loss:
                     ce_res = composite_focal_loss(result, test_image_ground_truth_batch, one_hot_ground_truth=False)
                 elif use_focal_loss:
-                    ce_res = focal_loss(result, test_image_ground_truth_batch, one_hot_ground_truth=False)
+                    if mathematical:
+                        ce_res = math_focal_loss(result, test_image_ground_truth_batch, one_hot_ground_truth=False)
+                    else:
+                        ce_res = focal_loss(result, test_image_ground_truth_batch, one_hot_ground_truth=False)
                 else:
                     ce_res = torch.nn.functional.cross_entropy(result, test_image_ground_truth_batch, reduction="none",
                                                                weight=class_weights)
@@ -740,6 +783,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_extra_steps", type=int, default=0, help="Extra steps of gradient descent before the usual step in an epoch. Default 0.")
     parser.add_argument("--extra_training_subdata", type=str, default=None, help="Additional training subdata to mix with the main training data. Default None.")
     parser.add_argument("--extra_subdata_ratio", type=float, default=0.2, help="The ratio of the extra subdata to mix with the main training data. Default 0.2. If extra training subdata is not provided, this is ignored.")
+    parser.add_argument("--mathematical", action="store_true", help="Whether to use mathematical loss. Default False.")
     parser.add_argument("--test_only", action="store_true", help="Whether to only test the model. Default False. If true, the epochs and number of extra steps are ignored, set to 1, 0.")
 
     model_data_manager.model_add_argparse_arguments(parser)
@@ -802,6 +846,7 @@ if __name__ == "__main__":
     use_residual_atrous_conv = args.use_residual_atrous_conv
     use_suppressed_deepsupervision = args.use_suppressed_deepsupervision
     use_partially_suppressed_deepsupervision = args.use_partially_suppressed_deepsupervision
+    mathematical = args.mathematical
     test_only = args.test_only
 
     assert not (use_focal_loss and use_composite_focal_loss), "You cannot use both focal loss and composite focal loss."
@@ -915,6 +960,7 @@ if __name__ == "__main__":
         "num_extra_steps": num_extra_steps,
         "extra_training_subdata": args.extra_training_subdata,
         "extra_subdata_ratio": args.extra_subdata_ratio,
+        "mathematical": mathematical,
         "training_script": "reconstructed_model_progressive_supervised_unet.py",
     }
     for key, value in extra_info.items():
