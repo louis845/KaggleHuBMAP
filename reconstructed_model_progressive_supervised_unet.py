@@ -753,6 +753,7 @@ if __name__ == "__main__":
     parser.add_argument("--augmentation", action="store_true", help="Whether to use data augmentation. Default False.")
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate to use. Default 1e-5.")
     parser.add_argument("--momentum", type=float, default=0.9, help="Momentum to use. Default 0.9. This would be the momentum for SGD, and beta1 for Adam.")
+    parser.add_argument("--second_momentum", type=float, default=0.999, help="Second momentum to use. Default 0.999. This would be beta2 for Adam. Ignored if SGD.")
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use. Default 0.0.")
     parser.add_argument("--optimizer", type=str, default="adam", help="Which optimizer to use. Available options: adam, sgd. Default adam.")
     parser.add_argument("--epochs_per_save", type=int, default=2, help="Number of epochs between saves. Default 2.")
@@ -888,15 +889,16 @@ if __name__ == "__main__":
     single_training_step_compile = single_training_step#torch.compile(single_training_step)
 
     momentum = args.momentum
+    second_momentum = args.second_momentum
     if args.test_only:
         optimizer = None
         print("---------------------------------- TESTING ONLY ----------------------------------")
     else:
         if args.optimizer.lower() == "adam":
             if args.weight_decay == 0.0:
-                optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, betas=(momentum, 0.999))
+                optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, betas=(momentum, second_momentum))
             else:
-                optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, betas=(momentum, 0.999), weight_decay=args.weight_decay)
+                optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, betas=(momentum, second_momentum), weight_decay=args.weight_decay)
         elif args.optimizer.lower() == "sgd":
             optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, momentum=momentum, weight_decay=args.weight_decay)
         else:
@@ -916,15 +918,15 @@ if __name__ == "__main__":
         if not args.test_only:
             optimizer.load_state_dict(torch.load(optimizer_checkpoint_path, map_location="cpu"))
 
-            first = True
             for g in optimizer.param_groups:
                 g["lr"] = args.learning_rate
                 if args.weight_decay > 0.0:
                     assert "weight_decay" in g, "The optimizer does not have weight decay."
                     g["weight_decay"] = args.weight_decay
-                if first:
-                    print(g)
-                    first = False
+                if args.optimizer == "sgd":
+                    g["momentum"] = momentum
+                elif args.optimizer == "adam":
+                    g["betas"] = (momentum, second_momentum)
 
         gc.collect()
         torch.cuda.empty_cache()
