@@ -916,11 +916,15 @@ if __name__ == "__main__":
         if not args.test_only:
             optimizer.load_state_dict(torch.load(optimizer_checkpoint_path, map_location="cpu"))
 
+            first = True
             for g in optimizer.param_groups:
-                g['lr'] = args.learning_rate
+                g["lr"] = args.learning_rate
                 if args.weight_decay > 0.0:
                     assert "weight_decay" in g, "The optimizer does not have weight decay."
-                    g['weight_decay'] = args.weight_decay
+                    g["weight_decay"] = args.weight_decay
+                if first:
+                    print(g)
+                    first = False
 
         gc.collect()
         torch.cuda.empty_cache()
