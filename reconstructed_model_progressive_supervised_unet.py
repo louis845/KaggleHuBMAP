@@ -764,6 +764,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_separated_focal_loss", action="store_true", help="Whether to use separated focal loss. Default False.")
     parser.add_argument("--use_residual_atrous_conv", action="store_true", help="Whether to use residual atrous convolutions. Default False.")
     parser.add_argument("--use_heavy_boundary_in_separated_loss", action="store_true", help="Whether to use heavy boundary in separated focal loss. Default False. Must be used with --use_separated_focal_loss.")
+    parser.add_argument("--use_softer_weights", action="store_true", help="Whether to use softer weights. Default False.")
     parser.add_argument("--use_amp", action="store_true", help="Whether to use automatic mixed precision. Default False.")
     parser.add_argument("--use_squeeze_excitation", action="store_true", help="Whether to use squeeze and excitation. Default False.")
     parser.add_argument("--use_initial_conv", action="store_true", help="Whether to use the initial 7x7 kernel convolution. Default False.")
@@ -846,6 +847,7 @@ if __name__ == "__main__":
     use_residual_atrous_conv = args.use_residual_atrous_conv
     use_suppressed_deepsupervision = args.use_suppressed_deepsupervision
     use_partially_suppressed_deepsupervision = args.use_partially_suppressed_deepsupervision
+    use_softer_weights = args.use_softer_weights
     mathematical = args.mathematical
     test_only = args.test_only
 
@@ -941,6 +943,7 @@ if __name__ == "__main__":
         "use_separated_focal_loss": args.use_separated_focal_loss,
         "use_residual_atrous_conv": use_residual_atrous_conv,
         "use_heavy_boundary_in_separated_loss": args.use_heavy_boundary_in_separated_loss,
+        "use_softer_weights": use_softer_weights,
         "use_amp": args.use_amp,
         "use_squeeze_excitation": args.use_squeeze_excitation,
         "use_initial_conv": args.use_initial_conv,
@@ -996,9 +999,15 @@ if __name__ == "__main__":
     classes = ["blood_vessel", "boundary"]
     class_weights = [5.0, 5.0]
     if args.use_separated_focal_loss and args.use_heavy_boundary_in_separated_loss:
-        class_weights_composite = [1.0, 4.0]
+        if use_softer_weights:
+            class_weights_composite = [1.5, 3.0]
+        else:
+            class_weights_composite = [1.0, 4.0]
     else:
-        class_weights_composite = [1.0, 10.0]
+        if use_softer_weights:
+            class_weights_composite = [1.5, 7.5]
+        else:
+            class_weights_composite = [1.0, 10.0]
     num_classes = 2
     for k in range(len(classes)):
         seg_class = classes[k]
