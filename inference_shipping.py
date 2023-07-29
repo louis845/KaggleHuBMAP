@@ -139,7 +139,7 @@ if __name__ == "__main__":
     inference_on_train = args.inference_on_train
     if inference_on_train:
         inference_data = [tile_id[:-4] for tile_id in os.listdir(os.path.join(config.input_data_path, "train"))]
-        inference_data = np.random.choice(inference_data, size=int(len(inference_data) * 0.1), replace=False)
+        inference_data = np.random.choice(inference_data, size=int(len(inference_data) * 0.01), replace=False)
     else:
         inference_data = [tile_id[:-4] for tile_id in os.listdir(os.path.join(config.input_data_path, "test"))]
 
