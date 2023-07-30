@@ -112,8 +112,7 @@ def separated_focal_loss(result: torch.Tensor, ground_truth: torch.Tensor, one_h
                     torch.sum((softmax - ground_truth_other) ** 2, dim=1) * cross_entropy_boundary
 
 def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image_ground_truth_batch_, train_image_ground_truth_mask_batch_,
-                         train_image_ground_truth_deep_, train_image_ground_truth_mask_deep_, use_amp_=False, scaler_=None):
-    mixup_used = (mixup > 0.0)
+                         train_image_ground_truth_deep_, train_image_ground_truth_mask_deep_, mixup_used:bool, use_amp_=False, scaler_=None):
     total_loss_per_outputs = [0] * (pyr_height - 1)
     optimizer_.zero_grad()
 
@@ -237,14 +236,57 @@ def training_step(train_history=None):
         else:
             async_request_images_val()  # else we preload the validation samples in another process. we are in main step
 
-    with tqdm.tqdm(total=total_training_len) as pbar:
-        while trained < total_training_len:
-            batch_end = min(trained + batch_size, total_training_len)
-            length = batch_end - trained
+    if mixup_interlace:
+        trained = 0
+        trained_interlace = 0
+        total_stuff_to_train = total_training_len + len(training_entries)
+    else:
+        total_stuff_to_train = total_training_len
+    with tqdm.tqdm(total=total_stuff_to_train) as pbar:
+        if mixup_interlace:
+            condition = (trained < total_training_len) or (trained_interlace < len(training_entries))
+        else:
+            condition = trained < total_training_len
+        while condition:
+            if mixup_interlace: # note that mixup interlace can only be used with async sampling.
+                if trained_interlace == len(training_entries):
+                    batch_end = min(trained + batch_size, total_training_len)
+                    length = batch_end - trained
+                    train_version = "NORMAL"
+                    mixup_used = mixup > 0.0
+                elif trained == total_training_len:
+                    batch_end = min(trained_interlace + batch_size, len(training_entries))
+                    length = batch_end - trained_interlace
+                    train_version = "INTERLACE"
+                    mixup_used = False
+                else:
+                    # random
+                    if rng.rand() < 0.5:
+                        batch_end = min(trained + batch_size, total_training_len)
+                        length = batch_end - trained
+                        train_version = "NORMAL"
+                        mixup_used = mixup > 0.0
+                    else:
+                        batch_end = min(trained_interlace + batch_size, len(training_entries))
+                        length = batch_end - trained_interlace
+                        train_version = "INTERLACE"
+                        mixup_used = False
+            else:
+                batch_end = min(trained + batch_size, total_training_len)
+                length = batch_end - trained
+                mixup_used = mixup > 0.0
             # obtain batch here
             if use_async_sampling != 0:
-                train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep, train_image_ground_truth_mask_deep = \
-                    train_sampler.get_samples(device=config.device, length=length)
+                if mixup_interlace:
+                    if train_version == "NORMAL":
+                        train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep, train_image_ground_truth_mask_deep = \
+                            train_sampler.get_samples(device=config.device, length=length)
+                    else:
+                        train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep, train_image_ground_truth_mask_deep = \
+                            train_sampler_interlace_nomixup.get_samples(device=config.device, length=length)
+                else:
+                    train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, train_image_ground_truth_deep, train_image_ground_truth_mask_deep = \
+                        train_sampler.get_samples(device=config.device, length=length)
             else:
                 batch_indices = training_entries_shuffle[trained:batch_end]
                 if mixup > 0.0:
@@ -268,7 +310,7 @@ def training_step(train_history=None):
             loss, result_loss, total_loss_per_outputs, result, deep_outputs = \
                 single_training_step_compile(model, optimizer, train_image_cat_batch, train_image_ground_truth_batch,
                                 train_image_ground_truth_mask_batch, train_image_ground_truth_deep,
-                                train_image_ground_truth_mask_deep, use_amp_=use_amp, scaler_=scaler if use_amp else None)
+                                train_image_ground_truth_mask_deep, use_amp_=use_amp, scaler_=scaler if use_amp else None, mixup_used=mixup_used)
             #gc.collect()
             #torch.cuda.empty_cache()
 
@@ -284,7 +326,7 @@ def training_step(train_history=None):
                     # compute per level metrics.
                     for k in range(pyr_height - 2, -1, -1):
                         deep_class_prediction = torch.argmax(deep_outputs[k], dim=1)
-                        if mixup > 0.0:
+                        if mixup_used:
                             train_image_ground_truth_deep_class = torch.argmax(
                                 train_image_ground_truth_deep[pyr_height - 2 - k], dim=1)
                         else:
@@ -306,7 +348,7 @@ def training_step(train_history=None):
                     pred_labels_confidence = compute_confidence_class(result)
                     pred_labels_class = compute_class_no_confidence(result)
                     bool_mask = train_image_ground_truth_mask_batch.to(torch.bool)
-                    if mixup > 0.0:
+                    if mixup_used:
                         train_image_ground_truth_batch_ev = torch.argmax(train_image_ground_truth_batch, dim=1)
                     else:
                         train_image_ground_truth_batch_ev = train_image_ground_truth_batch
@@ -368,7 +410,13 @@ def training_step(train_history=None):
 
                     del pred_labels, pred_labels_confidence, pred_labels_class, bool_mask, train_image_ground_truth_batch_ev
 
-            trained += length
+            if mixup_interlace:
+                if train_version == "NORMAL":
+                    trained += length
+                else:
+                    trained_interlace += length
+            else:
+                trained += length
 
             del train_image_cat_batch, train_image_ground_truth_batch, train_image_ground_truth_mask_batch, \
                 train_image_ground_truth_deep[:], train_image_ground_truth_mask_deep[:]
@@ -378,10 +426,14 @@ def training_step(train_history=None):
             #torch.cuda.empty_cache()
 
             pbar.update(length)
+            if mixup_interlace:
+                condition = (trained < total_training_len) or (trained_interlace < len(training_entries))
+            else:
+                condition = trained < total_training_len
 
     if train_history is not None:
-        total_loss_per_output /= total_training_len
-        total_cum_loss /= total_training_len
+        total_loss_per_output /= total_stuff_to_train
+        total_cum_loss /= total_stuff_to_train
 
         accuracy_per_output = (true_positive_per_output + true_negative_per_output).astype(np.float64) / (
                     true_positive_per_output + true_negative_per_output + false_positive_per_output + false_negative_per_output)
@@ -788,6 +840,7 @@ if __name__ == "__main__":
     parser.add_argument("--unet_attention", action="store_true", help="Whether to use attention in the U-Net. Default False.")
     parser.add_argument("--deep_exponent_base", type=float, default=2.0, help="The base of the exponent for the deep supervision loss. Default 2.0.")
     parser.add_argument("--mixup", type=float, default=0.0, help="The alpha value of mixup. Default 0, meaning no mixup.")
+    parser.add_argument("--mixup_interlace", action="store_true", help="Whether to interlace the mixup. Default False.")
     parser.add_argument("--image_size", type=int, default=1024, help="The size of the images to use. Default 1024.")
     parser.add_argument("--image_stain_norm", action="store_true", help="Whether to stain normalize the images. Default False.")
     parser.add_argument("--use_async_sampling", type=int, default=0, help="Whether to use async sampling. Default 0, meaning no async sampling. The values represent the max buffer of the processes. If -1, the max buffer is unlimited.")
@@ -838,12 +891,15 @@ if __name__ == "__main__":
     training_entries = np.array(training_entries, dtype=object)
     validation_entries = np.array(validation_entries, dtype=object)
     mixup = args.mixup
+    mixup_interlace = args.mixup_interlace
     image_size = args.image_size
     use_async_sampling = args.use_async_sampling
     num_extra_steps = args.num_extra_steps
     use_amp = args.use_amp
     blocks = args.hidden_blocks
 
+    assert (not mixup_interlace) or mixup > 0.0, "Mixup interlace must be used with mixup."
+    assert (not mixup_interlace) or args.use_async_sampling != 0, "Mixup interlace must be used with async sampling."
 
     num_epochs = args.epochs
     batch_size = args.batch_size
@@ -917,6 +973,7 @@ if __name__ == "__main__":
         print("Using optimizer {} with learning rate {} and momentum {}.".format(args.optimizer, args.learning_rate, momentum))
         print("Using weight decay {}.".format(args.weight_decay))
         print("Using gradient clipping {}.".format(args.gradient_clipping))
+        print("Using mixup {} and mixup_interlace {}".format(mixup, mixup_interlace))
 
     if use_amp:
         scaler = torch.cuda.amp.GradScaler()
@@ -973,6 +1030,7 @@ if __name__ == "__main__":
         "unet_attention": args.unet_attention,
         "deep_exponent_base": deep_exponent_base,
         "mixup": mixup,
+        "mixup_interlace": mixup_interlace,
         "image_size": args.image_size,
         "image_stain_norm": args.image_stain_norm,
         "use_async_sampling": use_async_sampling,
@@ -1076,10 +1134,14 @@ if __name__ == "__main__":
         else:
             train_sampler = image_wsi_sampling_async.get_image_sampler(train_subdata, image_width=image_size, batch_size=batch_size, sampling_type="batch_random_image_mixup" if mixup > 0.0 else "batch_random_image",
                                                                 deep_supervision_outputs=pyr_height - 1, buffer_max_size=use_async_sampling, use_stainnet=args.image_stain_norm, use_gpu=args.async_sampling_gpu)
+        if mixup_interlace:
+            train_sampler_interlace_nomixup = image_wsi_sampling_async.get_image_sampler(train_subdata, image_width=image_size, batch_size=batch_size, sampling_type="batch_random_image",
+                                                                deep_supervision_outputs=pyr_height - 1, buffer_max_size=use_async_sampling, use_stainnet=args.image_stain_norm, use_gpu=args.async_sampling_gpu)
         val_sampler = image_wsi_sampling_async.get_image_sampler(val_subdata, image_width=image_size, batch_size=batch_size, sampling_type="batch_random_image", deep_supervision_outputs=pyr_height - 1,
                                                                  buffer_max_size=use_async_sampling, use_stainnet=args.image_stain_norm, use_gpu=args.async_sampling_gpu)
 
         def async_request_images_train():
+            # request samples from the sampler
             if mixup > 0.0:
                 training_entries_shuffle = rng.permutation(training_entries)
                 training_entries_shuffle2 = rng.permutation(training_entries)
@@ -1120,6 +1182,20 @@ if __name__ == "__main__":
                     batch_end = min(trained + batch_size, total_training_len)
                     batch_indices = training_entries_shuffle[trained:batch_end]
                     train_sampler.request_load_sample(list(batch_indices), augmentation=augmentation, random_location=True)
+
+                    trained += len(batch_indices)
+
+            # if interlace, request samples from the nomixup sampler
+            if mixup_interlace:
+                # shuffle
+                training_entries_shuffle = rng.permutation(training_entries)
+                # add to sampler
+                trained = 0
+                while trained < len(training_entries):
+                    batch_end = min(trained + batch_size, len(training_entries))
+                    batch_indices = training_entries_shuffle[trained:batch_end]
+                    train_sampler_interlace_nomixup.request_load_sample(list(batch_indices), augmentation=augmentation,
+                                                      random_location=True)
 
                     trained += len(batch_indices)
 
