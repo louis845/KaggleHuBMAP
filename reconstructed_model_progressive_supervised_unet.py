@@ -1422,6 +1422,8 @@ if __name__ == "__main__":
         if use_async_sampling != 0:
             train_sampler.terminate()
             val_sampler.terminate()
+            if mixup_interlace:
+                train_sampler_interlace_nomixup.terminate()
     except KeyboardInterrupt:
         print("Training Interrupted. Saving Model...")
         # Save the model and optimizer
@@ -1432,11 +1434,15 @@ if __name__ == "__main__":
         if use_async_sampling != 0:
             train_sampler.terminate()
             val_sampler.terminate()
+            if mixup_interlace:
+                train_sampler_interlace_nomixup.terminate()
     except Exception as e:
         traceback.print_exc()
         print("Training failed! Terminating...")
         if use_async_sampling != 0:
             train_sampler.terminate()
             val_sampler.terminate()
+            if mixup_interlace:
+                train_sampler_interlace_nomixup.terminate()
 
     memory_logger.close()
