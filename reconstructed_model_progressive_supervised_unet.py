@@ -167,6 +167,8 @@ def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image
     else:
         # usual backward pass if not using AMP
         loss.backward()
+        if args.gradient_clipping > 0.0:
+            torch.nn.utils.clip_grad_norm_(model_.parameters(), args.gradient_clipping, error_if_nonfinite=True)
         optimizer_.step()
 
     return loss.item(), result_loss.item(), total_loss_per_outputs, result.detach(),\
@@ -754,6 +756,7 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate to use. Default 1e-5.")
     parser.add_argument("--momentum", type=float, default=0.9, help="Momentum to use. Default 0.9. This would be the momentum for SGD, and beta1 for Adam.")
     parser.add_argument("--second_momentum", type=float, default=0.999, help="Second momentum to use. Default 0.999. This would be beta2 for Adam. Ignored if SGD.")
+    parser.add_argument("--gradient_clipping", type=float, default=0.0, help="Gradient clipping to use. Default 0.0.")
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use. Default 0.0.")
     parser.add_argument("--optimizer", type=str, default="adam", help="Which optimizer to use. Available options: adam, sgd. Default adam.")
     parser.add_argument("--epochs_per_save", type=int, default=2, help="Number of epochs between saves. Default 2.")
@@ -906,6 +909,7 @@ if __name__ == "__main__":
             exit(1)
         print("Using optimizer {} with learning rate {} and momentum {}.".format(args.optimizer, args.learning_rate, momentum))
         print("Using weight decay {}.".format(args.weight_decay))
+        print("Using gradient clipping {}.".format(args.gradient_clipping))
 
     if use_amp:
         scaler = torch.cuda.amp.GradScaler()
