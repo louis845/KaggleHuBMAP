@@ -376,11 +376,13 @@ def get_instances_image(mask_info, instances:bool=False):
         return np.repeat(mask[..., np.newaxis], 3, axis=-1)
 
 
-def get_instance_masks(logits: torch.Tensor, dilation_iters=4):
+def get_instance_masks(logits: torch.Tensor, dilation_iters=4, second_pass=True, second_pass_threshold=0.5, second_pass_score_weight=0.75):
     assert logits.shape == (512, 512, 3)
 
+    second_pass_threshold = 1 - second_pass_threshold
+
     boundary = ((1 - torch.argmax(logits[..., 1:], dim=-1)) * 255).cpu().numpy().astype(np.uint8) # 0 for boundary, 255 for non-boundary
-    region_of_interest = (logits[..., 0] < 0.5).cpu().numpy() # True for region of interest, False for background
+    region_of_interest = (logits[..., 0] < second_pass_threshold).cpu().numpy() # True for region of interest, False for background
     occupied_regions = np.zeros((512, 512), dtype=bool)
     masks = []
 
@@ -408,29 +410,30 @@ def get_instance_masks(logits: torch.Tensor, dilation_iters=4):
         masks.append({"mask": bool_mask, "score": score})
         occupied_regions = np.logical_or(occupied_regions, occupied_mask)
 
-    # second pass connected components
-    occupied_regions = torch.tensor(occupied_regions, dtype=torch.bool, device=config.device)
-    num_labels, labels_im = cv2.connectedComponents(np.logical_and(region_of_interest, (boundary // 255).astype(bool)).astype(np.uint8) * 255, connectivity=4)
-    # we get the masks now.
-    for label in range(1, num_labels):
-        mask = np.zeros((512, 512), dtype=np.uint8)
-        mask[labels_im == label] = 255
-        occupied_mask = torch.tensor((mask // 255).astype(bool), dtype=torch.bool, device=config.device)
-        mask = cv2.dilate(mask, kernel, iterations=dilation_iters)
-        # if intersects with occupied regions, skip
-        if torch.any(torch.logical_and(occupied_mask, occupied_regions)):
-            continue
-        del occupied_mask
+    if second_pass:
+        # second pass connected components
+        occupied_regions = torch.tensor(occupied_regions, dtype=torch.bool, device=config.device)
+        num_labels, labels_im = cv2.connectedComponents(np.logical_and(region_of_interest, (boundary // 255).astype(bool)).astype(np.uint8) * 255, connectivity=4)
+        # we get the masks now.
+        for label in range(1, num_labels):
+            mask = np.zeros((512, 512), dtype=np.uint8)
+            mask[labels_im == label] = 255
+            occupied_mask = torch.tensor((mask // 255).astype(bool), dtype=torch.bool, device=config.device)
+            mask = cv2.dilate(mask, kernel, iterations=dilation_iters)
+            # if intersects with occupied regions, skip
+            if torch.any(torch.logical_and(occupied_mask, occupied_regions)):
+                continue
+            del occupied_mask
 
-        # compute score
-        bool_mask = (mask // 255).astype(bool)
-        score = 1 - logits[..., 0][torch.tensor(bool_mask, dtype=torch.bool, device=config.device)].median().item()
+            # compute score
+            bool_mask = (mask // 255).astype(bool)
+            score = 1 - logits[..., 0][torch.tensor(bool_mask, dtype=torch.bool, device=config.device)].median().item()
 
-        # ensure not too big
-        if np.sum(bool_mask) > 60000:
-            continue
+            # ensure not too big
+            if np.sum(bool_mask) > 60000:
+                continue
 
-        masks.append({"mask": bool_mask, "score": score * 0.75})
+            masks.append({"mask": bool_mask, "score": score * second_pass_score_weight})
     return masks
 
 def get_image_from_instances(masks: list[dict[str, np.ndarray]]):
