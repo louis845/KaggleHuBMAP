@@ -261,7 +261,7 @@ def training_step(train_history=None):
                     mixup_used = False
                 else:
                     # random
-                    if rng.rand() < 0.5:
+                    if rng.uniform(low=0.0, high=1.0) < 0.5:
                         batch_end = min(trained + batch_size, total_training_len)
                         length = batch_end - trained
                         train_version = "NORMAL"
