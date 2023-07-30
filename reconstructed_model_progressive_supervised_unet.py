@@ -168,8 +168,15 @@ def single_training_step(model_, optimizer_, train_image_cat_batch_, train_image
         # usual backward pass if not using AMP
         loss.backward()
         if args.gradient_clipping > 0.0:
-            torch.nn.utils.clip_grad_norm_(model_.parameters(), args.gradient_clipping, error_if_nonfinite=True)
-        optimizer_.step()
+            try:
+                torch.nn.utils.clip_grad_norm_(model_.parameters(), args.gradient_clipping, error_if_nonfinite=True)
+                optimizer_.step()
+            except RuntimeError as e:
+                traceback.print_exc()
+                print("Gradient clipping failed, skipping step.")
+                optimizer_.zero_grad()
+        else:
+            optimizer_.step()
 
     return loss.item(), result_loss.item(), total_loss_per_outputs, result.detach(),\
         [deep_output.detach() for deep_output in deep_outputs]
