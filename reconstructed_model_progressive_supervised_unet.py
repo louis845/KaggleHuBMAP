@@ -239,35 +239,40 @@ def training_step(train_history=None):
     if mixup_interlace:
         trained = 0
         trained_interlace = 0
-        total_stuff_to_train = total_training_len + len(training_entries)
+        interlace_to_train = len(training_entries) * mixup_interlace_extras
+        total_stuff_to_train = total_training_len + interlace_to_train
     else:
         total_stuff_to_train = total_training_len
     with tqdm.tqdm(total=total_stuff_to_train) as pbar:
         if mixup_interlace:
-            condition = (trained < total_training_len) or (trained_interlace < len(training_entries))
+            condition = (trained < total_training_len) or (trained_interlace < interlace_to_train)
         else:
             condition = trained < total_training_len
         while condition:
             if mixup_interlace: # note that mixup interlace can only be used with async sampling.
-                if trained_interlace == len(training_entries):
+                if trained_interlace == interlace_to_train:
                     batch_end = min(trained + batch_size, total_training_len)
                     length = batch_end - trained
                     train_version = "NORMAL"
                     mixup_used = mixup > 0.0
                 elif trained == total_training_len:
-                    batch_end = min(trained_interlace + batch_size, len(training_entries))
+                    batch_end = min(trained_interlace + batch_size, interlace_to_train)
                     length = batch_end - trained_interlace
                     train_version = "INTERLACE"
                     mixup_used = False
                 else:
                     # random
-                    if rng.uniform(low=0.0, high=1.0) < 0.5:
+                    remaining_normal = total_training_len - trained
+                    remaining_interlace = interlace_to_train - trained_interlace
+                    assert remaining_normal > 0 and remaining_interlace > 0, "remaining normal or interlace is 0"
+                    remaining_total = remaining_normal + remaining_interlace
+                    if rng.uniform(low=0.0, high=1.0) <= remaining_normal / remaining_total:
                         batch_end = min(trained + batch_size, total_training_len)
                         length = batch_end - trained
                         train_version = "NORMAL"
                         mixup_used = mixup > 0.0
                     else:
-                        batch_end = min(trained_interlace + batch_size, len(training_entries))
+                        batch_end = min(trained_interlace + batch_size, interlace_to_train)
                         length = batch_end - trained_interlace
                         train_version = "INTERLACE"
                         mixup_used = False
@@ -427,7 +432,7 @@ def training_step(train_history=None):
 
             pbar.update(length)
             if mixup_interlace:
-                condition = (trained < total_training_len) or (trained_interlace < len(training_entries))
+                condition = (trained < total_training_len) or (trained_interlace < interlace_to_train)
             else:
                 condition = trained < total_training_len
 
@@ -841,6 +846,7 @@ if __name__ == "__main__":
     parser.add_argument("--deep_exponent_base", type=float, default=2.0, help="The base of the exponent for the deep supervision loss. Default 2.0.")
     parser.add_argument("--mixup", type=float, default=0.0, help="The alpha value of mixup. Default 0, meaning no mixup.")
     parser.add_argument("--mixup_interlace", action="store_true", help="Whether to interlace the mixup. Default False.")
+    parser.add_argument("--mixup_interlace_extras", type=int, default=1, help="The number of extra mixup interlacing. Default 1. Ignored if mixup_interlace=False.")
     parser.add_argument("--image_size", type=int, default=1024, help="The size of the images to use. Default 1024.")
     parser.add_argument("--image_stain_norm", action="store_true", help="Whether to stain normalize the images. Default False.")
     parser.add_argument("--use_async_sampling", type=int, default=0, help="Whether to use async sampling. Default 0, meaning no async sampling. The values represent the max buffer of the processes. If -1, the max buffer is unlimited.")
@@ -892,6 +898,7 @@ if __name__ == "__main__":
     validation_entries = np.array(validation_entries, dtype=object)
     mixup = args.mixup
     mixup_interlace = args.mixup_interlace
+    mixup_interlace_extras = args.mixup_interlace_extras
     image_size = args.image_size
     use_async_sampling = args.use_async_sampling
     num_extra_steps = args.num_extra_steps
@@ -900,6 +907,8 @@ if __name__ == "__main__":
 
     assert (not mixup_interlace) or mixup > 0.0, "Mixup interlace must be used with mixup."
     assert (not mixup_interlace) or args.use_async_sampling != 0, "Mixup interlace must be used with async sampling."
+    assert type(mixup_interlace_extras) == int, "Mixup interlace extras must be an integer."
+    assert mixup_interlace_extras >= 1, "Mixup interlace extras must be at least 1."
 
     num_epochs = args.epochs
     batch_size = args.batch_size
@@ -973,7 +982,7 @@ if __name__ == "__main__":
         print("Using optimizer {} with learning rate {} and momentum {}.".format(args.optimizer, args.learning_rate, momentum))
         print("Using weight decay {}.".format(args.weight_decay))
         print("Using gradient clipping {}.".format(args.gradient_clipping))
-        print("Using mixup {} and mixup_interlace {}".format(mixup, mixup_interlace))
+        print("Using mixup {} and mixup_interlace {} with extras {}".format(mixup, mixup_interlace, mixup_interlace_extras))
 
     if use_amp:
         scaler = torch.cuda.amp.GradScaler()
@@ -1031,6 +1040,7 @@ if __name__ == "__main__":
         "deep_exponent_base": deep_exponent_base,
         "mixup": mixup,
         "mixup_interlace": mixup_interlace,
+        "mixup_interlace_extras": mixup_interlace_extras,
         "image_size": args.image_size,
         "image_stain_norm": args.image_stain_norm,
         "use_async_sampling": use_async_sampling,
@@ -1187,17 +1197,18 @@ if __name__ == "__main__":
 
             # if interlace, request samples from the nomixup sampler
             if mixup_interlace:
-                # shuffle
-                training_entries_shuffle = rng.permutation(training_entries)
-                # add to sampler
-                trained = 0
-                while trained < len(training_entries):
-                    batch_end = min(trained + batch_size, len(training_entries))
-                    batch_indices = training_entries_shuffle[trained:batch_end]
-                    train_sampler_interlace_nomixup.request_load_sample(list(batch_indices), augmentation=augmentation,
-                                                      random_location=True)
+                for k in range(mixup_interlace_extras):
+                    # shuffle
+                    training_entries_shuffle = rng.permutation(training_entries)
+                    # add to sampler
+                    trained = 0
+                    while trained < len(training_entries):
+                        batch_end = min(trained + batch_size, len(training_entries))
+                        batch_indices = training_entries_shuffle[trained:batch_end]
+                        train_sampler_interlace_nomixup.request_load_sample(list(batch_indices), augmentation=augmentation,
+                                                          random_location=True)
 
-                    trained += len(batch_indices)
+                        trained += len(batch_indices)
 
         def async_request_images_val():
             tested = 0
