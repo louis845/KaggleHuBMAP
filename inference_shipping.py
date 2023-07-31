@@ -94,6 +94,7 @@ if __name__ == "__main__":
                         help="Whether to use a separated outconv for background sigmoid. Default False. Must be used with atrous conv.")
     parser.add_argument("--image_stain_norm", action="store_true",
                         help="Whether to stain normalize the images. Default False.")
+    parser.add_argument("--disable_tta", action="store_true", help="Whether to disable TTA. Default False.")
     parser.add_argument("--model_path", type=str, required=True, help="Path to the model to use. Should be a .pt file")
     parser.add_argument("--out_hdf5_file", type=str, required=True, help="Path to the output HDF5 file.")
     parser.add_argument("--inference_on_train", action="store_true", help="Whether to run inference on the training set. Used for debug. Default False.")
@@ -148,7 +149,10 @@ if __name__ == "__main__":
     print("Computing the logits now...")
     print("Using stain normalization: {}".format(args.image_stain_norm))
     print("Using separated background: {}".format(use_separated_background))
+    print("Disable TTA: {}".format(args.disable_tta))
     print("DOING INFERENCE ON TRAINING SET: {}".format(inference_on_train))
+
+    disable_tta = args.disable_tta
     with tqdm.tqdm(total=len(inference_data)) as pbar:
         while computed < len(inference_data):
             tile_id = inference_data[computed]
@@ -157,8 +161,13 @@ if __name__ == "__main__":
                 img_helper = inference_reconstructed_base.Composite1024To512ImageInference()
                 img_helper.load_image(tile_id, stain_normalize=args.image_stain_norm)
                 for location in inference_reconstructed_base.Composite1024To512ImageInference.LOCATIONS:
+                    if disable_tta and (location != inference_reconstructed_base.Composite1024To512ImageInference.CENTER):
+                        continue
                     img = img_helper.get_combined_image(location)
-                    logits_tensor = get_result_logits(model, img.unsqueeze(0), test_time_augmentation=True)
+                    if disable_tta:
+                        logits_tensor = get_result_logits(model, img.unsqueeze(0), test_time_augmentation=False).permute(2, 3, 1, 0)
+                    else:
+                        logits_tensor = get_result_logits(model, img.unsqueeze(0), test_time_augmentation=True)
                     img_helper.store_prediction_logits(location, logits_tensor)
                 result = img_helper.obtain_predictions(reduction_logit_average=False, experts_only=False, separated_logits=use_separated_background, center_only=False)
                 hdf5_file.create_dataset(tile_id, data=result.cpu().numpy(), compression="gzip", compression_opts=4)
